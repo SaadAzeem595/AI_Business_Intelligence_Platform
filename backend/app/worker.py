@@ -29,3 +29,36 @@ def generate_report_task(report_id: str, payload: dict) -> dict:
         "recipient": payload.get("recipient"),
         "status": "completed",
     }
+
+
+# Import ML platform tasks for Celery registration
+try:
+    from app.features.ml.tasks import retrain_model_task, scheduled_retrain_task
+except ImportError:
+    pass
+
+# Setup Celery Beat periodic schedule for ML platform retraining
+celery_app.conf.beat_schedule = {
+    "scheduled-retrain-forecast": {
+        "task": "scheduled_retrain_task",
+        "schedule": settings.RETRAIN_INTERVAL_FORECAST,
+        "args": ("forecast",),
+    },
+    "scheduled-retrain-churn": {
+        "task": "scheduled_retrain_task",
+        "schedule": settings.RETRAIN_INTERVAL_CHURN,
+        "args": ("churn",),
+    },
+    "scheduled-retrain-segmentation": {
+        "task": "scheduled_retrain_task",
+        "schedule": settings.RETRAIN_INTERVAL_SEGMENTATION,
+        "args": ("segmentation",),
+    },
+    "scheduled-retrain-anomaly": {
+        "task": "scheduled_retrain_task",
+        "schedule": settings.RETRAIN_INTERVAL_ANOMALY,
+        "args": ("anomaly",),
+    },
+}
+
+

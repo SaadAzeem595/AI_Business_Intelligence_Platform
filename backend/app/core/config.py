@@ -68,5 +68,11 @@ class Settings(BaseSettings):
     # DuckDB path for analytical calculations
     DUCKDB_PATH: str = ":memory:"
 
+    # ML Platform Retraining Schedules (in seconds)
+    RETRAIN_INTERVAL_FORECAST: int = 86400
+    RETRAIN_INTERVAL_CHURN: int = 86400
+    RETRAIN_INTERVAL_SEGMENTATION: int = 86400
+    RETRAIN_INTERVAL_ANOMALY: int = 86400
+
 
 settings = Settings()
