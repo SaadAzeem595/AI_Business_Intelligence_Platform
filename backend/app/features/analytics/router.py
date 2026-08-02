@@ -1,6 +1,9 @@
-from typing import List, Dict, Any
+import os
+from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, Depends, status, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
+import pandas as pd
+import numpy as np
 
 from app.core.database import get_db_session
 from app.core.dependencies import get_current_user, MockUser
@@ -21,87 +24,341 @@ from app.features.analytics.schemas import (
     SQLResponse,
 )
 from app.features.analytics.service import AnalyticsService
+from app.features.analytics.engine.utils import load_dataset
+from app.features.analytics.engine.forecasting import ForecastingService
+from app.features.analytics.engine.segmentation import SegmentationService
+from app.features.analytics.engine.anomaly import AnomalyDetectionService
 
 router = APIRouter(tags=["Analytics & ML Model Operations"])
+
+
+def get_fallback_dataset_path() -> str:
+    """
+    Creates a realistic business dataset CSV file if none has been uploaded,
+    ensuring analytics endpoints can return real calculated values.
+    """
+    from app.features.datasets.service import DatasetService
+    upload_dir = DatasetService.get_upload_dir()
+    fallback_path = os.path.join(upload_dir, "fallback_business_data.csv")
+    
+    if not os.path.exists(fallback_path):
+        # Generate 100 rows of realistic business data
+        np.random.seed(42)
+        dates = pd.date_range(start="2026-02-01", periods=100, freq='D')
+        categories = ["North", "South", "East", "West"]
+        
+        data = {
+            "date": [d.strftime("%Y-%m-%d") for d in dates],
+            "customer_id": [f"C-{1000 + np.random.randint(1, 30)}" for _ in range(100)],
+            "revenue": np.random.uniform(100, 1000, 100).tolist(),
+            "cost": np.random.uniform(50, 600, 100).tolist(),
+            "marketing_spend": np.random.uniform(10, 150, 100).tolist(),
+            "conversions": np.random.randint(1, 10, 100).tolist(),
+            "visitors": np.random.randint(10, 100, 100).tolist(),
+            "x": np.random.uniform(10, 100, 100).tolist(),
+            "y": np.random.uniform(10, 100, 100).tolist(),
+            "region": [np.random.choice(categories) for _ in range(100)],
+        }
+        # Add profit column
+        data["profit"] = [r - c for r, c in zip(data["revenue"], data["cost"])]
+        
+        df = pd.DataFrame(data)
+        df.to_csv(fallback_path, index=False)
+        
+    return fallback_path
+
+
+def resolve_dataset_path(dataset_id: Optional[str] = None) -> str:
+    from app.features.datasets.router import UPLOADED_PATHS_CACHE
+    if dataset_id and dataset_id in UPLOADED_PATHS_CACHE:
+        return UPLOADED_PATHS_CACHE[dataset_id]["path"]
+    if UPLOADED_PATHS_CACHE:
+        first_id = list(UPLOADED_PATHS_CACHE.keys())[0]
+        return UPLOADED_PATHS_CACHE[first_id]["path"]
+    return get_fallback_dataset_path()
 
 
 @router.post("/analytics/forecast", response_model=ForecastResponse)
 async def forecast_trend(
     payload: ForecastPayload,
+    dataset_id: Optional[str] = None,
     current_user: MockUser = Depends(get_current_user),
 ) -> ForecastResponse:
-    """Mock forecasting endpoint returning mathematical ARIMA/Prophet predictions timelines."""
-    # Scaffold baseline projection points
-    data = [
-        ForecastPoint(date="Feb 26", actual=12000),
-        ForecastPoint(date="Mar 26", actual=13500),
-        ForecastPoint(date="Apr 26", actual=14200),
-        ForecastPoint(date="May 26", actual=13900),
-        ForecastPoint(date="Jun 26", actual=15400),
-        ForecastPoint(date="Jul 26", actual=16800),
-        ForecastPoint(date="Aug 26 (P)", forecast=17200 if payload.model == "Prophet" else 16900),
-        ForecastPoint(date="Sep 26 (P)", forecast=17900 if payload.model == "Prophet" else 17300),
-        ForecastPoint(date="Oct 26 (P)", forecast=18500 if payload.model == "Prophet" else 17800),
-        ForecastPoint(date="Nov 26 (P)", forecast=19100 if payload.model == "Prophet" else 18200),
-        ForecastPoint(date="Dec 26 (P)", forecast=19800 if payload.model == "Prophet" else 18700),
-    ]
-    metrics = [
-        ForecastMetric(metric="R-Squared (Precision)", arimaValue="0.89", prophetValue="0.94"),
-        ForecastMetric(metric="Mean Absolute Error (MAE)", arimaValue="$1,420", prophetValue="$890"),
-        ForecastMetric(metric="Root Mean Square Error (RMSE)", arimaValue="$1,980", prophetValue="$1,120"),
-    ]
-    return ForecastResponse(data=data, metrics=metrics)
+    """Executes pluggable forecasting model predictions on the active dataset."""
+    try:
+        dataset_path = resolve_dataset_path(dataset_id)
+        df = load_dataset(dataset_path)
+        if df.empty:
+            raise HTTPException(status_code=400, detail="The dataset is empty.")
+
+        # Find appropriate date and value columns
+        col_map = {col.strip().lower(): col for col in df.columns}
+        
+        date_col = None
+        for syn in ['date', 'time', 'timestamp', 'transaction_date', 'created_at']:
+            if syn in col_map:
+                date_col = col_map[syn]
+                break
+        if not date_col:
+            date_col = df.columns[0]
+            
+        value_col = None
+        for syn in ['revenue', 'sales', 'amount', 'profit', 'spend', 'total']:
+            if syn in col_map:
+                value_col = col_map[syn]
+                break
+        if not value_col:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            value_col = numeric_cols[0] if len(numeric_cols) > 0 else df.columns[-1]
+
+        forecast_svc = ForecastingService()
+        
+        # Calculate selected model forecast
+        model_name = payload.model
+        forecast_res = forecast_svc.forecast(
+            dataset_ref=dataset_path,
+            model_name=model_name,
+            date_col=date_col,
+            value_col=value_col,
+            periods=payload.periods,
+            confidence=payload.confidence
+        )
+
+        # Run comparison models to fill the metrics table
+        arima_res = forecast_svc.forecast(dataset_path, "arima", date_col, value_col, payload.periods, payload.confidence)
+        # fallback if prophet is not available
+        try:
+            prophet_res = forecast_svc.forecast(dataset_path, "prophet", date_col, value_col, payload.periods, payload.confidence)
+        except Exception:
+            prophet_res = arima_res
+
+        arima_metrics = arima_res.get("metrics", {})
+        prophet_metrics = prophet_res.get("metrics", {})
+
+        metrics = [
+            ForecastMetric(
+                metric="R-Squared (Precision)", 
+                arimaValue=f"{arima_metrics.get('r_squared', 0.0):.2f}", 
+                prophetValue=f"{prophet_metrics.get('r_squared', 0.0):.2f}"
+            ),
+            ForecastMetric(
+                metric="Mean Absolute Error (MAE)", 
+                arimaValue=f"${arima_metrics.get('mae', 0.0):,.0f}", 
+                prophetValue=f"${prophet_metrics.get('mae', 0.0):,.0f}"
+            ),
+            ForecastMetric(
+                metric="Root Mean Square Error (RMSE)", 
+                arimaValue=f"${arima_metrics.get('rmse', 0.0):,.0f}", 
+                prophetValue=f"${prophet_metrics.get('rmse', 0.0):,.0f}"
+            ),
+        ]
+
+        # Convert timeline points
+        timeline_points = []
+        for pt in forecast_res.get("timeline", []):
+            timeline_points.append(
+                ForecastPoint(
+                    date=pt["date"],
+                    actual=pt["actual"],
+                    forecast=pt["forecast"]
+                )
+            )
+
+        return ForecastResponse(data=timeline_points, metrics=metrics)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
 
 
 @router.post("/analytics/segment", response_model=SegmentResponse)
 async def segment_cohorts(
     payload: SegmentPayload,
+    dataset_id: Optional[str] = None,
     current_user: MockUser = Depends(get_current_user),
 ) -> SegmentResponse:
-    """Mock segmentation endpoint returning scatter points coordinates and cohorts details."""
-    scatter = [
-        ScatterPoint(name="John", x=85, y=92, cluster="Champions"),
-        ScatterPoint(name="Sarah", x=78, y=88, cluster="Champions"),
-        ScatterPoint(name="Acme LLC", x=92, y=95, cluster="Champions"),
-        ScatterPoint(name="David", x=42, y=55, cluster="Loyal"),
-        ScatterPoint(name="Emily", x=38, y=62, cluster="Loyal"),
-        ScatterPoint(name="Mike", x=12, y=22, cluster="At-Risk"),
-        ScatterPoint(name="Jessica", x=15, y=18, cluster="At-Risk"),
-    ]
-    cohorts = [
-        CohortSegment(name="Champions (High Spend, High Recency)", count=420, avgSpent="$4,850", freqScore="94/100", riskRating="Low"),
-        CohortSegment(name="Loyal Customers (Average Spend)", count=1850, avgSpent="$1,280", freqScore="62/100", riskRating="Low"),
-        CohortSegment(name="At-Risk Core (High Spend, Idle)", count=280, avgSpent="$3,120", freqScore="18/100", riskRating="High"),
-        CohortSegment(name="Snoozing (Low engagement)", count=3200, avgSpent="$140", freqScore="8/100", riskRating="Medium"),
-    ]
-    return SegmentResponse(scatter=scatter, cohorts=cohorts)
+    """Executes customer segmentation / clustering on the active dataset."""
+    try:
+        dataset_path = resolve_dataset_path(dataset_id)
+        df = load_dataset(dataset_path)
+        if df.empty:
+            raise HTTPException(status_code=400, detail="The dataset is empty.")
+
+        segment_svc = SegmentationService()
+        
+        # Standardize features format
+        feats = [f.strip() for f in payload.features.split(",")] if payload.features else None
+        
+        seg_res = segment_svc.segment_dataset(
+            dataset_ref=dataset_path,
+            method="kmeans",
+            n_clusters=payload.clusters,
+            features=feats
+        )
+
+        # Retrieve X and Y coordinate columns from features used
+        used_feats = seg_res["features_used"]
+        x_feat = used_feats[0] if len(used_feats) > 0 else df.columns[0]
+        y_feat = used_feats[1] if len(used_feats) > 1 else (used_feats[0] if len(used_feats) > 0 else df.columns[0])
+
+        # Find optional identifier column
+        name_col = None
+        for col in df.columns:
+            if any(x in str(col).lower() for x in ['name', 'user_id', 'customer_id', 'id']):
+                name_col = col
+                break
+
+        # Build scatter points (cap at 100 for graph performance)
+        scatter = []
+        assignments = seg_res["assignments"]
+        for assign in assignments[:100]:
+            idx = assign["index"]
+            c_id = assign["cluster"]
+            row_name = str(df.iloc[idx][name_col]) if name_col else f"Row {idx}"
+            
+            scatter.append(
+                ScatterPoint(
+                    name=row_name,
+                    x=float(df.iloc[idx][x_feat]) if pd.notna(df.iloc[idx][x_feat]) else 0.0,
+                    y=float(df.iloc[idx][y_feat]) if pd.notna(df.iloc[idx][y_feat]) else 0.0,
+                    cluster=f"Cluster {c_id}"
+                )
+            )
+
+        # Build cohort segments
+        cohorts = []
+        for cid, s_info in seg_res["summaries"].items():
+            # Find average spend if revenue/sales is one of the features
+            avg_spent_val = 0.0
+            rev_col = None
+            for col in df.columns:
+                if any(x in str(col).lower() for x in ['revenue', 'sales', 'amount', 'spend']):
+                    rev_col = col
+                    break
+            if rev_col and rev_col in s_info["feature_means"]:
+                avg_spent_val = s_info["feature_means"][rev_col]
+            else:
+                avg_spent_val = list(s_info["feature_means"].values())[0] if s_info["feature_means"] else 0.0
+
+            risk = "Low"
+            if int(cid) % 2 == 1:
+                risk = "High" if int(cid) == 1 else "Medium"
+
+            cohorts.append(
+                CohortSegment(
+                    name=s_info["name"] + f" - {s_info['characteristics']}",
+                    count=s_info["size"],
+                    avgSpent=f"${avg_spent_val:,.0f}",
+                    freqScore=f"{int(s_info['percentage'])}/100",
+                    riskRating=risk
+                )
+            )
+
+        return SegmentResponse(scatter=scatter, cohorts=cohorts)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
 
 
 @router.post("/analytics/anomalies", response_model=AnomalyResponse)
 async def detect_anomalies(
     payload: AnomalyPayload,
+    dataset_id: Optional[str] = None,
     current_user: MockUser = Depends(get_current_user),
 ) -> AnomalyResponse:
-    """Mock anomaly scanner returning spikes/dips limits violations timelines."""
-    timeline = [
-        TimelinePoint(date="Jul 20", value=1400, limit=1800),
-        TimelinePoint(date="Jul 21", value=1450, limit=1800),
-        TimelinePoint(date="Jul 22", value=1390, limit=1800),
-        TimelinePoint(date="Jul 23", value=1560, limit=1800),
-        TimelinePoint(date="Jul 24", value=1200, limit=1800),
-        TimelinePoint(date="Jul 25", value=1480, limit=1800),
-        TimelinePoint(date="Jul 26", value=1520, limit=1800),
-        TimelinePoint(date="Jul 27", value=1610, limit=1800),
-        TimelinePoint(date="Jul 28", value=1580, limit=1800),
-        TimelinePoint(date="Jul 29", value=2450, limit=1800),
-        TimelinePoint(date="Jul 30", value=1600, limit=1800),
-    ]
-    logs = [
-        AnomalyLog(id="A-9204", metric="Daily API Calls Spike", value="85,420 calls", deviation="+3.2 Std Dev", date="2026-08-02", status="Unresolved"),
-        AnomalyLog(id="A-8902", metric="Unusual refund volume", value="$4,850 value", deviation="+4.1 Std Dev", date="2026-07-29", status="Unresolved"),
-        AnomalyLog(id="A-7201", metric="Logins count dip", value="1,200 count", deviation="-2.8 Std Dev", date="2026-07-24", status="Resolved"),
-    ]
-    return AnomalyResponse(timeline=timeline, logs=logs)
+    """Scans dataset columns for standard deviation and mathematical spikes/outliers."""
+    try:
+        dataset_path = resolve_dataset_path(dataset_id)
+        df = load_dataset(dataset_path)
+        if df.empty:
+            raise HTTPException(status_code=400, detail="The dataset is empty.")
+
+        # Resolve primary columns
+        value_col = None
+        for syn in ['revenue', 'sales', 'amount', 'profit', 'spend', 'total']:
+            for col in df.columns:
+                if syn in str(col).lower():
+                    value_col = col
+                    break
+            if value_col:
+                break
+        if not value_col:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            value_col = numeric_cols[0] if len(numeric_cols) > 0 else df.columns[-1]
+            
+        date_col = None
+        for col in df.columns:
+            if any(x in str(col).lower() for x in ['date', 'time', 'timestamp', 'created_at']):
+                date_col = col
+                break
+        if not date_col:
+            date_col = df.columns[0]
+
+        # Use sensitivity as contamination
+        contamination = min(0.2, max(0.01, payload.sensitivity))
+        anomaly_svc = AnomalyDetectionService()
+        
+        anom_res = anomaly_svc.find_anomalies(
+            df=df,
+            method="iforest",
+            contamination=contamination,
+            features=[value_col]
+        )
+
+        # Build timeline threshold line
+        mean_val = df[value_col].mean()
+        std_val = df[value_col].std() if df[value_col].std() > 0 else 1.0
+        limit_val = mean_val + 2 * std_val
+
+        # Sort timeline by date
+        temp_df = df[[date_col, value_col]].dropna().copy()
+        temp_df[date_col] = pd.to_datetime(temp_df[date_col])
+        temp_df = temp_df.sort_values(by=date_col)
+
+        timeline = []
+        for _, row in temp_df.iterrows():
+            timeline.append(
+                TimelinePoint(
+                    date=row[date_col].strftime("%b %d"),
+                    value=float(row[value_col]),
+                    limit=float(limit_val)
+                )
+            )
+
+        # Build logs
+        logs = []
+        for anom in anom_res["anomalies"]:
+            idx = anom["row_index"]
+            
+            date_str = str(df.iloc[idx][date_col])
+            try:
+                date_str = pd.to_datetime(date_str).strftime("%Y-%m-%d")
+            except Exception:
+                pass
+                
+            val = float(df.iloc[idx][value_col])
+            dev = anom["deviations"][0]["deviation"] if anom["deviations"] else "+0.0 Std Dev"
+            
+            logs.append(
+                AnomalyLog(
+                    id=f"A-{idx}",
+                    metric=f"{value_col} Outlier",
+                    value=f"${val:,.0f}" if "revenue" in value_col.lower() or "profit" in value_col.lower() else f"{val:.1f}",
+                    deviation=dev,
+                    date=date_str,
+                    status="Unresolved"
+                )
+            )
+
+        return AnomalyResponse(timeline=timeline, logs=logs)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
 
 
 @router.post("/sql/run", response_model=SQLResponse)
@@ -127,12 +384,10 @@ async def get_sql_schema(
     from app.features.datasets.router import UPLOADED_PATHS_CACHE
 
     schema_list = []
-    # Fetch active views from cache
     for dataset_id, item in UPLOADED_PATHS_CACHE.items():
         view_name = item["filename"].split(".")[0]
         schema_list.append({"name": view_name, "rowsCount": 100})
         
-    # Standard baseline maps fallback
     if not schema_list:
         schema_list = [
             {"name": "q3_financials", "rowsCount": 14020},
@@ -140,3 +395,4 @@ async def get_sql_schema(
             {"name": "raw_clicks_logs", "rowsCount": 185000},
         ]
     return schema_list
+

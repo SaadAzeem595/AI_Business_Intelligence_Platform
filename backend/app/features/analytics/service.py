@@ -1,13 +1,50 @@
 import time
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import duckdb
 
 from app.core.database import get_duckdb_conn
 from app.features.analytics.schemas import SQLResponse
 
+# Import new analytical services
+from app.features.analytics.engine.profiler import DataProfilerService
+from app.features.analytics.engine.quality import DataQualityService
+from app.features.analytics.engine.kpi import KpiEngineService
+from app.features.analytics.engine.statistics import StatisticalAnalysisService
+from app.features.analytics.engine.feature_engineering import FeatureEngineeringService
+from app.features.analytics.engine.visualization import VisualizationService
+from app.features.analytics.engine.forecasting import ForecastingService
+from app.features.analytics.engine.segmentation import SegmentationService
+from app.features.analytics.engine.anomaly import AnomalyDetectionService
+from app.features.analytics.engine.explainability import ExplainabilityService
+
 
 class AnalyticsService:
     """Orchestrates machine learning calculations, forecasting projections, and executing DuckDB SQL queries."""
+
+    def __init__(
+        self,
+        profiler: Optional[DataProfilerService] = None,
+        quality: Optional[DataQualityService] = None,
+        kpi: Optional[KpiEngineService] = None,
+        statistics: Optional[StatisticalAnalysisService] = None,
+        feature_engineering: Optional[FeatureEngineeringService] = None,
+        visualization: Optional[VisualizationService] = None,
+        forecasting: Optional[ForecastingService] = None,
+        segmentation: Optional[SegmentationService] = None,
+        anomaly: Optional[AnomalyDetectionService] = None,
+        explainability: Optional[ExplainabilityService] = None,
+    ):
+        """Supports dependency injection for independent testability."""
+        self.profiler = profiler or DataProfilerService()
+        self.quality = quality or DataQualityService()
+        self.kpi = kpi or KpiEngineService()
+        self.statistics = statistics or StatisticalAnalysisService()
+        self.feature_engineering = feature_engineering or FeatureEngineeringService()
+        self.visualization = visualization or VisualizationService()
+        self.forecasting = forecasting or ForecastingService()
+        self.segmentation = segmentation or SegmentationService()
+        self.anomaly = anomaly or AnomalyDetectionService()
+        self.explainability = explainability or ExplainabilityService()
 
     @staticmethod
     def execute_duckdb_query(query: str) -> SQLResponse:
@@ -22,14 +59,11 @@ class AnalyticsService:
             # Dynamically register all uploaded CSV files as temporary views in DuckDB
             for dataset_id, item in UPLOADED_PATHS_CACHE.items():
                 file_path = item["path"]
-                # Use clean view names (e.g. without extension)
                 view_name = item["filename"].split(".")[0]
-                # Register views in DuckDB session context
                 conn.execute(
                     f"CREATE OR REPLACE TEMP VIEW \"{view_name}\" AS SELECT * FROM read_csv_auto('{file_path}')"
                 )
         except Exception:
-            # Graceful pass if views registration fails (e.g., non-CSV files or lock errors)
             pass
 
         try:
@@ -52,7 +86,7 @@ class AnalyticsService:
                 elapsedMs=process_time_ms,
             )
         except Exception as e:
-            # Let the query runner crash with clear message for user debugging
             raise Exception(f"SQL execution error: {str(e)}")
         finally:
             conn.close()
+
