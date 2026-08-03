@@ -1,5 +1,6 @@
 from typing import List
 import uuid
+import os
 from datetime import datetime
 from fastapi import APIRouter, Depends, UploadFile, File, Form, status, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,12 +23,28 @@ async def list_datasets(
 ) -> List[DatasetResponse]:
     """Returns all metadata registries for uploaded sheets."""
     # Scaffold default mock return list
-    return [
+    results = [
         DatasetResponse(id="1", filename="q3_financials.xlsx", type="Excel", size="2.4 MB", rows=14020, qualityScore=98, status="Active", date="2026-08-02"),
         DatasetResponse(id="2", filename="customer_churn.csv", type="CSV", size="480 KB", rows=6200, qualityScore=92, status="Active", date="2026-08-01"),
         DatasetResponse(id="3", filename="raw_clicks_logs.json", type="JSON", size="14.8 MB", rows=185000, qualityScore=88, status="Processing", date="2026-08-02"),
         DatasetResponse(id="4", filename="unstructured_invoice.pdf", type="PDF", size="1.2 MB", rows=0, qualityScore=0, status="Active", date="2026-07-29"),
     ]
+    
+    # Dynamically append uploaded datasets
+    for dataset_id, item in UPLOADED_PATHS_CACHE.items():
+        results.append(
+            DatasetResponse(
+                id=dataset_id,
+                filename=item["filename"],
+                type=item.get("type", item["filename"].split(".")[-1].upper()),
+                size=item.get("size", "0 KB"),
+                rows=item.get("rows", 0),
+                qualityScore=item.get("qualityScore", 100),
+                status=item.get("status", "Active"),
+                date=item.get("date", datetime.now().strftime("%Y-%m-%d")),
+            )
+        )
+    return results
 
 
 @router.post("/upload", response_model=DatasetResponse)
@@ -43,14 +60,20 @@ async def upload_dataset(
         file_path = DatasetService.save_uploaded_file(file.filename, content)
         dataset_id = str(uuid.uuid4())
         
+        file_size_kb = len(content) / 1024
+        size_str = f"{file_size_kb:.1f} KB" if file_size_kb < 1024 else f"{(file_size_kb/1024):.1f} MB"
+        
         # Cache path for subsequent describes
         UPLOADED_PATHS_CACHE[dataset_id] = {
             "path": file_path,
             "filename": file.filename,
+            "type": file.filename.split(".")[-1].upper(),
+            "size": size_str,
+            "rows": 0,
+            "qualityScore": 100,
+            "status": "Active",
+            "date": datetime.now().strftime("%Y-%m-%d"),
         }
-
-        file_size_kb = len(content) / 1024
-        size_str = f"{file_size_kb:.1f} KB" if file_size_kb < 1024 else f"{(file_size_kb/1024):.1f} MB"
 
         return DatasetResponse(
             id=dataset_id,

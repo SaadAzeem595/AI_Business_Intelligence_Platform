@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Antigravity BI - AI Business Intelligence Platform",
+  title: "DataPilot AI - AI Business Intelligence Platform",
   description: "Upload, analyze, visualize, and segment enterprise data using advanced AI analytics.",
 };
 

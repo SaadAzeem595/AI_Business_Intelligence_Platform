@@ -15,6 +15,7 @@ from app.features.reports.router import router as reports_router
 from app.features.settings.router import router as settings_router
 from app.features.ml.router import router as ml_router
 from app.features.rag.router import router as rag_router
+from app.features.agents.router import router as agents_router
 
 # Initialize structured logging dict config
 setup_logging()
@@ -58,4 +59,5 @@ app.include_router(reports_router, prefix=settings.API_V1_STR)
 app.include_router(settings_router, prefix=settings.API_V1_STR)
 app.include_router(ml_router, prefix=settings.API_V1_STR)
 app.include_router(rag_router, prefix=settings.API_V1_STR)
+app.include_router(agents_router, prefix=settings.API_V1_STR)
 

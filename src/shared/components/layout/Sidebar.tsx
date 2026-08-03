@@ -53,14 +53,14 @@ export function Sidebar() {
       {/* Sidebar Header */}
       <div className="flex items-center justify-between p-4 h-16 border-b border-border/80">
         {!isSidebarCollapsed ? (
-          <Link href="/dashboard" className="flex items-center gap-2 font-bold tracking-tight text-foreground select-none">
+          <Link href="/" className="flex items-center gap-2 font-bold tracking-tight text-foreground select-none">
             <div className="p-1 bg-brand-indigo rounded text-brand-indigo-foreground shrink-0">
               <Sparkles className="h-5 w-5" />
             </div>
-            <span className="text-base font-extrabold bg-gradient-to-r from-foreground to-foreground/80 bg-clip-text">Antigravity BI</span>
+            <span className="text-base font-extrabold bg-gradient-to-r from-foreground to-foreground/80 bg-clip-text">DataPilot AI</span>
           </Link>
         ) : (
-          <Link href="/dashboard" className="mx-auto p-1 bg-brand-indigo rounded text-brand-indigo-foreground shrink-0">
+          <Link href="/" className="mx-auto p-1 bg-brand-indigo rounded text-brand-indigo-foreground shrink-0">
             <Sparkles className="h-5 w-5" />
           </Link>
         )}

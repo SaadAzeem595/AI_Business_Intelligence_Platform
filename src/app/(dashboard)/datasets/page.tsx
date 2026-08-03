@@ -1,12 +1,13 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useRef } from "react";
 import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/shared/components/ui/card";
 import { Button } from "@/shared/components/ui/button";
 import { Badge } from "@/shared/components/ui/badge";
 import { BaseTable, type Column } from "@/shared/components/data-display/BaseTable";
 import { UploadCloud, File, Trash2, ArrowRight, Table } from "lucide-react";
+import { cn } from "@/shared/lib/utils";
 
 import { useDatasets } from "@/features/datasets/hooks/useDatasets";
 import { useUpload } from "@/features/datasets/hooks/useUpload";
@@ -15,12 +16,45 @@ import { Dataset } from "@/shared/types/dataset";
 export default function DatasetsPage() {
   const { datasets, isLoading, deleteDataset } = useDatasets();
   const { upload, isUploading, progress } = useUpload();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isDragActive, setIsDragActive] = useState(false);
 
-  const handleSimulatedUpload = () => {
-    // Programmatic test file to verify query pipeline
-    const file = new Blob(["dummy_content"], { type: "text/csv" }) as any;
-    file.name = "web_traffic_august.csv";
-    upload({ file, tableName: "web_traffic_august" });
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const cleanTableName = file.name
+        .replace(/\.[^/.]+$/, "")
+        .replace(/[^a-zA-Z0-9]/g, "_")
+        .toLowerCase();
+      upload({ file, tableName: cleanTableName });
+    }
+  };
+
+  const handleButtonClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragActive(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragActive(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragActive(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) {
+      const cleanTableName = file.name
+        .replace(/\.[^/.]+$/, "")
+        .replace(/[^a-zA-Z0-9]/g, "_")
+        .toLowerCase();
+      upload({ file, tableName: cleanTableName });
+    }
   };
 
   const handleDelete = (id: string, e: React.MouseEvent) => {
@@ -116,8 +150,23 @@ export default function DatasetsPage() {
       </div>
 
       {/* Drag & Drop Upload Zone */}
-      <Card className="border-dashed border-border/80 bg-card hover:bg-muted/10 transition-colors select-none">
+      <Card 
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        className={cn(
+          "border-dashed border-border/80 bg-card hover:bg-muted/10 transition-colors select-none",
+          isDragActive && "border-brand-indigo bg-brand-indigo/5"
+        )}
+      >
         <CardContent className="flex flex-col items-center justify-center p-10 space-y-4 text-center">
+          <input
+            type="file"
+            ref={fileInputRef}
+            onChange={handleFileChange}
+            accept=".csv,.xlsx,.xls,.pdf,.json"
+            className="hidden"
+          />
           <div className="p-4 bg-brand-indigo/10 rounded-full text-brand-indigo">
             <UploadCloud className="h-8 w-8 animate-pulse" />
           </div>
@@ -127,7 +176,7 @@ export default function DatasetsPage() {
               Drag your document files here, or click to browse. Files up to 50MB are supported. Unstructured PDFs are transcribed via semantic parsers.
             </p>
           </div>
-          <Button size="sm" onClick={handleSimulatedUpload} disabled={isUploading}>
+          <Button size="sm" onClick={handleButtonClick} disabled={isUploading}>
             {isUploading ? "Uploading & parsing..." : "Select File"}
           </Button>
         </CardContent>

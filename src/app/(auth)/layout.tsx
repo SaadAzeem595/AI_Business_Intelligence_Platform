@@ -13,7 +13,7 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
             <div className="p-1 bg-brand-indigo rounded text-brand-indigo-foreground shrink-0">
               <Sparkles className="h-5 w-5" />
             </div>
-            <span className="text-base font-extrabold">Antigravity BI</span>
+            <span className="text-base font-extrabold">DataPilot AI</span>
           </Link>
         </div>
         {children}

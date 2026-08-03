@@ -11,11 +11,20 @@ export default function LandingPage() {
     <div className="min-h-screen bg-background text-foreground flex flex-col font-sans select-none antialiased">
       {/* Top Navbar Header */}
       <header className="border-b border-border/80 bg-background/80 backdrop-blur-md sticky top-0 z-50 h-16 flex items-center justify-between px-6 md:px-12">
-        <Link href="/" className="flex items-center gap-2 font-bold tracking-tight">
+        <Link 
+          href="/" 
+          onClick={(e) => {
+            if (window.location.pathname === "/") {
+              e.preventDefault();
+              window.location.reload();
+            }
+          }}
+          className="flex items-center gap-2 font-bold tracking-tight"
+        >
           <div className="p-1 bg-brand-indigo rounded text-brand-indigo-foreground shrink-0">
             <Sparkles className="h-5 w-5" />
           </div>
-          <span className="text-base font-extrabold">Antigravity BI</span>
+          <span className="text-base font-extrabold">DataPilot AI</span>
         </Link>
         <nav className="hidden md:flex items-center gap-8 text-sm font-semibold text-muted-foreground">
           <a href="#features" className="hover:text-foreground transition-colors">Features</a>
@@ -269,7 +278,7 @@ export default function LandingPage() {
 
       {/* Footer */}
       <footer className="border-t border-border/80 bg-card py-12 px-6 md:px-12 text-center text-xs text-muted-foreground select-none mt-auto">
-        <p>© {new Date().getFullYear()} Antigravity BI Inc. All rights reserved. Platform architecture certified production-ready.</p>
+        <p>© {new Date().getFullYear()} DataPilot AI Inc. All rights reserved. Platform architecture certified production-ready.</p>
       </footer>
     </div>
   );
