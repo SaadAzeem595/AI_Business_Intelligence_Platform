@@ -13,6 +13,11 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:7-alpine
@@ -20,6 +25,11 @@ services:
     restart: always
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   api:
     build: .
@@ -33,9 +43,18 @@ services:
       - POSTGRES_PASSWORD=postgres
       - POSTGRES_DB=ai_bi_db
       - REDIS_HOST=redis
+      - ALLOWED_ORIGINS=*
+      - RATE_LIMIT_PER_MINUTE=100
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/live')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 3
 
   celery_worker:
     build: .
@@ -49,7 +68,23 @@ services:
       - POSTGRES_DB=ai_bi_db
       - REDIS_HOST=redis
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+
+  celery_beat:
+    build: .
+    container_name: ai_bi_beat
+    restart: always
+    command: celery -A app.worker.celery_app beat --loglevel=info
+    environment:
+      - POSTGRES_SERVER=db
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=ai_bi_db
+      - REDIS_HOST=redis
+    depends_on:
+      redis:
+        condition: service_healthy
 
 volumes:
   postgres_data:

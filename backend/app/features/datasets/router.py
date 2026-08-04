@@ -9,6 +9,7 @@ from app.core.database import get_db_session
 from app.core.dependencies import get_current_user, MockUser
 from app.features.datasets.schemas import DatasetResponse, DatasetDetailsResponse, CleanPayload
 from app.features.datasets.service import DatasetService
+from app.core.cache import cache_client
 
 router = APIRouter(prefix="/datasets", tags=["Datasets"])
 
@@ -75,6 +76,10 @@ async def upload_dataset(
             "date": datetime.now().strftime("%Y-%m-%d"),
         }
 
+        # Invalidate SQL and KPI caches
+        await cache_client.invalidate_pattern("sql_query:*")
+        await cache_client.invalidate_pattern("dashboard_kpi:*")
+
         return DatasetResponse(
             id=dataset_id,
             filename=file.filename,
@@ -124,6 +129,10 @@ async def clean_dataset(
     details.health = 100
     details.missing = 0
     details.duplicates = 0
+    
+    # Invalidate SQL and KPI caches
+    await cache_client.invalidate_pattern("sql_query:*")
+    await cache_client.invalidate_pattern("dashboard_kpi:*")
     return details
 
 
@@ -137,4 +146,8 @@ async def delete_dataset(
     cache_item = UPLOADED_PATHS_CACHE.pop(id, None)
     if cache_item and os.path.exists(cache_item["path"]):
         os.remove(cache_item["path"])
+        
+    # Invalidate SQL and KPI caches
+    await cache_client.invalidate_pattern("sql_query:*")
+    await cache_client.invalidate_pattern("dashboard_kpi:*")
     return {"status": "success"}

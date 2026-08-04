@@ -3,17 +3,44 @@ import time
 import uuid
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
+from app.core.config import settings
+from app.core.cache import cache_client
 
 logger = logging.getLogger(__name__)
 
-
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
-    """Intercepts and logs execution latency index and binds custom UUID tracing tags."""
+    """Intercepts and logs execution latency index, applies secure headers, and checks rate limits."""
 
     async def dispatch(self, request: Request, call_next) -> Response:
         request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
         request.state.request_id = request_id
         start_time = time.perf_counter()
+
+        # 1. Rate Limiting Check (bypass health/metrics probes)
+        if not any(probe in request.url.path for probe in ["/health", "/ready", "/live", "/metrics"]):
+            try:
+                # Use client IP as identifier
+                client_ip = request.client.host if request.client else "unknown"
+                rate_limit_key = f"rate_limit:{client_ip}"
+                
+                # Check current request count in window
+                current_requests = await cache_client.get(rate_limit_key)
+                limit = settings.RATE_LIMIT_PER_MINUTE
+                
+                if current_requests is None:
+                    await cache_client.set(rate_limit_key, 1, ttl=60)
+                else:
+                    count = int(current_requests)
+                    if count >= limit:
+                        logger.warning(f"Rate limit exceeded for client: {client_ip} [Path: {request.url.path}]")
+                        return Response(
+                            content='{"detail": "Too many requests. Rate limit exceeded."}',
+                            status_code=429,
+                            media_type="application/json"
+                        )
+                    await cache_client.set(rate_limit_key, count + 1, ttl=60)
+            except Exception as e:
+                logger.warning(f"Rate limiter encountered check error: {str(e)}. Proceeding (fail-open).")
 
         logger.info(
             f"Request started: {request.method} {request.url.path} [ID: {request_id}]"
@@ -22,8 +49,18 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         try:
             response = await call_next(request)
             process_time = time.perf_counter() - start_time
+            
+            # 2. Bind response headers
             response.headers["X-Request-ID"] = request_id
             response.headers["X-Process-Time"] = f"{process_time:.4f}s"
+            
+            # 3. Apply Secure Enterprise Headers
+            response.headers["X-Frame-Options"] = "DENY"
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["Content-Security-Policy"] = "frame-ancestors 'none';"
+            response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+            response.headers["X-XSS-Protection"] = "1; mode=block"
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
 
             logger.info(
                 f"Request finished: {request.method} {request.url.path} "
@@ -38,3 +75,4 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                 exc_info=True,
             )
             raise
+

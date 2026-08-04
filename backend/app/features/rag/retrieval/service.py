@@ -1,10 +1,15 @@
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional, Tuple
 import logging
+import hashlib
+import json
+import time
 
 from app.features.rag.schemas import Chunk, RetrievalResult, Citation
 from app.features.rag.embeddings.providers import BaseEmbeddingProvider
 from app.features.rag.vector_store.repository import BaseVectorRepository
+from app.core.cache import cache_client, run_async_as_sync
+from app.core.telemetry import RAG_RETRIEVAL_LATENCY
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +106,40 @@ class RetrievalService:
         enable_rerank: bool = False
     ) -> List[RetrievalResult]:
         """Runs vector/keyword/hybrid retrieval and outputs ranked results with citations."""
+        start_time = time.perf_counter()
+        
+        # Cache check
+        filter_str = json.dumps(filters, sort_keys=True) if filters else ""
+        cache_str = f"{query}:{limit}:{filter_str}:{hybrid_alpha}:{enable_rerank}"
+        cache_hash = hashlib.md5(cache_str.encode("utf-8")).hexdigest()
+        cache_key = f"rag_retrieve:{cache_hash}"
+        
+        try:
+            cached_data = run_async_as_sync(cache_client.get(cache_key))
+            if cached_data:
+                results = []
+                for item in cached_data:
+                    cit = item.get("citation", {})
+                    citation = Citation(
+                        filename=cit.get("filename"),
+                        document_type=cit.get("document_type"),
+                        page=cit.get("page"),
+                        heading=cit.get("heading"),
+                        workspace=cit.get("workspace", "default")
+                    )
+                    results.append(
+                        RetrievalResult(
+                            chunk_id=item.get("chunk_id"),
+                            doc_id=item.get("doc_id"),
+                            text=item.get("text"),
+                            score=item.get("score"),
+                            citation=citation
+                        )
+                    )
+                return results
+        except Exception:
+            pass
+
         logger.info(f"Retrieving for query: '{query}' (alpha={hybrid_alpha}, rerank={enable_rerank})")
         
         # 1. Fetch vector results if alpha > 0
@@ -155,5 +194,31 @@ class RetrievalService:
                     citation=citation
                 )
             )
+            
+        # Observe latency
+        duration = time.perf_counter() - start_time
+        workspace_lbl = filters.get("workspace", "default") if filters else "default"
+        RAG_RETRIEVAL_LATENCY.labels(workspace=workspace_lbl).observe(duration)
+        
+        # Save to cache
+        try:
+            cache_payload = []
+            for item in formatted_results:
+                cache_payload.append({
+                    "chunk_id": item.chunk_id,
+                    "doc_id": item.doc_id,
+                    "text": item.text,
+                    "score": item.score,
+                    "citation": {
+                        "filename": item.citation.filename,
+                        "document_type": item.citation.document_type,
+                        "page": item.citation.page,
+                        "heading": item.citation.heading,
+                        "workspace": item.citation.workspace
+                    }
+                })
+            run_async_as_sync(cache_client.set(cache_key, cache_payload, ttl=300))
+        except Exception:
+            pass
             
         return formatted_results

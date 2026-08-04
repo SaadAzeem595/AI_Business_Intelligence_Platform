@@ -13,6 +13,7 @@ from app.features.reports.schemas import (
     ReportScheduleResponse,
 )
 from app.features.reports.service import ReportService
+from app.core.cache import cache_client
 
 router = APIRouter(prefix="/reports", tags=["Executive Reports"])
 
@@ -28,6 +29,14 @@ async def list_reports(
     db: AsyncSession = Depends(get_db_session),
 ) -> List[ReportResponse]:
     """Retrieves list of compiled reports history, supporting query filters and searches."""
+    cache_key = f"reports:list:{workspace}:{report_type}:{author}:{delivery_status}:{search}"
+    try:
+        cached = await cache_client.get(cache_key)
+        if cached:
+            return [ReportResponse.model_validate(r) for r in cached]
+    except Exception:
+        pass
+
     reports = await ReportService.get_reports_history(
         db,
         workspace=workspace,
@@ -36,7 +45,13 @@ async def list_reports(
         delivery_status=delivery_status,
         search=search
     )
-    return [ReportResponse.model_validate(r) for r in reports]
+    res_list = [ReportResponse.model_validate(r) for r in reports]
+    try:
+        cache_data = [r.model_dump() for r in res_list]
+        await cache_client.set(cache_key, cache_data, ttl=60)
+    except Exception:
+        pass
+    return res_list
 
 
 @router.post("/generate", response_model=ReportResponse)
@@ -47,7 +62,12 @@ async def generate_report(
 ) -> ReportResponse:
     """Queues a document compiler action in background Celery workers and returns initial pending log."""
     author_email = current_user.email if hasattr(current_user, "email") else "system"
-    return await ReportService.trigger_celery_report_generation(db, payload, author=author_email)
+    res = await ReportService.trigger_celery_report_generation(db, payload, author=author_email)
+    try:
+        await cache_client.invalidate_pattern("reports:*")
+    except Exception:
+        pass
+    return res
 
 
 @router.get("/{id}", response_model=ReportResponse)
@@ -57,13 +77,26 @@ async def get_report(
     db: AsyncSession = Depends(get_db_session),
 ) -> ReportResponse:
     """Retrieves a single report log details."""
+    cache_key = f"reports:item:{id}"
+    try:
+        cached = await cache_client.get(cache_key)
+        if cached:
+            return ReportResponse.model_validate(cached)
+    except Exception:
+        pass
+
     report = await ReportService.get_report_by_id(db, id)
     if not report:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Report with ID {id} not found."
         )
-    return ReportResponse.model_validate(report)
+    res_obj = ReportResponse.model_validate(report)
+    try:
+        await cache_client.set(cache_key, res_obj.model_dump(), ttl=60)
+    except Exception:
+        pass
+    return res_obj
 
 
 @router.get("/{id}/download")
@@ -109,6 +142,11 @@ async def delete_report(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Report with ID {id} not found."
         )
+    try:
+        await cache_client.invalidate(f"reports:item:{id}")
+        await cache_client.invalidate_pattern("reports:list:*")
+    except Exception:
+        pass
     return {"status": "success", "message": f"Report {id} deleted successfully."}
 
 
@@ -121,6 +159,10 @@ async def create_schedule(
     """Registers a new periodic reporting rule schedule."""
     author_email = current_user.email if hasattr(current_user, "email") else "system"
     schedule = await ReportService.create_schedule(db, payload, author=author_email)
+    try:
+        await cache_client.invalidate_pattern("reports:*")
+    except Exception:
+        pass
     return ReportScheduleResponse.model_validate(schedule)
 
 
@@ -148,4 +190,8 @@ async def cancel_schedule(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Schedule ID {id} not found."
         )
+    try:
+        await cache_client.invalidate_pattern("reports:*")
+    except Exception:
+        pass
     return {"status": "success", "message": f"Schedule {id} cancelled successfully."}

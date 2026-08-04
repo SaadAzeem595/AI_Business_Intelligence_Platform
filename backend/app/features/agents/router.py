@@ -56,9 +56,13 @@ async def chat_with_agents(
     config = {"configurable": {"thread_id": thread_id}}
     
     try:
+        import time
+        from app.core.telemetry import LANGGRAPH_LATENCY
+        
         # Check if thread already exists and is in a paused state
         current_state = agent_graph.get_state(config)
         
+        start_time = time.perf_counter()
         # If thread has never run, run initial input query
         if not current_state or not current_state.values:
             initial_state = {
@@ -90,6 +94,9 @@ async def chat_with_agents(
             agent_graph.update_state(config, {"query": payload.message, "plan": [], "completed_steps": [], "next_agent": ""})
             agent_graph.invoke(None, config)
             
+        duration = time.perf_counter() - start_time
+        LANGGRAPH_LATENCY.labels(thread_id=thread_id).observe(duration)
+        
         # Get post-execution state
         final_state = agent_graph.get_state(config)
         return build_response_from_state(thread_id, final_state)

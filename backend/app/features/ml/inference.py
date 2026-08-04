@@ -1,9 +1,14 @@
 import pandas as pd
 import numpy as np
+import time
+import hashlib
+import json
 from typing import Dict, Any, List, Optional
 from sklearn.cluster import KMeans
 from sklearn.ensemble import IsolationForest
 
+from app.core.cache import cache_client, run_async_as_sync
+from app.core.telemetry import ML_INFERENCE_LATENCY
 from app.features.ml.registry import ModelRegistryService
 from app.features.ml.preprocessing import PreprocessingService
 
@@ -23,6 +28,27 @@ class InferenceService:
         stage: Optional[str] = None
     ) -> Dict[str, Any]:
         """Runs batch predictions for given inputs and returns prediction metadata."""
+        start_time = time.perf_counter()
+        
+        # 1. Cache Lookup
+        def default_serializer(obj):
+            if hasattr(obj, "isoformat"):
+                return obj.isoformat()
+            if hasattr(obj, "item"):
+                return obj.item()
+            raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
+
+        inputs_serialized = json.dumps(inputs, default=default_serializer, sort_keys=True)
+        inputs_hash = hashlib.md5(inputs_serialized.encode("utf-8")).hexdigest()
+        cache_key = f"ml_predict:{model_name}:{version}:{stage}:{inputs_hash}"
+        
+        try:
+            cached_res = run_async_as_sync(cache_client.get(cache_key))
+            if cached_res:
+                return cached_res
+        except Exception:
+            pass
+
         model, preprocessor = self.registry.load_model_and_preprocessor(model_name, version, stage)
         
         # Convert inputs to DataFrame
@@ -178,7 +204,17 @@ class InferenceService:
                     })
 
                 
-        return {
+        duration = time.perf_counter() - start_time
+        ML_INFERENCE_LATENCY.labels(model_name=model_name).observe(duration)
+        
+        output_res = {
             "model_name": model_name,
             "predictions": results
         }
+        
+        try:
+            run_async_as_sync(cache_client.set(cache_key, output_res, ttl=600))
+        except Exception:
+            pass
+            
+        return output_res

@@ -4,6 +4,8 @@ from app.features.ml.registry import ModelRegistryService
 from app.features.analytics.router import resolve_dataset_path
 from app.features.analytics.engine.utils import load_dataset
 import logging
+import time
+from app.core.telemetry import BACKGROUND_TASK_LATENCY
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +23,7 @@ def retrain_model_task(model_type: str, dataset_id: str, config: dict) -> dict:
         Dict containing training results, registered version, and metrics.
     """
     logger.info(f"Starting Celery background retraining task for model type '{model_type}'...")
-    
+    start_time = time.perf_counter()
     try:
         # Resolve dataset path and load dataset
         dataset_path = resolve_dataset_path(dataset_id)
@@ -71,6 +73,16 @@ def retrain_model_task(model_type: str, dataset_id: str, config: dict) -> dict:
             stage="Production"
         )
         
+        # Invalidate ML predictions cache
+        try:
+            from app.core.cache import cache_client, run_async_as_sync
+            run_async_as_sync(cache_client.invalidate_pattern(f"ml_predict:{registry_name}:*"))
+        except Exception:
+            pass
+        
+        duration = time.perf_counter() - start_time
+        BACKGROUND_TASK_LATENCY.labels(task_name="retrain_model_task").observe(duration)
+        
         return {
             "status": "success",
             "model_name": registry_name,
@@ -80,6 +92,8 @@ def retrain_model_task(model_type: str, dataset_id: str, config: dict) -> dict:
         }
         
     except Exception as err:
+        duration = time.perf_counter() - start_time
+        BACKGROUND_TASK_LATENCY.labels(task_name="retrain_model_task").observe(duration)
         logger.error(f"Retraining task failed: {str(err)}")
         return {
             "status": "failed",

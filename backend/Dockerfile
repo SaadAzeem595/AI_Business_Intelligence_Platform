@@ -25,6 +25,14 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 COPY app app
 COPY run.py run.py
 
+# Setup non-root execution user for security hardening
+RUN groupadd -g 10001 appgroup && \
+    useradd -r -u 10001 -g appgroup -d /app -s /sbin/nologin appuser && \
+    mkdir -p storage && \
+    chown -R appuser:appgroup /app
+
+USER appuser
+
 EXPOSE 8000
 
 CMD ["python", "run.py"]

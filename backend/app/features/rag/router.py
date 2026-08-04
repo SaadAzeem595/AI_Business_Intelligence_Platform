@@ -21,6 +21,7 @@ from app.features.rag.retrieval.service import RetrievalService
 from app.features.rag.retrieval.context_builder import ContextBuilder
 from app.features.rag.evaluation.service import RAGEvaluationService
 from app.features.rag.schemas import Chunk
+from app.core.cache import cache_client
 
 router = APIRouter(prefix="/rag", tags=["RAG Knowledge Layer Operations"])
 
@@ -90,6 +91,9 @@ async def ingest_document(
             
         # 5. Index chunks
         db_repo.insert_chunks(chunks_to_insert)
+        
+        # Invalidate RAG retrieve cache
+        await cache_client.invalidate_pattern("rag_retrieve:*")
         
         return {
             "status": "success",
@@ -175,6 +179,7 @@ async def delete_rag_document(
     """Deletes all indexed chunks and reference markers associated with a document ID."""
     try:
         db_repo.delete_by_document(doc_id)
+        await cache_client.invalidate_pattern("rag_retrieve:*")
         return {"status": "success", "message": f"Successfully deleted document '{doc_id}' from index."}
     except Exception as e:
         raise HTTPException(

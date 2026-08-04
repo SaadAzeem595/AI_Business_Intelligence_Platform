@@ -90,6 +90,11 @@ async def promote_model_version(
             version=payload.version,
             stage=payload.stage
         )
+        try:
+            from app.core.cache import cache_client
+            await cache_client.invalidate_pattern(f"ml_predict:{payload.model_name}:*")
+        except Exception:
+            pass
         return res
     except Exception as e:
         raise HTTPException(

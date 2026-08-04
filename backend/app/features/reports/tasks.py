@@ -7,6 +7,9 @@ from app.worker import celery_app
 from app.core.database import AsyncSessionLocal
 from app.features.reports.models import Report, ReportSchedule
 
+import time
+from app.core.telemetry import BACKGROUND_TASK_LATENCY
+
 logger = logging.getLogger(__name__)
 
 
@@ -24,14 +27,19 @@ async def run_generate_report(report_id: str, payload_dict: dict):
 def generate_report_task(report_id: str, payload_dict: dict) -> dict:
     """Asynchronously generates report PDF/PPTX deliverables and commits meta records."""
     logger.info(f"Starting Celery background report compilation for ID: {report_id}")
+    start_time = time.perf_counter()
     try:
         asyncio.run(run_generate_report(report_id, payload_dict))
+        duration = time.perf_counter() - start_time
+        BACKGROUND_TASK_LATENCY.labels(task_name="generate_report_task").observe(duration)
         return {
             "report_id": report_id,
             "status": "completed",
             "recipient": payload_dict.get("recipient"),
         }
     except Exception as e:
+        duration = time.perf_counter() - start_time
+        BACKGROUND_TASK_LATENCY.labels(task_name="generate_report_task").observe(duration)
         logger.error(f"Celery report generation failed for ID {report_id}: {str(e)}", exc_info=True)
         return {
             "report_id": report_id,

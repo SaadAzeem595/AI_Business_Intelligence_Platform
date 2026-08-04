@@ -35,6 +35,14 @@ class AgentState(TypedDict):
 
 def log_execution(state: AgentState, name: str, start_time: float, status: str = "success", details: str = None) -> List[Dict[str, Any]]:
     elapsed = (time.perf_counter() - start_time) * 1000.0
+    
+    # Record to Prometheus AGENT_LATENCY
+    try:
+        from app.core.telemetry import AGENT_LATENCY
+        AGENT_LATENCY.labels(agent_name=name).observe(elapsed / 1000.0)
+    except Exception:
+        pass
+
     log_item = {
         "agent_name": name,
         "status": status,

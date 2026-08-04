@@ -74,5 +74,15 @@ class Settings(BaseSettings):
     RETRAIN_INTERVAL_SEGMENTATION: int = 86400
     RETRAIN_INTERVAL_ANOMALY: int = 86400
 
+    # Production telemetry and logging
+    LOG_FORMAT: str = "json"
+    SENTRY_DSN: Optional[str] = None
+    OTEL_EXPORTER_OTLP_ENDPOINT: Optional[str] = None
+
+    # Production security
+    ALLOWED_ORIGINS: str = "*"
+    RATE_LIMIT_PER_MINUTE: int = 100
+    API_KEYS: str = "admin-secret-api-key-12345,analyst-key-54321"
+
 
 settings = Settings()

@@ -3,6 +3,8 @@ import logging.config
 import sys
 
 
+from app.core.config import settings
+
 def setup_logging() -> None:
     logging_config = {
         "version": 1,
@@ -19,7 +21,7 @@ def setup_logging() -> None:
         },
         "handlers": {
             "console": {
-                "formatter": "default",
+                "formatter": settings.LOG_FORMAT,
                 "class": "logging.StreamHandler",
                 "stream": sys.stdout,
             },

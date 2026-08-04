@@ -1,0 +1,28 @@
+name: Security Vulnerability Scanning
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Bandit & Safety
+        run: pip install bandit safety
+
+      - name: Run Bandit (SAST)
+        run: bandit -r backend/app -x backend/app/tests
+
+      - name: Run Safety Check (Dependency Scan)
+        run: safety check -r backend/pyproject.toml || echo "Safety checks completed (warning output only)"

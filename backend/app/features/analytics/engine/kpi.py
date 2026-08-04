@@ -28,7 +28,23 @@ class KpiEngineService:
             
         Returns:
             Dict containing computed standard and custom KPIs.
+            
         """
+        import hashlib
+        import json
+        from app.core.cache import cache_client, run_async_as_sync
+
+        custom_kpi_str = json.dumps(custom_kpis, sort_keys=True) if custom_kpis else ""
+        cache_hash = hashlib.md5(f"{dataset_ref}:{custom_kpi_str}".encode("utf-8")).hexdigest()
+        self._cache_key = f"dashboard_kpi:{cache_hash}"
+
+        try:
+            cached_res = run_async_as_sync(cache_client.get(self._cache_key))
+            if cached_res:
+                return cached_res
+        except Exception:
+            pass
+
         df = load_dataset(dataset_ref, conn)
         if len(df) == 0:
             return {
@@ -173,10 +189,17 @@ class KpiEngineService:
                 except Exception as e:
                     custom_results[name] = f"Error: {str(e)}"
                     
-        return {
+        out_dict = {
             "standard_kpis": kpis,
             "custom_kpis": custom_results
         }
+        try:
+            from app.core.cache import cache_client, run_async_as_sync
+            if hasattr(self, "_cache_key"):
+                run_async_as_sync(cache_client.set(self._cache_key, out_dict, ttl=300))
+        except Exception:
+            pass
+        return out_dict
         
     def _find_col(self, col_map: Dict[str, str], synonyms: List[str]) -> Optional[str]:
         for syn in synonyms:
