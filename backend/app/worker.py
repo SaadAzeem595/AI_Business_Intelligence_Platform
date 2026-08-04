@@ -37,7 +37,13 @@ try:
 except ImportError:
     pass
 
-# Setup Celery Beat periodic schedule for ML platform retraining
+# Import reports tasks for Celery registration
+try:
+    from app.features.reports.tasks import generate_report_task, check_scheduled_reports
+except ImportError:
+    pass
+
+# Setup Celery Beat periodic schedule
 celery_app.conf.beat_schedule = {
     "scheduled-retrain-forecast": {
         "task": "scheduled_retrain_task",
@@ -58,6 +64,10 @@ celery_app.conf.beat_schedule = {
         "task": "scheduled_retrain_task",
         "schedule": settings.RETRAIN_INTERVAL_ANOMALY,
         "args": ("anomaly",),
+    },
+    "scheduled-reports-check": {
+        "task": "check_scheduled_reports",
+        "schedule": 60.0,  # Scan schedules every minute
     },
 }
 

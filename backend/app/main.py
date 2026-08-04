@@ -44,6 +44,23 @@ app.add_middleware(RequestLoggingMiddleware)
 setup_exception_handlers(app)
 
 
+@app.on_event("startup")
+async def startup_event():
+    """Automatically create all tables in Postgres at startup for dev/testing ease."""
+    from app.core.database import async_engine
+    from app.db.base import Base
+    # Import all models to ensure they register on Base
+    try:
+        from app.features.auth.models import User
+        from app.features.datasets.models import Dataset
+        from app.features.reports.models import Report, ReportSchedule
+    except ImportError:
+        pass
+        
+    async with async_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+
 @app.get("/health", tags=["Health & Status Checks"])
 async def health_check() -> dict:
     """Core health check route inspecting databases and analytics layers connectivity."""
