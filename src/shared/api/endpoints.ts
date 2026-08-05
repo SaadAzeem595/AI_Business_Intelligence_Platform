@@ -18,8 +18,8 @@ export const API_ENDPOINTS = {
     CLEAN: (id: string) => `/datasets/${id}/clean`,
   },
   CHAT: {
-    SESSION: "/chat/session",
-    MESSAGE: "/chat/message",
+    SESSION: "/chat/sessions",
+    MESSAGE: "/agents/chat",
   },
   ANALYTICS: {
     FORECAST: "/analytics/forecast",

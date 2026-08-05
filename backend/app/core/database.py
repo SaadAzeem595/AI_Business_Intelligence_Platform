@@ -7,13 +7,33 @@ from sqlalchemy.pool import StaticPool
 
 from app.core.config import settings
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 # Dynamic check for testing mode to use in-memory SQLite database
 IS_TESTING = "pytest" in sys.modules or os.getenv("TESTING") == "1"
 
-if IS_TESTING:
-    # Use in-memory SQLite database for self-contained test executions
+def check_postgres_availability() -> bool:
+    import socket
+    try:
+        # Simple TCP connection probe with a short timeout (0.5s)
+        with socket.create_connection((settings.POSTGRES_SERVER, settings.POSTGRES_PORT), timeout=0.5):
+            return True
+    except Exception:
+        return False
+
+USE_SQLITE = IS_TESTING or not check_postgres_availability()
+
+if USE_SQLITE:
+    if not IS_TESTING:
+        logger.warning(
+            f"PostgreSQL server at {settings.POSTGRES_SERVER}:{settings.POSTGRES_PORT} is unreachable. "
+            f"Automatically falling back to local persistent SQLite database ('local_dev.db') for local development resiliency."
+        )
+    sqlite_url = "sqlite+aiosqlite:///:memory:" if IS_TESTING else "sqlite+aiosqlite:///local_dev.db"
     async_engine = create_async_engine(
-        "sqlite+aiosqlite:///:memory:",
+        sqlite_url,
         poolclass=StaticPool,
         connect_args={"check_same_thread": False},
         future=True
@@ -56,4 +76,7 @@ def get_duckdb_conn() -> Generator[duckdb.DuckDBPyConnection, None, None]:
     try:
         yield conn
     finally:
-        conn.close()
+        try:
+            conn.close()
+        except Exception:
+            pass

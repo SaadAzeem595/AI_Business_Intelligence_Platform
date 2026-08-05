@@ -33,6 +33,82 @@ def build_response_from_state(thread_id: str, graph_state: Any) -> AgentChatResp
     if next_nodes:
         status_str = "paused"
         
+    # Build Table
+    table = None
+    sql_result = state_values.get("sql_result")
+    if sql_result and isinstance(sql_result, dict) and "columns" in sql_result and "rows" in sql_result:
+        table = {
+            "columns": [{"header": col, "accessorKey": col} for col in sql_result["columns"]],
+            "data": sql_result["rows"]
+        }
+    
+    analytics_result = state_values.get("analytics_result")
+    if not table and analytics_result and isinstance(analytics_result, dict) and "columns" in analytics_result:
+        cols = analytics_result["columns"]
+        if isinstance(cols, dict):
+            table_rows = []
+            for col_name, prof in cols.items():
+                table_rows.append({
+                    "column": col_name,
+                    "type": prof.get("type", "unknown"),
+                    "missing": prof.get("missing_count", 0),
+                    "completeness": f"{prof.get('completeness', 100.0):.1f}%",
+                    "cardinality": prof.get("cardinality", 0)
+                })
+            table = {
+                "columns": [
+                    {"header": "Column Name", "accessorKey": "column"},
+                    {"header": "Data Type", "accessorKey": "type"},
+                    {"header": "Missing Count", "accessorKey": "missing"},
+                    {"header": "Completeness", "accessorKey": "completeness"},
+                    {"header": "Distinct Values", "accessorKey": "cardinality"}
+                ],
+                "data": table_rows
+            }
+
+    # Build Chart
+    chart = None
+    vis_spec = state_values.get("visualization_spec")
+    if vis_spec and isinstance(vis_spec, dict):
+        if "data" in vis_spec and "values" in vis_spec["data"]:
+            data = vis_spec["data"]["values"]
+            x_key = None
+            y_keys = []
+            if "encoding" in vis_spec:
+                encoding = vis_spec["encoding"]
+                if "x" in encoding and "field" in encoding["x"]:
+                    x_key = encoding["x"]["field"]
+                if "y" in encoding and "field" in encoding["y"]:
+                    y_keys.append(encoding["y"]["field"])
+            if not x_key and data:
+                x_key = list(data[0].keys())[0]
+            if not y_keys and data:
+                y_keys = [list(data[0].keys())[1]] if len(data[0]) > 1 else []
+            chart = {
+                "type": "bar" if vis_spec.get("mark") == "bar" else "line",
+                "data": data,
+                "xKey": x_key,
+                "yKeys": y_keys
+            }
+        elif "series" in vis_spec and "xAxis" in vis_spec:
+            # Recharts-friendly schema directly from visualizer service
+            x_key = vis_spec["xAxis"].get("label", "x")
+            y_keys = [s["name"] for s in vis_spec["series"]]
+            data = []
+            x_data = vis_spec["xAxis"].get("data", [])
+            for idx, x_val in enumerate(x_data):
+                row = {x_key: x_val}
+                for s in vis_spec["series"]:
+                    if idx < len(s["data"]):
+                        row[s["name"]] = s["data"][idx]
+                data.append(row)
+            chart = {
+                "type": vis_spec.get("chart_type", "line"),
+                "data": data,
+                "xKey": x_key,
+                "yKeys": y_keys
+            }
+
     return AgentChatResponse(
         thread_id=thread_id,
         status=status_str,
@@ -42,7 +118,9 @@ def build_response_from_state(thread_id: str, graph_state: Any) -> AgentChatResp
         visualization_spec=state_values.get("visualization_spec"),
         recommendations=state_values.get("recommendations"),
         executive_summary=state_values.get("executive_summary"),
-        sql_query=state_values.get("sql_query")
+        sql_query=state_values.get("sql_query"),
+        chart=chart,
+        table=table
     )
 
 
@@ -52,6 +130,12 @@ async def chat_with_agents(
     current_user: MockUser = Depends(get_current_user)
 ) -> AgentChatResponse:
     """Sends a query to the multi-agent planning & execution graph, preserving session memory."""
+    if not payload.message or not payload.message.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User query message cannot be empty."
+        )
+
     thread_id = payload.thread_id or str(uuid.uuid4())
     config = {"configurable": {"thread_id": thread_id}}
     
@@ -68,6 +152,9 @@ async def chat_with_agents(
             initial_state = {
                 "query": payload.message,
                 "workspace": payload.workspace or "default",
+                "dataset": payload.dataset,
+                "active_project": payload.active_project,
+                "history": payload.history or [],
                 "plan": [],
                 "completed_steps": [],
                 "next_agent": "",
@@ -91,7 +178,15 @@ async def chat_with_agents(
             if current_state.next:
                 raise ValueError("Graph execution is currently paused awaiting human SQL approval. Please approve first.")
             # Otherwise, override query to start a new loop under the same thread memory
-            agent_graph.update_state(config, {"query": payload.message, "plan": [], "completed_steps": [], "next_agent": ""})
+            agent_graph.update_state(config, {
+                "query": payload.message,
+                "dataset": payload.dataset,
+                "active_project": payload.active_project,
+                "history": payload.history or [],
+                "plan": [],
+                "completed_steps": [],
+                "next_agent": ""
+            })
             agent_graph.invoke(None, config)
             
         duration = time.perf_counter() - start_time
@@ -99,6 +194,15 @@ async def chat_with_agents(
         
         # Get post-execution state
         final_state = agent_graph.get_state(config)
+        
+        # Reject invalid requests or errors captured in response
+        response_content = final_state.values.get("final_response") if final_state else None
+        if response_content and response_content.startswith("I couldn't analyze the requested dataset because"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=response_content
+            )
+            
         return build_response_from_state(thread_id, final_state)
         
     except Exception as e:

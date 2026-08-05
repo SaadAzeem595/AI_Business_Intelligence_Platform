@@ -42,8 +42,21 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             except Exception as e:
                 logger.warning(f"Rate limiter encountered check error: {str(e)}. Proceeding (fail-open).")
 
+        # Read and restore request body to log payload details without hanging ASGI downstream
+        body_str = ""
+        if request.method in ["POST", "PUT", "PATCH"]:
+            try:
+                body = await request.body()
+                async def receive():
+                    return {"type": "http.request", "body": body, "more_body": False}
+                request._receive = receive
+                body_str = body.decode("utf-8", errors="ignore")
+            except Exception as e:
+                body_str = f"<Could not read body: {str(e)}>"
+
+        log_payload = f"\nRequest Payload: {body_str[:1500]}" if body_str else ""
         logger.info(
-            f"Request started: {request.method} {request.url.path} [ID: {request_id}]"
+            f"Request started: {request.method} {request.url.path} [ID: {request_id}]{log_payload}"
         )
 
         try:

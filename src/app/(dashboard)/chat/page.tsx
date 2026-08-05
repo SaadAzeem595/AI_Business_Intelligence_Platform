@@ -10,6 +10,8 @@ import { BaseTable, type Column } from "@/shared/components/data-display/BaseTab
 import { Sparkles, Send, RefreshCw, Copy, FileOutput, MessageSquarePlus, Trash2 } from "lucide-react";
 import { cn } from "@/shared/lib/utils";
 import { useChat } from "@/features/chat/hooks/useChat";
+import { useUIStore } from "@/shared/services/uiStore";
+import { useDatasets } from "@/features/datasets/hooks/useDatasets";
 
 interface Message {
   role: "user" | "assistant";
@@ -30,6 +32,12 @@ export default function AIChatPage() {
   const searchParams = useSearchParams();
   const initialPrompt = searchParams.get("prompt");
   
+  const { activeOrg, activeProject } = useUIStore();
+  const { datasets } = useDatasets();
+  const [selectedDatasetId, setSelectedDatasetId] = useState("");
+  const [selectedDataset, setSelectedDataset] = useState("");
+  const [sessionId, setSessionId] = useState<string | undefined>(undefined);
+
   const [messages, setMessages] = useState<Message[]>([
     {
       role: "assistant",
@@ -63,7 +71,19 @@ export default function AIChatPage() {
     setIsTyping(true);
 
     try {
-      const response = await sendMessage({ message: text });
+      const response = await sendMessage({
+        message: text,
+        sessionId: sessionId,
+        workspace: activeOrg,
+        dataset: selectedDataset || undefined,
+        activeProject: activeProject,
+        history: messages.map(m => ({ role: m.role as "user" | "assistant", content: m.content })),
+      });
+      
+      if (response.sessionId) {
+        setSessionId(response.sessionId);
+      }
+
       setMessages((prev) => [
         ...prev,
         {
@@ -87,6 +107,7 @@ export default function AIChatPage() {
   };
 
   const handleClearChat = () => {
+    setSessionId(undefined);
     setMessages([
       {
         role: "assistant",
@@ -103,6 +124,25 @@ export default function AIChatPage() {
           <Sparkles className="h-4 w-4 text-brand-indigo" /> AI Chat Session
         </span>
         <div className="flex items-center gap-1.5">
+          {/* Active Dataset Selector Dropdown */}
+          <select
+            value={selectedDatasetId}
+            onChange={(e) => {
+              const val = e.target.value;
+              setSelectedDatasetId(val);
+              const matched = datasets.find((d: any) => d.id === val);
+              setSelectedDataset(matched ? matched.filename : "");
+            }}
+            className="text-xs border border-border/80 rounded bg-card text-foreground px-2 py-1 outline-none cursor-pointer hover:border-brand-indigo/40 mr-2"
+          >
+            <option value="">Auto-detect Dataset</option>
+            {datasets.map((d: any) => (
+              <option key={d.id} value={d.id}>
+                {d.filename}
+              </option>
+            ))}
+          </select>
+
           <Button size="icon" variant="ghost" className="h-8 w-8 hover:bg-muted text-muted-foreground hover:text-foreground" onClick={handleClearChat} title="Clear conversation">
             <Trash2 className="h-4 w-4" />
           </Button>

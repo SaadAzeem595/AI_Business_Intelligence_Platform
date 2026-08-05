@@ -5,12 +5,31 @@ import { SessionInfo, User } from "@/shared/types/auth";
 
 export const AuthService = {
   async login(data: LoginInput): Promise<SessionInfo> {
-    const response = await apiClient.post<SessionInfo>(API_ENDPOINTS.AUTH.LOGIN, data);
+    const params = new URLSearchParams();
+    params.append("username", data.email);
+    params.append("password", data.password);
+
+    const response = await apiClient.post<SessionInfo>(API_ENDPOINTS.AUTH.LOGIN, params, {
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+    });
     return response.data;
   },
 
   async register(data: SignupInput): Promise<SessionInfo> {
-    const response = await apiClient.post<SessionInfo>(API_ENDPOINTS.AUTH.REGISTER, data);
+    const params = new URLSearchParams();
+    params.append("email", data.email);
+    params.append("password", data.password);
+    if (data.name) {
+      params.append("name", data.name);
+    }
+
+    const response = await apiClient.post<SessionInfo>(API_ENDPOINTS.AUTH.REGISTER, params, {
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+    });
     return response.data;
   },
 

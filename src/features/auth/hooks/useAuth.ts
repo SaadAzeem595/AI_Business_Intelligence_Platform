@@ -20,6 +20,9 @@ export function useAuth() {
     mutationFn: (data: LoginInput) => AuthService.login(data),
     onSuccess: (session) => {
       localStorage.setItem("accessToken", session.accessToken);
+      if (session.refreshToken) {
+        localStorage.setItem("refreshToken", session.refreshToken);
+      }
       queryClient.setQueryData(["auth", "me"], session.user);
       router.push("/dashboard");
     },
@@ -29,6 +32,9 @@ export function useAuth() {
     mutationFn: (data: SignupInput) => AuthService.register(data),
     onSuccess: (session) => {
       localStorage.setItem("accessToken", session.accessToken);
+      if (session.refreshToken) {
+        localStorage.setItem("refreshToken", session.refreshToken);
+      }
       queryClient.setQueryData(["auth", "me"], session.user);
       router.push("/dashboard");
     },
@@ -38,6 +44,7 @@ export function useAuth() {
     mutationFn: AuthService.logout,
     onSuccess: () => {
       localStorage.removeItem("accessToken");
+      localStorage.removeItem("refreshToken");
       queryClient.setQueryData(["auth", "me"], null);
       queryClient.clear();
       router.push("/login");

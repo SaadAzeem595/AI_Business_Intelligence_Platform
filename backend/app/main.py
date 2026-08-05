@@ -43,10 +43,25 @@ app = FastAPI(
 )
 
 # Setup CORS policies middleware for Next.js queries
-origins = [o.strip() for o in settings.ALLOWED_ORIGINS.split(",") if o.strip()] if settings.ALLOWED_ORIGINS else ["*"]
+raw_origins = [o.strip() for o in settings.ALLOWED_ORIGINS.split(",") if o.strip()] if settings.ALLOWED_ORIGINS else []
+origins = [o for o in raw_origins if o != "*"]
+
+# If "*" is in ALLOWED_ORIGINS or no origins are found, set explicit local development origins
+# to support allow_credentials=True since wildcards are disallowed when sending credentials.
+if "*" in raw_origins or not origins:
+    origins = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3001",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+    ]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -72,8 +87,11 @@ FastAPIInstrumentor.instrument_app(app)
 
 @app.on_event("startup")
 async def startup_event():
-    """Automatically create all tables in Postgres at startup for dev/testing ease."""
-    from app.core.database import async_engine
+    """Automatically create all tables in Postgres/SQLite at startup for dev/testing ease."""
+    import logging
+    startup_logger = logging.getLogger(__name__)
+    
+    from app.core.database import async_engine, USE_SQLITE
     from app.db.base import Base
     # Import all models to ensure they register on Base
     try:
@@ -85,6 +103,14 @@ async def startup_event():
         
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    startup_logger.info("=" * 80)
+    startup_logger.info("AI Business Intelligence Platform FastAPI backend started successfully!")
+    startup_logger.info(f"Database engine in use: {'SQLite (resilient dev fallback)' if USE_SQLITE else 'PostgreSQL'}")
+    startup_logger.info(f"Local API gateway prefix: http://localhost:8000{settings.API_V1_STR}")
+    startup_logger.info("API Server listening on host: 0.0.0.0, port: 8000")
+    startup_logger.info("Interactive OpenAPI Swagger Documentation: http://localhost:8000/docs")
+    startup_logger.info("=" * 80)
 
 
 @app.get("/health", tags=["Health & Status Checks"])

@@ -49,8 +49,7 @@ async def login(
         "message": f"User {username} logged in successfully."
     }))
     
-    token_resp = Token(accessToken=access_token, user=user_data)
-    # Add a custom attribute or store refresh token if needed, or return in Token schema if extended
+    token_resp = Token(accessToken=access_token, refreshToken=refresh_token, user=user_data)
     return token_resp
 
 
@@ -66,6 +65,7 @@ async def register(
         role = "Admin"
         
     access_token = AuthService.create_access_token(subject=email, role=role)
+    refresh_token = AuthService.create_refresh_token(subject=email, role=role)
     
     user_data = UserResponse(
         id=f"user-{email.split('@')[0]}",
@@ -83,7 +83,7 @@ async def register(
         "message": f"User {email} registered successfully."
     }))
     
-    return Token(accessToken=access_token, user=user_data)
+    return Token(accessToken=access_token, refreshToken=refresh_token, user=user_data)
 
 
 @router.post("/refresh", response_model=Token)
@@ -104,6 +104,7 @@ async def refresh(
             )
             
         access_token = AuthService.create_access_token(subject=username, role=role)
+        new_refresh_token = AuthService.create_refresh_token(subject=username, role=role)
         user_data = UserResponse(
             id=f"user-{username.split('@')[0]}",
             email=username,
@@ -119,7 +120,7 @@ async def refresh(
             "message": "Token refreshed successfully."
         }))
         
-        return Token(accessToken=access_token, user=user_data)
+        return Token(accessToken=access_token, refreshToken=new_refresh_token, user=user_data)
     except JWTError as e:
         logger.warning(json.dumps({
             "event_type": "token_refresh_failed",

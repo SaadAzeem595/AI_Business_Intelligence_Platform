@@ -12,6 +12,9 @@ class AgentChatPayload(BaseModel):
     message: str
     thread_id: Optional[str] = None
     workspace: Optional[str] = "default"
+    dataset: Optional[str] = None
+    active_project: Optional[str] = None
+    history: Optional[List[Dict[str, Any]]] = None
 
 class ApproveQueryPayload(BaseModel):
     thread_id: str
@@ -27,3 +30,5 @@ class AgentChatResponse(BaseModel):
     recommendations: Optional[List[Dict[str, Any]]] = None
     executive_summary: Optional[Dict[str, Any]] = None
     sql_query: Optional[str] = None
+    chart: Optional[Dict[str, Any]] = None
+    table: Optional[Dict[str, Any]] = None

@@ -18,6 +18,70 @@ from app.features.analytics.engine.anomaly import AnomalyDetectionService
 from app.features.analytics.engine.explainability import ExplainabilityService
 
 
+def register_all_datasets_in_duckdb(conn: duckdb.DuckDBPyConnection):
+    """
+    Registers all uploaded and sample datasets as views in DuckDB.
+    """
+    import os
+    import logging
+    from app.features.datasets.router import UPLOADED_PATHS_CACHE
+    
+    logger = logging.getLogger(__name__)
+    root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
+
+    # Register uploaded files
+    for d_id, item in UPLOADED_PATHS_CACHE.items():
+        file_path = item["path"]
+        view_name = os.path.splitext(item["filename"])[0].lower().replace(" ", "_").replace("-", "_").replace(".", "_")
+        try:
+            if file_path.endswith('.csv'):
+                conn.execute(f"CREATE OR REPLACE TEMP VIEW \"{view_name}\" AS SELECT * FROM read_csv_auto('{file_path}')")
+            elif file_path.endswith(('.xlsx', '.xls')):
+                import pandas as pd
+                df = pd.read_excel(file_path)
+                conn.register(view_name, df)
+            elif file_path.endswith('.json'):
+                import pandas as pd
+                df = pd.read_json(file_path)
+                conn.register(view_name, df)
+            elif file_path.endswith('.parquet'):
+                conn.execute(f"CREATE OR REPLACE TEMP VIEW \"{view_name}\" AS SELECT * FROM read_parquet('{file_path}')")
+        except Exception as e:
+            logger.warning(f"Failed to register uploaded view {view_name} in DuckDB: {str(e)}")
+
+    # Register sample files
+    sample_dir = os.path.join(root_dir, "sample_data")
+    if os.path.exists(sample_dir):
+        for f in os.listdir(sample_dir):
+            if f.endswith(('.csv', '.xlsx', '.xls', '.json', '.parquet')):
+                file_path = os.path.join(sample_dir, f)
+                base_name = os.path.splitext(f)[0].lower()
+                try:
+                    if f.endswith('.csv'):
+                        conn.execute(f"CREATE OR REPLACE TEMP VIEW \"{base_name}\" AS SELECT * FROM read_csv_auto('{file_path}')")
+                        # Also register short name (e.g. customer_churn instead of customer_churn_data)
+                        short_name = base_name.replace("_data", "")
+                        conn.execute(f"CREATE OR REPLACE TEMP VIEW \"{short_name}\" AS SELECT * FROM read_csv_auto('{file_path}')")
+                    elif f.endswith(('.xlsx', '.xls')):
+                        import pandas as pd
+                        df = pd.read_excel(file_path)
+                        conn.register(base_name, df)
+                        short_name = base_name.replace("_data", "")
+                        conn.register(short_name, df)
+                    elif f.endswith('.json'):
+                        import pandas as pd
+                        df = pd.read_json(file_path)
+                        conn.register(base_name, df)
+                        short_name = base_name.replace("_data", "")
+                        conn.register(short_name, df)
+                    elif f.endswith('.parquet'):
+                        conn.execute(f"CREATE OR REPLACE TEMP VIEW \"{base_name}\" AS SELECT * FROM read_parquet('{file_path}')")
+                        short_name = base_name.replace("_data", "")
+                        conn.execute(f"CREATE OR REPLACE TEMP VIEW \"{short_name}\" AS SELECT * FROM read_parquet('{file_path}')")
+                except Exception as e:
+                    logger.warning(f"Failed to register sample view {base_name} in DuckDB: {str(e)}")
+
+
 class AnalyticsService:
     """Orchestrates machine learning calculations, forecasting projections, and executing DuckDB SQL queries."""
 
@@ -70,17 +134,13 @@ class AnalyticsService:
         except Exception as e:
             pass
 
-        conn = next(get_duckdb_conn())
+        gen = get_duckdb_conn()
+        conn = next(gen)
         start_time = time.perf_counter()
 
         try:
-            # Dynamically register all uploaded CSV files as temporary views in DuckDB
-            for dataset_id, item in UPLOADED_PATHS_CACHE.items():
-                file_path = item["path"]
-                view_name = item["filename"].split(".")[0]
-                conn.execute(
-                    f"CREATE OR REPLACE TEMP VIEW \"{view_name}\" AS SELECT * FROM read_csv_auto('{file_path}')"
-                )
+            # Dynamically register all uploaded and sample files as temporary views in DuckDB
+            register_all_datasets_in_duckdb(conn)
         except Exception:
             pass
 
@@ -119,6 +179,9 @@ class AnalyticsService:
         except Exception as e:
             raise Exception(f"SQL execution error: {str(e)}")
         finally:
-            conn.close()
+            try:
+                gen.close()
+            except Exception:
+                pass
 
 

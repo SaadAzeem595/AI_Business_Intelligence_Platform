@@ -32,3 +32,4 @@ class Token(BaseModel):
     accessToken: str
     tokenType: str = "bearer"
     user: UserResponse
+    refreshToken: Optional[str] = None
