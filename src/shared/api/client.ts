@@ -130,6 +130,15 @@ apiClient.interceptors.response.use(
 
       originalRequest._retry = true;
 
+      const refreshToken = getRefreshToken();
+      if (!refreshToken) {
+        removeTokens();
+        if (typeof window !== "undefined") {
+          window.location.href = "/login";
+        }
+        return Promise.reject(error);
+      }
+
       if (isRefreshing) {
         return new Promise((resolve, reject) => {
           failedQueue.push({ resolve, reject });
@@ -144,9 +153,8 @@ apiClient.interceptors.response.use(
       isRefreshing = true;
 
       try {
-        const refreshToken = getRefreshToken();
         const params = new URLSearchParams();
-        params.append("refreshToken", refreshToken || "");
+        params.append("refreshToken", refreshToken);
 
         // Make refresh post request as form URL-encoded payload
         const response = await apiClient.post<{ accessToken: string; refreshToken?: string }>(
