@@ -75,7 +75,10 @@ export default function AIChatPage() {
         message: text,
         sessionId: sessionId,
         workspace: activeOrg,
+        workspaceId: activeOrg,
         dataset: selectedDataset || undefined,
+        datasetId: selectedDatasetId || undefined,
+        selectedDatasetIds: selectedDatasetId ? [selectedDatasetId] : [],
         activeProject: activeProject,
         history: messages.map(m => ({ role: m.role as "user" | "assistant", content: m.content })),
       });

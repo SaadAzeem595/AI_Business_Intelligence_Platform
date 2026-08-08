@@ -4,8 +4,12 @@ import { API_ENDPOINTS } from "@/shared/api/endpoints";
 export interface ChatMessagePayload {
   message: string;
   sessionId?: string;
+  conversationId?: string;
   workspace?: string;
+  workspaceId?: string;
   dataset?: string;
+  datasetId?: string;
+  selectedDatasetIds?: string[];
   activeProject?: string;
   history?: { role: "user" | "assistant"; content: string }[];
 }
@@ -32,9 +36,13 @@ export const ChatService = {
     try {
       const payload = {
         message: data.message,
-        thread_id: data.sessionId,
+        thread_id: data.sessionId || data.conversationId,
+        conversation_id: data.conversationId || data.sessionId,
         workspace: data.workspace,
+        workspace_id: data.workspaceId || data.workspace,
         dataset: data.dataset,
+        dataset_id: data.datasetId || data.dataset,
+        selected_dataset_ids: data.selectedDatasetIds,
         active_project: data.activeProject,
         history: data.history,
       };

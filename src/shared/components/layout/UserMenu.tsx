@@ -3,10 +3,12 @@
 import React, { useState, useRef, useEffect } from "react";
 import Link from "next/link";
 import { User, CreditCard, Settings, LogOut, ChevronDown } from "lucide-react";
+import { useAuth } from "@/features/auth/hooks/useAuth";
 
 export function UserMenu() {
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const { user } = useAuth();
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -18,6 +20,19 @@ export function UserMenu() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  const displayName = user?.name || "Saad A.";
+  const displayEmail = user?.email || "saad@example.com";
+
+  const getInitials = (name: string) => {
+    if (!name) return "SA";
+    const parts = name.trim().split(/\s+/);
+    if (parts.length >= 2) {
+      return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+    }
+    return name.slice(0, 2).toUpperCase();
+  };
+  const initials = getInitials(displayName);
+
   return (
     <div className="relative" ref={dropdownRef}>
       <button
@@ -25,17 +40,17 @@ export function UserMenu() {
         className="flex items-center gap-2 p-1.5 rounded-full hover:bg-muted text-muted-foreground transition-all cursor-pointer active:scale-95"
       >
         <div className="h-7 w-7 rounded-full bg-brand-indigo flex items-center justify-center text-brand-indigo-foreground text-xs font-semibold select-none shadow-sm">
-          SA
+          {initials}
         </div>
-        <span className="hidden sm:inline text-xs font-medium text-foreground/80">Saad A.</span>
+        <span className="hidden sm:inline text-xs font-medium text-foreground/80">{displayName}</span>
         <ChevronDown className="hidden sm:inline h-3 w-3 opacity-60" />
       </button>
 
       {isOpen && (
         <div className="absolute right-0 mt-2 w-56 rounded-lg border border-border bg-popover p-1 shadow-md text-popover-foreground animate-fade-in z-50">
           <div className="px-3 py-2 border-b border-border/40 select-none">
-            <p className="text-sm font-semibold truncate text-foreground">Saad Alvi</p>
-            <p className="text-[11px] text-muted-foreground truncate">saad@example.com</p>
+            <p className="text-sm font-semibold truncate text-foreground">{displayName}</p>
+            <p className="text-[11px] text-muted-foreground truncate">{displayEmail}</p>
           </div>
           <div className="py-1">
             <Link

@@ -19,4 +19,5 @@ export interface SessionInfo {
   user: User;
   workspace: Workspace;
   accessToken: string;
+  refreshToken?: string;
 }

@@ -74,9 +74,26 @@ class ReportService:
             config = {"configurable": {"thread_id": thread_id}}
             query = f"Provide a complete {payload.template} report audit for {payload.workspace} workspace, listing stats, ML churn data, and risks."
             
+            from app.features.datasets.repository import dataset_repo
+            db_items = await dataset_repo.get_multi(db, limit=1000)
+            available_datasets = [
+                {
+                    "id": str(item.id),
+                    "filename": item.filename,
+                    "display_name": item.display_name,
+                    "storage_path": item.storage_path,
+                    "duckdb_table": item.duckdb_table,
+                    "type": item.type
+                }
+                for item in db_items
+            ]
+            
             initial_state = {
                 "query": query,
                 "workspace": payload.workspace,
+                "dataset": None,
+                "selected_dataset_ids": None,
+                "available_datasets": available_datasets,
                 "plan": [],
                 "completed_steps": [],
                 "next_agent": "",

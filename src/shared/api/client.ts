@@ -1,6 +1,22 @@
 import axios from "axios";
 import { API_ENDPOINTS } from "./endpoints";
 
+// Defensive check to prevent enabling dev auth bypass in production
+const isProductionEnv =
+  process.env.NODE_ENV === "production" ||
+  process.env.ENVIRONMENT === "production" ||
+  process.env.APP_ENV === "production";
+
+if (isProductionEnv && process.env.NEXT_PUBLIC_DEV_AUTH_BYPASS === "true") {
+  throw new Error(
+    "CRITICAL CONFIGURATION ERROR: NEXT_PUBLIC_DEV_AUTH_BYPASS cannot be enabled in a production environment!"
+  );
+}
+
+const isDevAuthBypass =
+  process.env.NEXT_PUBLIC_DEV_AUTH_BYPASS === "true" && !isProductionEnv;
+
+
 const getBaseURL = () => {
   const url = process.env.NEXT_PUBLIC_API_URL;
   if (!url) {
@@ -122,7 +138,7 @@ apiClient.interceptors.response.use(
     if (error.response?.status === 401 && !originalRequest._retry) {
       if (originalRequest.url === API_ENDPOINTS.AUTH.REFRESH) {
         removeTokens();
-        if (typeof window !== "undefined") {
+        if (typeof window !== "undefined" && !isDevAuthBypass) {
           window.location.href = "/login";
         }
         return Promise.reject(error);
@@ -133,7 +149,7 @@ apiClient.interceptors.response.use(
       const refreshToken = getRefreshToken();
       if (!refreshToken) {
         removeTokens();
-        if (typeof window !== "undefined") {
+        if (typeof window !== "undefined" && !isDevAuthBypass) {
           window.location.href = "/login";
         }
         return Promise.reject(error);
@@ -183,7 +199,7 @@ apiClient.interceptors.response.use(
         processQueue(refreshError, null);
         isRefreshing = false;
         removeTokens();
-        if (typeof window !== "undefined") {
+        if (typeof window !== "undefined" && !isDevAuthBypass) {
           window.location.href = "/login";
         }
         return Promise.reject(refreshError);

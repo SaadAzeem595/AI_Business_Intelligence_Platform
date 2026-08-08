@@ -17,27 +17,7 @@ from app.features.reports.pptx_generator import PowerPointReportGenerator
 from app.features.reports.tasks import check_scheduled_reports, generate_report_task, run_check_scheduled_reports
 
 
-@pytest.fixture(autouse=True, scope="module")
-def setup_test_db():
-    import asyncio
-    from app.core.database import async_engine
-    from app.db.base import Base
-    # Import all models to register them
-    from app.features.auth.models import User
-    from app.features.datasets.models import Dataset
-    from app.features.reports.models import Report, ReportSchedule
-    
-    async def create_tables():
-        async with async_engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-            
-    async def drop_tables():
-        async with async_engine.begin() as conn:
-            await conn.run_sync(Base.metadata.drop_all)
-            
-    asyncio.run(create_tables())
-    yield
-    asyncio.run(drop_tables())
+
 
 
 @pytest.fixture(scope="module")

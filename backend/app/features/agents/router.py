@@ -2,7 +2,9 @@ import uuid
 import logging
 from typing import Dict, Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import get_db_session
 from app.core.dependencies import get_current_user, MockUser
 from app.features.agents.schemas import AgentChatPayload, ApproveQueryPayload, AgentChatResponse, ExecutionLogItem
 from app.features.agents.graph import agent_graph
@@ -127,7 +129,8 @@ def build_response_from_state(thread_id: str, graph_state: Any) -> AgentChatResp
 @router.post("/chat", response_model=AgentChatResponse)
 async def chat_with_agents(
     payload: AgentChatPayload,
-    current_user: MockUser = Depends(get_current_user)
+    current_user: MockUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session)
 ) -> AgentChatResponse:
     """Sends a query to the multi-agent planning & execution graph, preserving session memory."""
     if not payload.message or not payload.message.strip():
@@ -136,12 +139,27 @@ async def chat_with_agents(
             detail="User query message cannot be empty."
         )
 
-    thread_id = payload.thread_id or str(uuid.uuid4())
+    thread_id = payload.thread_id or payload.conversation_id or str(uuid.uuid4())
     config = {"configurable": {"thread_id": thread_id}}
     
     try:
         import time
         from app.core.telemetry import LANGGRAPH_LATENCY
+        from app.features.datasets.repository import dataset_repo
+        
+        # Load all datasets asynchronously (thread-safe, loop-safe)
+        db_items = await dataset_repo.get_multi(db, limit=1000)
+        available_datasets = [
+            {
+                "id": str(item.id),
+                "filename": item.filename,
+                "display_name": item.display_name,
+                "storage_path": item.storage_path,
+                "duckdb_table": item.duckdb_table,
+                "type": item.type
+            }
+            for item in db_items
+        ]
         
         # Check if thread already exists and is in a paused state
         current_state = agent_graph.get_state(config)
@@ -151,8 +169,10 @@ async def chat_with_agents(
         if not current_state or not current_state.values:
             initial_state = {
                 "query": payload.message,
-                "workspace": payload.workspace or "default",
-                "dataset": payload.dataset,
+                "workspace": payload.workspace_id or payload.workspace or "default",
+                "dataset": payload.dataset_id or payload.dataset,
+                "selected_dataset_ids": payload.selected_dataset_ids,
+                "available_datasets": available_datasets,
                 "active_project": payload.active_project,
                 "history": payload.history or [],
                 "plan": [],
@@ -180,7 +200,9 @@ async def chat_with_agents(
             # Otherwise, override query to start a new loop under the same thread memory
             agent_graph.update_state(config, {
                 "query": payload.message,
-                "dataset": payload.dataset,
+                "dataset": payload.dataset_id or payload.dataset,
+                "selected_dataset_ids": payload.selected_dataset_ids,
+                "available_datasets": available_datasets,
                 "active_project": payload.active_project,
                 "history": payload.history or [],
                 "plan": [],

@@ -17,6 +17,8 @@ class AgentState(TypedDict):
     query: str
     workspace: str
     dataset: Optional[str]
+    selected_dataset_ids: Optional[List[str]]
+    available_datasets: Optional[List[Dict[str, Any]]]
     active_project: Optional[str]
     history: Optional[List[Dict[str, Any]]]
     plan: List[str]
@@ -80,25 +82,69 @@ def get_available_dataset_names() -> List[str]:
     return list(set(names))
 
 
-def resolve_dataset(query: str, selected_dataset_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def resolve_dataset(query: str, selected_dataset_id: Optional[str] = None, available_datasets: Optional[List[Dict[str, Any]]] = None) -> Optional[Dict[str, Any]]:
     """
     Fuzzy resolves a dataset from the user query or selection.
     Returns metadata dict: {'id', 'path', 'filename', 'view_name', 'type'}
     """
     from app.features.datasets.router import UPLOADED_PATHS_CACHE
+    from app.core.database import AsyncSessionLocal
+    from app.features.datasets.repository import dataset_repo
+    from app.core.cache import run_async_as_sync
     
     available = {}
-    
-    # 1. Add uploaded datasets
+
+    if available_datasets is not None:
+        db_items = available_datasets
+    else:
+        async def fetch_all_datasets_async():
+            async with AsyncSessionLocal() as db:
+                return await dataset_repo.get_multi(db, limit=1000)
+
+        try:
+            db_items = run_async_as_sync(fetch_all_datasets_async())
+        except Exception as e:
+            logger.error(f"Failed to fetch datasets from DB for resolution: {e}")
+            db_items = []
+
+    # 1. Add uploaded datasets from DB
+    for item in db_items:
+        is_dict = isinstance(item, dict)
+        filename = item["filename"] if is_dict else item.filename
+        item_id = item["id"] if is_dict else item.id
+        item_storage_path = item["storage_path"] if is_dict else item.storage_path
+        item_duckdb_table = item["duckdb_table"] if is_dict else item.duckdb_table
+        item_type = item["type"] if is_dict else item.type
+        item_display_name = item["display_name"] if is_dict else item.display_name
+
+        norm_name = filename.lower()
+        base_name = os.path.splitext(filename)[0].lower()
+        view_name = item_duckdb_table or base_name.replace(" ", "_").replace("-", "_").replace(".", "_")
+        details = {
+            "id": item_id,
+            "path": item_storage_path,
+            "filename": filename,
+            "view_name": view_name,
+            "type": item_type
+        }
+        available[norm_name] = details
+        available[base_name] = details
+        available[item_id.lower()] = details
+        if item_display_name:
+            available[item_display_name.lower()] = details
+
+    # Fallback to UPLOADED_PATHS_CACHE
     for d_id, item in UPLOADED_PATHS_CACHE.items():
         filename = item["filename"]
         norm_name = filename.lower()
         base_name = os.path.splitext(filename)[0].lower()
+        if norm_name in available:
+            continue
         details = {
             "id": d_id,
             "path": item["path"],
             "filename": filename,
-            "view_name": base_name.replace(" ", "_").replace("-", "_").replace(".", "_"),
+            "view_name": item.get("duckdb_table") or base_name.replace(" ", "_").replace("-", "_").replace(".", "_"),
             "type": item.get("type", filename.split(".")[-1].upper())
         }
         available[norm_name] = details
@@ -320,7 +366,7 @@ def planner_agent(state: AgentState) -> Dict[str, Any]:
     query_lower = query.lower()
     
     # Fuzzy resolve active dataset
-    resolved = resolve_dataset(query, selected_dataset)
+    resolved = resolve_dataset(query, selected_dataset, available_datasets=state.get("available_datasets"))
     
     # Check if a dataset was explicitly requested (e.g. olist_orders_dataset.csv) but couldn't be resolved
     requested_dataset = extract_requested_dataset_name(query)
@@ -339,7 +385,7 @@ def planner_agent(state: AgentState) -> Dict[str, Any]:
     # If no dataset resolved and not an explicit missing dataset request, use a default fallback
     if not resolved:
         fallback_name = "sales_data.csv" if ("sales" in query_lower or "revenue" in query_lower or "financial" in query_lower) else "customer_churn_data.csv"
-        resolved = resolve_dataset(fallback_name)
+        resolved = resolve_dataset(fallback_name, available_datasets=state.get("available_datasets"))
 
     plan = []
     
@@ -426,11 +472,11 @@ def router_agent(state: AgentState) -> Dict[str, Any]:
 def sql_agent(state: AgentState) -> Dict[str, Any]:
     start_time = time.perf_counter()
     query = state.get("query", "")
-    resolved = resolve_dataset(query, state.get("dataset"))
+    resolved = resolve_dataset(query, state.get("dataset"), available_datasets=state.get("available_datasets"))
     
     if not resolved:
         fallback_name = "sales_data.csv" if ("sales" in query.lower() or "revenue" in query.lower()) else "customer_churn_data.csv"
-        resolved = resolve_dataset(fallback_name)
+        resolved = resolve_dataset(fallback_name, available_datasets=state.get("available_datasets"))
         
     if not resolved:
         err = "No resolved dataset found for SQL execution."
@@ -491,11 +537,11 @@ def sql_agent(state: AgentState) -> Dict[str, Any]:
 def analytics_agent(state: AgentState) -> Dict[str, Any]:
     start_time = time.perf_counter()
     query = state.get("query", "")
-    resolved = resolve_dataset(query, state.get("dataset"))
+    resolved = resolve_dataset(query, state.get("dataset"), available_datasets=state.get("available_datasets"))
     
     if not resolved:
         fallback_name = "sales_data.csv" if ("sales" in query.lower() or "revenue" in query.lower()) else "customer_churn_data.csv"
-        resolved = resolve_dataset(fallback_name)
+        resolved = resolve_dataset(fallback_name, available_datasets=state.get("available_datasets"))
         
     if not resolved:
         err = "No active dataset found for analytics profiling."
@@ -555,11 +601,11 @@ def analytics_agent(state: AgentState) -> Dict[str, Any]:
 def ml_agent(state: AgentState) -> Dict[str, Any]:
     start_time = time.perf_counter()
     query = state.get("query", "")
-    resolved = resolve_dataset(query, state.get("dataset"))
+    resolved = resolve_dataset(query, state.get("dataset"), available_datasets=state.get("available_datasets"))
     
     if not resolved:
         fallback_name = "sales_data.csv" if ("sales" in query.lower() or "revenue" in query.lower()) else "customer_churn_data.csv"
-        resolved = resolve_dataset(fallback_name)
+        resolved = resolve_dataset(fallback_name, available_datasets=state.get("available_datasets"))
         
     if not resolved:
         err = "No resolved dataset found for ML predictions."
@@ -615,11 +661,11 @@ def ml_agent(state: AgentState) -> Dict[str, Any]:
 def forecast_agent(state: AgentState) -> Dict[str, Any]:
     start_time = time.perf_counter()
     query = state.get("query", "")
-    resolved = resolve_dataset(query, state.get("dataset"))
+    resolved = resolve_dataset(query, state.get("dataset"), available_datasets=state.get("available_datasets"))
     
     if not resolved:
         fallback_name = "sales_data.csv" if ("sales" in query.lower() or "revenue" in query.lower()) else "customer_churn_data.csv"
-        resolved = resolve_dataset(fallback_name)
+        resolved = resolve_dataset(fallback_name, available_datasets=state.get("available_datasets"))
         
     if not resolved:
         err = "No resolved dataset found for forecasting."
@@ -702,7 +748,7 @@ def rag_agent(state: AgentState) -> Dict[str, Any]:
     start_time = time.perf_counter()
     query = state.get("query", "")
     workspace = state.get("workspace", "default")
-    resolved = resolve_dataset(query, state.get("dataset"))
+    resolved = resolve_dataset(query, state.get("dataset"), available_datasets=state.get("available_datasets"))
     
     logger.info(f"RAG Agent retrieving knowledge context for query: '{query}'")
     
@@ -754,11 +800,11 @@ def rag_agent(state: AgentState) -> Dict[str, Any]:
 def visualization_agent(state: AgentState) -> Dict[str, Any]:
     start_time = time.perf_counter()
     query = state.get("query", "")
-    resolved = resolve_dataset(query, state.get("dataset"))
+    resolved = resolve_dataset(query, state.get("dataset"), available_datasets=state.get("available_datasets"))
     
     if not resolved:
         fallback_name = "sales_data.csv" if ("sales" in query.lower() or "revenue" in query.lower()) else "customer_churn_data.csv"
-        resolved = resolve_dataset(fallback_name)
+        resolved = resolve_dataset(fallback_name, available_datasets=state.get("available_datasets"))
         
     chart_spec = None
     status = "success"
@@ -921,10 +967,10 @@ def response_synthesizer(state: AgentState) -> Dict[str, Any]:
             "reasoning_path": list(state.get("reasoning_path", [])) + ["response_synthesizer"]
         }
 
-    resolved = resolve_dataset(query, state.get("dataset"))
+    resolved = resolve_dataset(query, state.get("dataset"), available_datasets=state.get("available_datasets"))
     if not resolved:
         fallback_name = "sales_data.csv" if ("sales" in query.lower() or "revenue" in query.lower()) else "customer_churn_data.csv"
-        resolved = resolve_dataset(fallback_name)
+        resolved = resolve_dataset(fallback_name, available_datasets=state.get("available_datasets"))
     
     response = "### AI Assistant Execution Response\n\n"
     if resolved:

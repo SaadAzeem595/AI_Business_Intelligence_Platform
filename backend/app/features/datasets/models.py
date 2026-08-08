@@ -1,3 +1,4 @@
+from typing import Optional
 from sqlalchemy import Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -15,3 +16,11 @@ class Dataset(Base):
     qualityScore: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String, default="Active")  # Active, Processing, Failed
     date: Mapped[str] = mapped_column(String, nullable=False)
+    
+    # Persistent dataset and workspace metadata fields
+    workspace_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    display_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    storage_path: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    duckdb_table: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    columns_json: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    schema_json: Mapped[Optional[str]] = mapped_column(String, nullable=True)

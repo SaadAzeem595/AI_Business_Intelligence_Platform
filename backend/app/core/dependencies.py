@@ -40,6 +40,17 @@ async def get_current_user(
     2. Then tries JWT token validation.
     3. Falls back to mock user in test/development mode if no credentials provided.
     """
+    # 0. Check Dev Auth Bypass
+    env_vars = [settings.ENVIRONMENT, settings.NODE_ENV, settings.APP_ENV]
+    is_prod = any(v and v.strip().lower() == "production" for v in env_vars)
+    if settings.DEV_AUTH_BYPASS and not is_prod:
+        return MockUser(
+            id="dev-user-001",
+            email="developer@datapilot.com",
+            name="Saad A.",
+            role="Admin"
+        )
+
     # 1. API Key Auth
     if x_api_key:
         valid_keys = [k.strip() for k in settings.API_KEYS.split(",") if k.strip()]
@@ -91,6 +102,13 @@ def require_role(allowed_roles: List[str]) -> Depends:
         # Owner bypasses all checks
         if current_user.role == "Owner":
             return current_user
+
+        # When dev auth bypass is enabled, let it pass all checks
+        env_vars = [settings.ENVIRONMENT, settings.NODE_ENV, settings.APP_ENV]
+        is_prod = any(v and v.strip().lower() == "production" for v in env_vars)
+        if settings.DEV_AUTH_BYPASS and not is_prod:
+            return current_user
+
         if current_user.role not in allowed_roles:
             logger.warning(
                 f"Unauthorized role access attempt: user={current_user.email} "

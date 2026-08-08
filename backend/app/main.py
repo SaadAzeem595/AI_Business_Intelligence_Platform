@@ -90,6 +90,14 @@ async def startup_event():
     """Automatically create all tables in Postgres/SQLite at startup for dev/testing ease."""
     import logging
     startup_logger = logging.getLogger(__name__)
+
+    # Defensive check for production environment + DEV_AUTH_BYPASS
+    env_vars = [settings.ENVIRONMENT, settings.NODE_ENV, settings.APP_ENV]
+    is_prod = any(v and v.strip().lower() == "production" for v in env_vars)
+    if is_prod and settings.DEV_AUTH_BYPASS:
+        import sys
+        startup_logger.error("CRITICAL CONFIGURATION ERROR: DEV_AUTH_BYPASS cannot be enabled in a production environment!")
+        sys.exit("CRITICAL CONFIGURATION ERROR: DEV_AUTH_BYPASS cannot be enabled in a production environment!")
     
     from app.core.database import async_engine, USE_SQLITE
     from app.db.base import Base
@@ -103,6 +111,48 @@ async def startup_event():
         
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        
+        from sqlalchemy import text
+        def check_and_upgrade_datasets_table(sync_conn):
+            try:
+                # SQLite
+                cols = sync_conn.execute(text("PRAGMA table_info(datasets)"))
+                col_names = [row[1] for row in cols.fetchall()]
+            except Exception:
+                try:
+                    # Postgres
+                    cols = sync_conn.execute(text(
+                        "SELECT column_name FROM information_schema.columns WHERE table_name='datasets'"
+                    ))
+                    col_names = [row[0] for row in cols.fetchall()]
+                except Exception:
+                    col_names = []
+            
+            if col_names:
+                new_cols = {
+                    "workspace_id": "VARCHAR",
+                    "display_name": "VARCHAR",
+                    "storage_path": "VARCHAR",
+                    "duckdb_table": "VARCHAR",
+                    "columns_json": "VARCHAR",
+                    "schema_json": "VARCHAR"
+                }
+                for col, col_type in new_cols.items():
+                    if col not in col_names:
+                        try:
+                            sync_conn.execute(text(f"ALTER TABLE datasets ADD COLUMN {col} {col_type}"))
+                            startup_logger.info(f"Dynamically added missing column {col} to datasets table")
+                        except Exception as e:
+                            startup_logger.warning(f"Could not add column {col} to datasets: {e}")
+
+        await conn.run_sync(check_and_upgrade_datasets_table)
+
+    if settings.DEV_AUTH_BYPASS and not is_prod:
+        startup_logger.warning("!" * 80)
+        startup_logger.warning("WARNING: Development authentication bypass is ENABLED.")
+        startup_logger.warning("Development user: developer@datapilot.com")
+        startup_logger.warning("This mode MUST NOT be used in production.")
+        startup_logger.warning("!" * 80)
 
     startup_logger.info("=" * 80)
     startup_logger.info("AI Business Intelligence Platform FastAPI backend started successfully!")

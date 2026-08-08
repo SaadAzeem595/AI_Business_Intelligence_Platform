@@ -30,45 +30,102 @@ class DatasetService:
 
     @staticmethod
     def get_csv_duckdb_analysis(file_path: str, dataset_id: str, filename: str) -> DatasetDetailsResponse:
-        """Connects to the DuckDB engine to parse CSV schema structures and preview data rows."""
-        conn = next(get_duckdb_conn())
-        try:
-            # Query row counts
-            rows_count = conn.execute(f"SELECT COUNT(*) FROM read_csv_auto('{file_path}')").fetchone()[0]
-            
-            # Query column details
-            cols_info = conn.execute(f"DESCRIBE SELECT * FROM read_csv_auto('{file_path}')").fetchall()
-            cols_count = len(cols_info)
-            
-            # Formulate schema response DTOs
-            schema_list: List[DatasetSchemaColumn] = []
-            for col in cols_info:
-                col_name = col[0]
-                col_type = col[1]
-                # Query distinct values count
-                distinct_cnt = conn.execute(
-                    f"SELECT COUNT(DISTINCT \"{col_name}\") FROM read_csv_auto('{file_path}')"
-                ).fetchone()[0]
-                schema_list.append(
-                    DatasetSchemaColumn(
-                        name=col_name,
-                        type=str(col_type),
-                        completeness=100.0,
-                        distinctValues=distinct_cnt,
-                    )
-                )
+        """Connects to the DuckDB engine to parse file schema structures and preview data rows."""
+        import os
+        if not file_path or not os.path.exists(file_path):
+            raise ValueError(f"File path does not exist: {file_path}")
 
-            # Query row preview data
-            preview_res = conn.execute(
-                f"SELECT * FROM read_csv_auto('{file_path}') LIMIT 5"
-            )
-            columns = [desc[0] for desc in preview_res.description]
-            preview_rows = []
-            for row in preview_res.fetchall():
-                row_dict = {}
-                for idx, col_name in enumerate(columns):
-                    row_dict[col_name] = row[idx]
-                preview_rows.append(row_dict)
+        conn = next(get_duckdb_conn())
+        file_ext = os.path.splitext(file_path.lower())[1]
+
+        try:
+            if file_ext == '.csv':
+                rows_count = conn.execute(f"SELECT COUNT(*) FROM read_csv_auto('{file_path}')").fetchone()[0]
+                cols_info = conn.execute(f"DESCRIBE SELECT * FROM read_csv_auto('{file_path}')").fetchall()
+                cols_count = len(cols_info)
+                
+                schema_list: List[DatasetSchemaColumn] = []
+                for col in cols_info:
+                    col_name = col[0]
+                    col_type = col[1]
+                    distinct_cnt = conn.execute(
+                        f"SELECT COUNT(DISTINCT \"{col_name}\") FROM read_csv_auto('{file_path}')"
+                    ).fetchone()[0]
+                    schema_list.append(
+                        DatasetSchemaColumn(
+                            name=col_name,
+                            type=str(col_type),
+                            completeness=100.0,
+                            distinctValues=distinct_cnt,
+                        )
+                    )
+
+                preview_res = conn.execute(
+                    f"SELECT * FROM read_csv_auto('{file_path}') LIMIT 5"
+                )
+                columns = [desc[0] for desc in preview_res.description]
+                preview_rows = []
+                for row in preview_res.fetchall():
+                    row_dict = {}
+                    for idx, col_name in enumerate(columns):
+                        row_dict[col_name] = row[idx]
+                    preview_rows.append(row_dict)
+
+            elif file_ext == '.parquet':
+                rows_count = conn.execute(f"SELECT COUNT(*) FROM read_parquet('{file_path}')").fetchone()[0]
+                cols_info = conn.execute(f"DESCRIBE SELECT * FROM read_parquet('{file_path}')").fetchall()
+                cols_count = len(cols_info)
+                
+                schema_list = []
+                for col in cols_info:
+                    col_name = col[0]
+                    col_type = col[1]
+                    distinct_cnt = conn.execute(
+                        f"SELECT COUNT(DISTINCT \"{col_name}\") FROM read_parquet('{file_path}')"
+                    ).fetchone()[0]
+                    schema_list.append(
+                        DatasetSchemaColumn(
+                            name=col_name,
+                            type=str(col_type),
+                            completeness=100.0,
+                            distinctValues=distinct_cnt,
+                        )
+                    )
+
+                preview_res = conn.execute(
+                    f"SELECT * FROM read_parquet('{file_path}') LIMIT 5"
+                )
+                columns = [desc[0] for desc in preview_res.description]
+                preview_rows = []
+                for row in preview_res.fetchall():
+                    row_dict = {}
+                    for idx, col_name in enumerate(columns):
+                        row_dict[col_name] = row[idx]
+                    preview_rows.append(row_dict)
+
+            elif file_ext in ('.xlsx', '.xls', '.json'):
+                import pandas as pd
+                if file_ext == '.json':
+                    df = pd.read_json(file_path)
+                else:
+                    df = pd.read_excel(file_path)
+                
+                rows_count = len(df)
+                cols_count = len(df.columns)
+                schema_list = []
+                for col_name, dtype in df.dtypes.items():
+                    distinct_cnt = df[col_name].nunique()
+                    schema_list.append(
+                        DatasetSchemaColumn(
+                            name=str(col_name),
+                            type=str(dtype),
+                            completeness=100.0,
+                            distinctValues=distinct_cnt,
+                        )
+                    )
+                preview_rows = df.head(5).to_dict(orient="records")
+            else:
+                raise ValueError(f"Unsupported file extension: {file_ext}")
 
             return DatasetDetailsResponse(
                 id=dataset_id,

@@ -24,15 +24,56 @@ def register_all_datasets_in_duckdb(conn: duckdb.DuckDBPyConnection):
     """
     import os
     import logging
+    from app.core.database import AsyncSessionLocal
+    from app.features.datasets.repository import dataset_repo
+    from app.core.cache import run_async_as_sync
     from app.features.datasets.router import UPLOADED_PATHS_CACHE
     
     logger = logging.getLogger(__name__)
     root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
 
-    # Register uploaded files
+    async def fetch_all_datasets_async():
+        async with AsyncSessionLocal() as db:
+            return await dataset_repo.get_multi(db, limit=1000)
+
+    try:
+        db_items = run_async_as_sync(fetch_all_datasets_async())
+    except Exception as e:
+        logger.error(f"Failed to fetch datasets from DB for DuckDB registration: {e}")
+        db_items = []
+
+    # Map for deduplication
+    registered_paths = set()
+
+    # 1. Register uploaded files from DB
+    for item in db_items:
+        file_path = item.storage_path
+        if not file_path or not os.path.exists(file_path):
+            continue
+        registered_paths.add(file_path)
+        view_name = item.duckdb_table or os.path.splitext(item.filename)[0].lower().replace(" ", "_").replace("-", "_").replace(".", "_")
+        try:
+            if file_path.endswith('.csv'):
+                conn.execute(f"CREATE OR REPLACE TEMP VIEW \"{view_name}\" AS SELECT * FROM read_csv_auto('{file_path}')")
+            elif file_path.endswith(('.xlsx', '.xls')):
+                import pandas as pd
+                df = pd.read_excel(file_path)
+                conn.register(view_name, df)
+            elif file_path.endswith('.json'):
+                import pandas as pd
+                df = pd.read_json(file_path)
+                conn.register(view_name, df)
+            elif file_path.endswith('.parquet'):
+                conn.execute(f"CREATE OR REPLACE TEMP VIEW \"{view_name}\" AS SELECT * FROM read_parquet('{file_path}')")
+        except Exception as e:
+            logger.warning(f"Failed to register uploaded view {view_name} in DuckDB: {str(e)}")
+
+    # 2. Register from UPLOADED_PATHS_CACHE fallback
     for d_id, item in UPLOADED_PATHS_CACHE.items():
         file_path = item["path"]
-        view_name = os.path.splitext(item["filename"])[0].lower().replace(" ", "_").replace("-", "_").replace(".", "_")
+        if file_path in registered_paths:
+            continue
+        view_name = item.get("duckdb_table") or os.path.splitext(item["filename"])[0].lower().replace(" ", "_").replace("-", "_").replace(".", "_")
         try:
             if file_path.endswith('.csv'):
                 conn.execute(f"CREATE OR REPLACE TEMP VIEW \"{view_name}\" AS SELECT * FROM read_csv_auto('{file_path}')")

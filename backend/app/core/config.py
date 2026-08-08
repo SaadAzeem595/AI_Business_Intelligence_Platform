@@ -1,5 +1,5 @@
 from typing import Any, Dict, Optional
-from pydantic import Field, PostgresDsn, field_validator
+from pydantic import Field, PostgresDsn, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -10,6 +10,22 @@ class Settings(BaseSettings):
 
     API_V1_STR: str = "/api/v1"
     PROJECT_NAME: str = "AI Business Intelligence Platform"
+
+    # Environment settings
+    ENVIRONMENT: str = "development"
+    NODE_ENV: Optional[str] = None
+    APP_ENV: Optional[str] = None
+    DEV_AUTH_BYPASS: bool = False
+
+    @model_validator(mode="after")
+    def validate_dev_auth_bypass(self) -> "Settings":
+        env_vars = [self.ENVIRONMENT, self.NODE_ENV, self.APP_ENV]
+        is_prod = any(v and v.strip().lower() == "production" for v in env_vars)
+        if is_prod and self.DEV_AUTH_BYPASS:
+            raise ValueError(
+                "CRITICAL CONFIGURATION ERROR: DEV_AUTH_BYPASS cannot be enabled in a production environment!"
+            )
+        return self
 
     # JWT Authentication settings
     SECRET_KEY: str = Field(

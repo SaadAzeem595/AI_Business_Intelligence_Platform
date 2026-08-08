@@ -11,8 +11,12 @@ class ExecutionLogItem(BaseModel):
 class AgentChatPayload(BaseModel):
     message: str
     thread_id: Optional[str] = None
+    conversation_id: Optional[str] = None
     workspace: Optional[str] = "default"
+    workspace_id: Optional[str] = None
     dataset: Optional[str] = None
+    dataset_id: Optional[str] = None
+    selected_dataset_ids: Optional[List[str]] = None
     active_project: Optional[str] = None
     history: Optional[List[Dict[str, Any]]] = None
 

@@ -33,7 +33,7 @@ export default function ProfileSettingsPage() {
   const [profile, setProfile] = useState({
     name: user?.name || "Saad Alvi",
     email: user?.email || "saad@example.com",
-    role: "Workspace Owner",
+    role: user?.role || "Workspace Owner",
   });
 
   // API keys state
@@ -47,7 +47,7 @@ export default function ProfileSettingsPage() {
       setProfile({
         name: user.name,
         email: user.email,
-        role: "Workspace Owner",
+        role: user.role || "Workspace Owner",
       });
     }
   }, [user]);
