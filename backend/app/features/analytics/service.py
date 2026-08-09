@@ -24,7 +24,7 @@ def register_all_datasets_in_duckdb(conn: duckdb.DuckDBPyConnection):
     """
     import os
     import logging
-    from app.core.database import AsyncSessionLocal
+    from app.core.database import AsyncSessionLocal, IS_TESTING
     from app.features.datasets.repository import dataset_repo
     from app.core.cache import run_async_as_sync
     from app.features.datasets.router import UPLOADED_PATHS_CACHE
@@ -36,11 +36,14 @@ def register_all_datasets_in_duckdb(conn: duckdb.DuckDBPyConnection):
         async with AsyncSessionLocal() as db:
             return await dataset_repo.get_multi(db, limit=1000)
 
-    try:
-        db_items = run_async_as_sync(fetch_all_datasets_async())
-    except Exception as e:
-        logger.error(f"Failed to fetch datasets from DB for DuckDB registration: {e}")
+    if IS_TESTING:
         db_items = []
+    else:
+        try:
+            db_items = run_async_as_sync(fetch_all_datasets_async())
+        except Exception as e:
+            logger.error(f"Failed to fetch datasets from DB for DuckDB registration: {e}")
+            db_items = []
 
     # Map for deduplication
     registered_paths = set()
@@ -155,14 +158,25 @@ class AnalyticsService:
     def execute_duckdb_query(query: str) -> SQLResponse:
         """Loads active cached datasets into temporary views inside DuckDB and executes SQL queries."""
         import hashlib
+        import re
         from app.core.cache import cache_client, run_async_as_sync
         from app.core.telemetry import SQL_LATENCY
         from app.features.datasets.router import UPLOADED_PATHS_CACHE
 
+        # 1. SQL Safety Validation Layer
+        clean_q = query.strip().upper()
+        forbidden_keywords = ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "TRUNCATE", "CREATE", "GRANT", "REVOKE", "COPY"]
+        for kw in forbidden_keywords:
+            if re.search(r'\b' + re.escape(kw) + r'\b', clean_q):
+                # Allow creating temporary views or tables used by the loading mechanism
+                if kw == "CREATE" and ("VIEW" in clean_q or "TEMP" in clean_q or "TABLE" in clean_q):
+                    continue
+                raise Exception("The generated query was rejected for safety.")
+
         query_hash = hashlib.md5(query.strip().encode("utf-8")).hexdigest()
         cache_key = f"sql_query:{query_hash}"
 
-        # 1. Try Cache Lookup
+        # 2. Try Cache Lookup
         try:
             cached_data = run_async_as_sync(cache_client.get(cache_key))
             if cached_data:

@@ -135,7 +135,9 @@ async def startup_event():
                     "storage_path": "VARCHAR",
                     "duckdb_table": "VARCHAR",
                     "columns_json": "VARCHAR",
-                    "schema_json": "VARCHAR"
+                    "schema_json": "VARCHAR",
+                    "created_at": "TIMESTAMP",
+                    "updated_at": "TIMESTAMP"
                 }
                 for col, col_type in new_cols.items():
                     if col not in col_names:
@@ -166,7 +168,52 @@ async def startup_event():
 @app.get("/health", tags=["Health & Status Checks"])
 async def health_check() -> dict:
     """Core health check route inspecting databases and analytics layers connectivity."""
-    return {"status": "healthy", "database": "active", "engine": "duckdb"}
+    from app.core.llm import LLMService
+    from app.core.database import AsyncSessionLocal, get_duckdb_conn
+    from app.core.cache import cache_client
+    from sqlalchemy import text
+
+    status_info = {
+        "status": "healthy",
+        "fastapi": "healthy",
+        "postgresql": "unhealthy",
+        "duckdb": "unhealthy",
+        "redis": "unhealthy",
+        "llm": "unconfigured"
+    }
+
+    # 1. Probe PostgreSQL/SQLite
+    try:
+        async with AsyncSessionLocal() as session:
+            await session.execute(text("SELECT 1"))
+            status_info["postgresql"] = "healthy"
+    except Exception:
+        pass
+
+    # 2. Probe Redis Caching client connection
+    try:
+        await cache_client.connect()
+        if cache_client.is_connected:
+            status_info["redis"] = "healthy"
+        else:
+            status_info["redis"] = "healthy (fallback active)"
+    except Exception:
+        pass
+
+    # 3. Probe DuckDB
+    try:
+        conn = next(get_duckdb_conn())
+        conn.execute("SELECT 1")
+        conn.close()
+        status_info["duckdb"] = "healthy"
+    except Exception:
+        pass
+
+    # 4. Probe LLM
+    if LLMService.is_configured():
+        status_info["llm"] = "configured"
+
+    return status_info
 
 
 @app.get("/live", tags=["Health & Status Checks"])
@@ -183,21 +230,24 @@ async def ready_check() -> dict:
     import json
     from app.core.database import AsyncSessionLocal, get_duckdb_conn
     from app.core.cache import cache_client
+    from app.core.llm import LLMService
 
     status_info = {
         "status": "ready",
-        "postgres": "unknown",
+        "fastapi": "healthy",
+        "postgresql": "unknown",
+        "duckdb": "unknown",
         "redis": "unknown",
-        "duckdb": "unknown"
+        "llm": "unconfigured"
     }
 
     # 1. Probe PostgreSQL
     try:
         async with AsyncSessionLocal() as session:
             await session.execute(text("SELECT 1"))
-            status_info["postgres"] = "healthy"
+            status_info["postgresql"] = "healthy"
     except Exception as e:
-        status_info["postgres"] = f"unhealthy: {str(e)}"
+        status_info["postgresql"] = f"unhealthy: {str(e)}"
         status_info["status"] = "unready"
 
     # 2. Probe Redis Caching client connection
@@ -207,8 +257,6 @@ async def ready_check() -> dict:
             status_info["redis"] = "healthy"
         else:
             status_info["redis"] = "unhealthy (fallback active)"
-            # Note: fallback is active so the application is still technically ready, 
-            # but let's record it. If strict redis is required, set status = "unready"
     except Exception as e:
         status_info["redis"] = f"unhealthy: {str(e)}"
 
@@ -221,6 +269,10 @@ async def ready_check() -> dict:
     except Exception as e:
         status_info["duckdb"] = f"unhealthy: {str(e)}"
         status_info["status"] = "unready"
+
+    # 4. Probe LLM
+    if LLMService.is_configured():
+        status_info["llm"] = "configured"
 
     if status_info["status"] == "unready":
         return Response(

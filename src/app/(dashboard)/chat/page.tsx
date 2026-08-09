@@ -31,12 +31,29 @@ interface Message {
 export default function AIChatPage() {
   const searchParams = useSearchParams();
   const initialPrompt = searchParams.get("prompt");
+  const datasetIdParam = searchParams.get("datasetId") || searchParams.get("dataset");
   
   const { activeOrg, activeProject } = useUIStore();
   const { datasets } = useDatasets();
   const [selectedDatasetId, setSelectedDatasetId] = useState("");
   const [selectedDataset, setSelectedDataset] = useState("");
   const [sessionId, setSessionId] = useState<string | undefined>(undefined);
+
+  // Auto-select dataset based on query parameter from navigation
+  useEffect(() => {
+    if (datasetIdParam && datasets.length > 0) {
+      const matched = datasets.find((d: any) => 
+        d.id === datasetIdParam || 
+        d.filename === datasetIdParam || 
+        d.display_name === datasetIdParam ||
+        d.duckdb_table === datasetIdParam
+      );
+      if (matched) {
+        setSelectedDatasetId(matched.id);
+        setSelectedDataset(matched.filename);
+      }
+    }
+  }, [datasetIdParam, datasets]);
 
   const [messages, setMessages] = useState<Message[]>([
     {
@@ -136,12 +153,12 @@ export default function AIChatPage() {
               const matched = datasets.find((d: any) => d.id === val);
               setSelectedDataset(matched ? matched.filename : "");
             }}
-            className="text-xs border border-border/80 rounded bg-card text-foreground px-2 py-1 outline-none cursor-pointer hover:border-brand-indigo/40 mr-2"
+            className="text-xs border border-brand-indigo/35 rounded-lg bg-card text-foreground px-3 py-1.5 outline-none cursor-pointer hover:border-brand-indigo/70 transition-all mr-2 shadow-sm font-medium focus:ring-1 focus:ring-brand-indigo"
           >
-            <option value="">Auto-detect Dataset</option>
+            <option value="">🔮 Auto-detect Dataset</option>
             {datasets.map((d: any) => (
               <option key={d.id} value={d.id}>
-                {d.filename}
+                📊 {d.display_name || d.filename}
               </option>
             ))}
           </select>

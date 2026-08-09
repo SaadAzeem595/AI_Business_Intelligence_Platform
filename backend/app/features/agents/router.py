@@ -190,7 +190,17 @@ async def chat_with_agents(
                 "final_response": None,
                 "is_approved": False,
                 "execution_logs": [],
-                "reasoning_path": []
+                "reasoning_path": [],
+                
+                # New fields
+                "workspace_id": payload.workspace_id or payload.workspace or "default",
+                "dataset_id": payload.dataset_id or payload.dataset,
+                "dataset_context": None,
+                "dataset_schema": None,
+                "user_message": payload.message,
+                "intent": None,
+                "generated_sql": None,
+                "errors": []
             }
             agent_graph.invoke(initial_state, config)
         else:
@@ -207,7 +217,15 @@ async def chat_with_agents(
                 "history": payload.history or [],
                 "plan": [],
                 "completed_steps": [],
-                "next_agent": ""
+                "next_agent": "",
+                
+                # Update new fields
+                "workspace_id": payload.workspace_id or payload.workspace or "default",
+                "dataset_id": payload.dataset_id or payload.dataset,
+                "user_message": payload.message,
+                "intent": None,
+                "generated_sql": None,
+                "errors": []
             })
             agent_graph.invoke(None, config)
             

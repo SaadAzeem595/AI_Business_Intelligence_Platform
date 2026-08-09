@@ -8,11 +8,9 @@ def test_health() -> None:
     """Verifies baseline health check response parameters."""
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {
-        "status": "healthy",
-        "database": "active",
-        "engine": "duckdb",
-    }
+    res = response.json()
+    assert res["status"] == "healthy"
+    assert res["fastapi"] == "healthy"
 
 
 def test_list_datasets() -> None:

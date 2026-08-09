@@ -1,6 +1,8 @@
 from typing import Optional
-from sqlalchemy import Integer, String
+from datetime import datetime
+from sqlalchemy import Integer, String, DateTime
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.sql import func
 
 from app.db.base import Base
 
@@ -24,3 +26,7 @@ class Dataset(Base):
     duckdb_table: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     columns_json: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     schema_json: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), onupdate=func.now())
+
