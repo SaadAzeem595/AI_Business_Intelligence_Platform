@@ -5,9 +5,11 @@ import logging
 from datetime import datetime
 from fastapi import APIRouter, Depends, UploadFile, File, Form, status, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from app.core.database import get_db_session
-from app.core.dependencies import get_current_user, MockUser
+from app.core.dependencies import get_current_user, MockUser, require_role
+from app.features.datasets.models import Dataset
 from app.features.datasets.schemas import DatasetResponse, DatasetDetailsResponse, DatasetSchemaColumn, CleanPayload
 from app.features.datasets.service import DatasetService
 from app.core.cache import cache_client
@@ -188,8 +190,11 @@ async def list_datasets(
     db: AsyncSession = Depends(get_db_session),
 ) -> List[DatasetResponse]:
     """Returns all metadata registries for uploaded sheets."""
-    from app.features.datasets.repository import dataset_repo
-    db_items = await dataset_repo.get_multi(db, limit=1000)
+    stmt = select(Dataset).where(
+        (Dataset.workspace_id == current_user.workspace_id) | (Dataset.workspace_id == "default")
+    )
+    result = await db.execute(stmt)
+    db_items = list(result.scalars().all())
     
     results = []
     for item in db_items:
@@ -233,7 +238,7 @@ async def list_datasets(
 async def upload_dataset(
     file: UploadFile = File(...),
     tableName: str = Form(...),
-    current_user: MockUser = Depends(get_current_user),
+    current_user: MockUser = Depends(require_role(["Analyst", "Admin"])),
     db: AsyncSession = Depends(get_db_session),
 ) -> DatasetResponse:
     """Handles binary multipart uploads and triggers DuckDB parser mappings."""
@@ -264,7 +269,7 @@ async def upload_dataset(
             "qualityScore": 100,
             "status": "Active",
             "date": datetime.now().strftime("%Y-%m-%d"),
-            "workspace_id": "default",  # Workspace association
+            "workspace_id": current_user.workspace_id,  # Workspace association
             "display_name": tableName or os.path.splitext(file.filename)[0],
             "storage_path": file_path,
             "duckdb_table": clean_table_name,
@@ -302,7 +307,7 @@ async def upload_dataset(
             qualityScore=100,
             status="Active",
             date=datetime.now().strftime("%Y-%m-%d"),
-            workspace_id="default",
+            workspace_id=current_user.workspace_id,
             display_name=tableName or os.path.splitext(file.filename)[0],
             storage_path=file_path,
             duckdb_table=clean_table_name,
@@ -331,6 +336,11 @@ async def get_dataset_details(
     
     item = await dataset_repo.get(db, id)
     if item:
+        if item.workspace_id != current_user.workspace_id and item.workspace_id != "default":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to access this dataset."
+            )
         # Load preview from DuckDB
         preview_rows = []
         cols_count = 0
@@ -417,7 +427,7 @@ async def get_dataset_details(
 async def clean_dataset(
     id: str,
     payload: CleanPayload,
-    current_user: MockUser = Depends(get_current_user),
+    current_user: MockUser = Depends(require_role(["Analyst", "Admin"])),
     db: AsyncSession = Depends(get_db_session),
 ) -> DatasetDetailsResponse:
     """Executes cleaning operations (e.g. dropping duplicates or zero fields)."""
@@ -436,13 +446,18 @@ async def clean_dataset(
 @router.delete("/{id}")
 async def delete_dataset(
     id: str,
-    current_user: MockUser = Depends(get_current_user),
+    current_user: MockUser = Depends(require_role(["Analyst", "Admin"])),
     db: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Removes a metadata reference and deletes the underlying source file."""
     from app.features.datasets.repository import dataset_repo
     item = await dataset_repo.get(db, id)
     if item:
+        if item.workspace_id != current_user.workspace_id and item.workspace_id != "default":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to delete this dataset."
+            )
         if item.storage_path and os.path.exists(item.storage_path):
             try:
                 os.remove(item.storage_path)

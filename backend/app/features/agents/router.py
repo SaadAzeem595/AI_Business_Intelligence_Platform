@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
-from app.core.dependencies import get_current_user, MockUser
+from app.core.dependencies import get_current_user, MockUser, require_role
 from app.features.agents.schemas import AgentChatPayload, ApproveQueryPayload, AgentChatResponse, ExecutionLogItem
 from app.features.agents.graph import agent_graph
 
@@ -146,9 +146,15 @@ async def chat_with_agents(
         import time
         from app.core.telemetry import LANGGRAPH_LATENCY
         from app.features.datasets.repository import dataset_repo
+        from sqlalchemy import select
+        from app.features.datasets.models import Dataset
         
         # Load all datasets asynchronously (thread-safe, loop-safe)
-        db_items = await dataset_repo.get_multi(db, limit=1000)
+        stmt = select(Dataset).where(
+            (Dataset.workspace_id == current_user.workspace_id) | (Dataset.workspace_id == "default")
+        )
+        result = await db.execute(stmt)
+        db_items = list(result.scalars().all())
         available_datasets = [
             {
                 "id": str(item.id),
@@ -169,7 +175,7 @@ async def chat_with_agents(
         if not current_state or not current_state.values:
             initial_state = {
                 "query": payload.message,
-                "workspace": payload.workspace_id or payload.workspace or "default",
+                "workspace": current_user.workspace_id,
                 "dataset": payload.dataset_id or payload.dataset,
                 "selected_dataset_ids": payload.selected_dataset_ids,
                 "available_datasets": available_datasets,
@@ -193,14 +199,16 @@ async def chat_with_agents(
                 "reasoning_path": [],
                 
                 # New fields
-                "workspace_id": payload.workspace_id or payload.workspace or "default",
+                "workspace_id": current_user.workspace_id,
                 "dataset_id": payload.dataset_id or payload.dataset,
                 "dataset_context": None,
                 "dataset_schema": None,
                 "user_message": payload.message,
                 "intent": None,
                 "generated_sql": None,
-                "errors": []
+                "errors": [],
+                "user_id": current_user.id,
+                "roles": [current_user.role],
             }
             agent_graph.invoke(initial_state, config)
         else:
@@ -220,12 +228,14 @@ async def chat_with_agents(
                 "next_agent": "",
                 
                 # Update new fields
-                "workspace_id": payload.workspace_id or payload.workspace or "default",
+                "workspace_id": current_user.workspace_id,
                 "dataset_id": payload.dataset_id or payload.dataset,
                 "user_message": payload.message,
                 "intent": None,
                 "generated_sql": None,
-                "errors": []
+                "errors": [],
+                "user_id": current_user.id,
+                "roles": [current_user.role],
             })
             agent_graph.invoke(None, config)
             
@@ -255,7 +265,7 @@ async def chat_with_agents(
 @router.post("/approve", response_model=AgentChatResponse)
 async def approve_pending_agent_action(
     payload: ApproveQueryPayload,
-    current_user: MockUser = Depends(get_current_user)
+    current_user: MockUser = Depends(require_role(["Analyst", "Admin"]))
 ) -> AgentChatResponse:
     """Approves (or skips) SQL execution on an active paused thread, resuming graph flow."""
     thread_id = payload.thread_id

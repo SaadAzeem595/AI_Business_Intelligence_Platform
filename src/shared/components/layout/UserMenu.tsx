@@ -3,12 +3,13 @@
 import React, { useState, useRef, useEffect } from "react";
 import Link from "next/link";
 import { User, CreditCard, Settings, LogOut, ChevronDown } from "lucide-react";
-import { useAuth } from "@/features/auth/hooks/useAuth";
+import { useUser, useClerk } from "@clerk/nextjs";
 
 export function UserMenu() {
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
-  const { user } = useAuth();
+  const { user } = useUser();
+  const { signOut } = useClerk();
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -20,8 +21,8 @@ export function UserMenu() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  const displayName = user?.name || "Saad A.";
-  const displayEmail = user?.email || "saad@example.com";
+  const displayName = user?.fullName || (user?.firstName ? `${user.firstName} ${user.lastName || ""}`.trim() : "") || "Saad A.";
+  const displayEmail = user?.primaryEmailAddress?.emailAddress || "saad@example.com";
 
   const getInitials = (name: string) => {
     if (!name) return "SA";
@@ -39,9 +40,17 @@ export function UserMenu() {
         onClick={() => setIsOpen(!isOpen)}
         className="flex items-center gap-2 p-1.5 rounded-full hover:bg-muted text-muted-foreground transition-all cursor-pointer active:scale-95"
       >
-        <div className="h-7 w-7 rounded-full bg-brand-indigo flex items-center justify-center text-brand-indigo-foreground text-xs font-semibold select-none shadow-sm">
-          {initials}
-        </div>
+        {user?.imageUrl ? (
+          <img
+            src={user.imageUrl}
+            alt={displayName}
+            className="h-7 w-7 rounded-full object-cover select-none shadow-sm"
+          />
+        ) : (
+          <div className="h-7 w-7 rounded-full bg-brand-indigo flex items-center justify-center text-brand-indigo-foreground text-xs font-semibold select-none shadow-sm">
+            {initials}
+          </div>
+        )}
         <span className="hidden sm:inline text-xs font-medium text-foreground/80">{displayName}</span>
         <ChevronDown className="hidden sm:inline h-3 w-3 opacity-60" />
       </button>
@@ -79,14 +88,16 @@ export function UserMenu() {
             </Link>
           </div>
           <div className="border-t border-border/40 pt-1 mt-1">
-            <Link
-              href="/login"
-              onClick={() => setIsOpen(false)}
-              className="flex items-center gap-2 px-3 py-2 rounded-md text-xs hover:bg-rose-500/10 text-rose-500 hover:text-rose-600 transition-colors"
+            <button
+              onClick={async () => {
+                setIsOpen(false);
+                await signOut();
+              }}
+              className="w-full flex items-center gap-2 px-3 py-2 rounded-md text-xs hover:bg-rose-500/10 text-rose-500 hover:text-rose-600 transition-colors text-left cursor-pointer"
             >
               <LogOut className="h-3.5 w-3.5" />
               <span>Log out</span>
-            </Link>
+            </button>
           </div>
         </div>
       )}

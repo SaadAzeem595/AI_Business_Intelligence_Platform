@@ -110,7 +110,7 @@ def test_rbac_with_bypass():
     """
     test_app = FastAPI()
     
-    @test_app.get("/executive-only", dependencies=[require_role(["Executive"])])
+    @test_app.get("/executive-only", dependencies=[Depends(require_role(["Executive"]))])
     def executive_endpoint():
         return {"status": "authorized"}
 

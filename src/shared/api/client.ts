@@ -43,37 +43,32 @@ export const apiClient = axios.create({
 // ==========================================
 // Token Helpers
 // ==========================================
-const getAccessToken = () => {
+const getAccessToken = async () => {
   if (typeof window !== "undefined") {
-    return localStorage.getItem("accessToken");
+    const Clerk = (window as any).Clerk;
+    if (Clerk) {
+      if (!Clerk.isReady) {
+        // Wait for Clerk to be ready
+        await new Promise((resolve) => {
+          const interval = setInterval(() => {
+            if (Clerk.isReady) {
+              clearInterval(interval);
+              resolve(null);
+            }
+          }, 50);
+        });
+      }
+      try {
+        const token = await Clerk.session?.getToken();
+        if (token) {
+          return token;
+        }
+      } catch (err) {
+        console.error("Failed to retrieve Clerk token:", err);
+      }
+    }
   }
   return null;
-};
-
-const setAccessToken = (token: string) => {
-  if (typeof window !== "undefined") {
-    localStorage.setItem("accessToken", token);
-  }
-};
-
-const getRefreshToken = () => {
-  if (typeof window !== "undefined") {
-    return localStorage.getItem("refreshToken");
-  }
-  return null;
-};
-
-const setRefreshToken = (token: string) => {
-  if (typeof window !== "undefined") {
-    localStorage.setItem("refreshToken", token);
-  }
-};
-
-const removeTokens = () => {
-  if (typeof window !== "undefined") {
-    localStorage.removeItem("accessToken");
-    localStorage.removeItem("refreshToken");
-  }
 };
 
 // ==========================================
@@ -98,8 +93,8 @@ apiClient.interceptors.request.use(
 
 // 2. Inject JWT Authorization header (runs first due to reverse execution in Axios)
 apiClient.interceptors.request.use(
-  (config) => {
-    const token = getAccessToken();
+  async (config) => {
+    const token = await getAccessToken();
     if (token && config.headers) {
       config.headers.Authorization = `Bearer ${token}`;
     }
@@ -112,103 +107,7 @@ apiClient.interceptors.request.use(
 // Response Interceptors
 // ==========================================
 
-let isRefreshing = false;
-let failedQueue: Array<{
-  resolve: (value: unknown) => void;
-  reject: (reason: unknown) => void;
-}> = [];
 
-const processQueue = (error: any, token: string | null = null) => {
-  failedQueue.forEach((prom) => {
-    if (error) {
-      prom.reject(error);
-    } else {
-      prom.resolve(token);
-    }
-  });
-  failedQueue = [];
-};
-
-// 1. Token Refresh cycle (runs first in response interceptors)
-apiClient.interceptors.response.use(
-  (response) => response,
-  async (error) => {
-    const originalRequest = error.config;
-
-    if (error.response?.status === 401 && !originalRequest._retry) {
-      if (originalRequest.url === API_ENDPOINTS.AUTH.REFRESH) {
-        removeTokens();
-        if (typeof window !== "undefined" && !isDevAuthBypass) {
-          window.location.href = "/login";
-        }
-        return Promise.reject(error);
-      }
-
-      originalRequest._retry = true;
-
-      const refreshToken = getRefreshToken();
-      if (!refreshToken) {
-        removeTokens();
-        if (typeof window !== "undefined" && !isDevAuthBypass) {
-          window.location.href = "/login";
-        }
-        return Promise.reject(error);
-      }
-
-      if (isRefreshing) {
-        return new Promise((resolve, reject) => {
-          failedQueue.push({ resolve, reject });
-        })
-          .then((token) => {
-            originalRequest.headers.Authorization = `Bearer ${token}`;
-            return apiClient(originalRequest);
-          })
-          .catch((err) => Promise.reject(err));
-      }
-
-      isRefreshing = true;
-
-      try {
-        const params = new URLSearchParams();
-        params.append("refreshToken", refreshToken);
-
-        // Make refresh post request as form URL-encoded payload
-        const response = await apiClient.post<{ accessToken: string; refreshToken?: string }>(
-          API_ENDPOINTS.AUTH.REFRESH,
-          params,
-          {
-            headers: {
-              "Content-Type": "application/x-www-form-urlencoded",
-            },
-          }
-        );
-        const { accessToken, refreshToken: newRefreshToken } = response.data;
-
-        setAccessToken(accessToken);
-        if (newRefreshToken) {
-          setRefreshToken(newRefreshToken);
-        }
-        apiClient.defaults.headers.common["Authorization"] = `Bearer ${accessToken}`;
-
-        processQueue(null, accessToken);
-        isRefreshing = false;
-
-        originalRequest.headers.Authorization = `Bearer ${accessToken}`;
-        return apiClient(originalRequest);
-      } catch (refreshError) {
-        processQueue(refreshError, null);
-        isRefreshing = false;
-        removeTokens();
-        if (typeof window !== "undefined" && !isDevAuthBypass) {
-          window.location.href = "/login";
-        }
-        return Promise.reject(refreshError);
-      }
-    }
-
-    return Promise.reject(error);
-  }
-);
 
 // 2. Rich debugging, log execution, and descriptive error formatting (runs second)
 apiClient.interceptors.response.use(

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from typing import List, Dict, Any, Optional
 
-from app.core.dependencies import get_current_user, MockUser
+from app.core.dependencies import get_current_user, MockUser, require_role
 from app.features.ml.schemas import PredictPayload, TrainPayload, PromotePayload
 from app.features.ml.inference import InferenceService
 from app.features.ml.registry import ModelRegistryService
@@ -12,7 +12,7 @@ router = APIRouter(prefix="/ml", tags=["ML Platform Operations"])
 @router.post("/predict")
 async def run_prediction(
     payload: PredictPayload,
-    current_user: MockUser = Depends(get_current_user)
+    current_user: MockUser = Depends(require_role(["Analyst", "Admin"]))
 ):
     """Executes single or batch inference against a registered model by version or stage."""
     try:
@@ -33,7 +33,7 @@ async def run_prediction(
 @router.post("/train")
 async def trigger_training(
     payload: TrainPayload,
-    current_user: MockUser = Depends(get_current_user)
+    current_user: MockUser = Depends(require_role(["Analyst", "Admin"]))
 ):
     """Triggers retraining of an ML model type, either synchronously or asynchronously via Celery."""
     try:
@@ -80,7 +80,7 @@ async def list_registered_models(
 @router.post("/models/promote")
 async def promote_model_version(
     payload: PromotePayload,
-    current_user: MockUser = Depends(get_current_user)
+    current_user: MockUser = Depends(require_role(["Analyst", "Admin"]))
 ):
     """Promotes a registered model version to Staging or Production."""
     try:

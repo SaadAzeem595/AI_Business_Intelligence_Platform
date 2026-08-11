@@ -3,7 +3,7 @@ from datetime import datetime
 import uuid
 from fastapi import APIRouter, Depends, status
 
-from app.core.dependencies import get_current_user, MockUser
+from app.core.dependencies import get_current_user, MockUser, require_role
 from app.features.settings.schemas import (
     WorkspaceInput,
     ProfileInput,
@@ -13,7 +13,7 @@ from app.features.settings.schemas import (
     APIKeyResponse,
 )
 
-router = APIRouter(prefix="/settings", tags=["Workspace & Account Settings"])
+router = APIRouter(prefix="/settings", tags=["Workspace & Account Settings"], dependencies=[Depends(require_role(["Admin"]))])
 
 
 @router.patch("/workspace")

@@ -6,7 +6,7 @@ import pandas as pd
 import numpy as np
 
 from app.core.database import get_db_session
-from app.core.dependencies import get_current_user, MockUser
+from app.core.dependencies import get_current_user, MockUser, require_role
 from app.features.analytics.schemas import (
     ForecastPayload,
     ForecastResponse,
@@ -82,7 +82,7 @@ def resolve_dataset_path(dataset_id: Optional[str] = None) -> str:
 async def forecast_trend(
     payload: ForecastPayload,
     dataset_id: Optional[str] = None,
-    current_user: MockUser = Depends(get_current_user),
+    current_user: MockUser = Depends(require_role(["Analyst", "Admin"])),
 ) -> ForecastResponse:
     """Executes pluggable forecasting model predictions on the active dataset."""
     try:
@@ -176,7 +176,7 @@ async def forecast_trend(
 async def segment_cohorts(
     payload: SegmentPayload,
     dataset_id: Optional[str] = None,
-    current_user: MockUser = Depends(get_current_user),
+    current_user: MockUser = Depends(require_role(["Analyst", "Admin"])),
 ) -> SegmentResponse:
     """Executes customer segmentation / clustering on the active dataset."""
     try:
@@ -267,7 +267,7 @@ async def segment_cohorts(
 async def detect_anomalies(
     payload: AnomalyPayload,
     dataset_id: Optional[str] = None,
-    current_user: MockUser = Depends(get_current_user),
+    current_user: MockUser = Depends(require_role(["Analyst", "Admin"])),
 ) -> AnomalyResponse:
     """Scans dataset columns for standard deviation and mathematical spikes/outliers."""
     try:
@@ -364,7 +364,7 @@ async def detect_anomalies(
 @router.post("/sql/run", response_model=SQLResponse)
 async def run_sql_query(
     payload: SQLPayload,
-    current_user: MockUser = Depends(get_current_user),
+    current_user: MockUser = Depends(require_role(["Analyst", "Admin"])),
 ) -> SQLResponse:
     """Executes SQL queries against temporary CSV view mappings via the DuckDB engine."""
     try:
@@ -378,7 +378,7 @@ async def run_sql_query(
 
 @router.get("/sql/schema", response_model=List[Dict[str, Any]])
 async def get_sql_schema(
-    current_user: MockUser = Depends(get_current_user),
+    current_user: MockUser = Depends(require_role(["Analyst", "Admin"])),
 ) -> List[Dict[str, Any]]:
     """Returns currently available view mappings registered in the DuckDB context."""
     from app.features.datasets.router import UPLOADED_PATHS_CACHE

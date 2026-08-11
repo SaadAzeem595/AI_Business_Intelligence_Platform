@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, status
 
-from app.core.dependencies import get_current_user, MockUser
+from app.core.dependencies import get_current_user, MockUser, require_role
 from app.features.rag.schemas import (
     QueryPayload, 
     ContextResponse, 
@@ -38,7 +38,7 @@ async def ingest_document(
     author: Optional[str] = Form("Unknown"),
     workspace: Optional[str] = Form("default"),
     tags: Optional[str] = Form(""),  # comma-separated
-    current_user: MockUser = Depends(get_current_user)
+    current_user: MockUser = Depends(require_role(["Analyst", "Admin"]))
 ) -> Dict[str, Any]:
     """Uploads, parses, cleans, chunks, embeds, and indexes a business document."""
     try:
@@ -73,7 +73,7 @@ async def ingest_document(
                 filename=filename,
                 author=author,
                 upload_date=datetime.now().strftime("%Y-%m-%d"),
-                workspace=workspace,
+                workspace=current_user.workspace_id,
                 page=i + 1,  # Page maps to chunk sequence number for non-paged formats
                 heading=heading,
                 tags=tag_list,
@@ -115,10 +115,13 @@ async def retrieve_context(
 ) -> ContextResponse:
     """Executes vector/keyword/hybrid retrieval and context compilation."""
     try:
+        filters = payload.filters or {}
+        filters["workspace"] = current_user.workspace_id
+        
         results = retrieval_svc.retrieve(
             query=payload.query,
             limit=payload.limit,
-            filters=payload.filters,
+            filters=filters,
             hybrid_alpha=payload.hybrid_alpha,
             enable_rerank=payload.enable_rerank
         )
@@ -164,7 +167,7 @@ async def list_rag_documents(
 ) -> List[Dict[str, Any]]:
     """Returns metadata listings of all indexed documents in a workspace."""
     try:
-        return db_repo.list_documents(workspace=workspace)
+        return db_repo.list_documents(workspace=current_user.workspace_id)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -174,13 +177,22 @@ async def list_rag_documents(
 @router.delete("/documents/{doc_id}")
 async def delete_rag_document(
     doc_id: str,
-    current_user: MockUser = Depends(get_current_user)
+    current_user: MockUser = Depends(require_role(["Analyst", "Admin"]))
 ) -> Dict[str, str]:
     """Deletes all indexed chunks and reference markers associated with a document ID."""
     try:
+        docs = db_repo.list_documents(workspace=current_user.workspace_id)
+        doc_ids = {d.get("doc_id") for d in docs}
+        if doc_id not in doc_ids:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to delete this document."
+            )
         db_repo.delete_by_document(doc_id)
         await cache_client.invalidate_pattern("rag_retrieve:*")
         return {"status": "success", "message": f"Successfully deleted document '{doc_id}' from index."}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

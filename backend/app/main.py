@@ -147,7 +147,45 @@ async def startup_event():
                         except Exception as e:
                             startup_logger.warning(f"Could not add column {col} to datasets: {e}")
 
+        def check_and_upgrade_users_table(sync_conn):
+            try:
+                # SQLite
+                cols = sync_conn.execute(text("PRAGMA table_info(users)"))
+                col_names = [row[1] for row in cols.fetchall()]
+            except Exception:
+                try:
+                    # Postgres
+                    cols = sync_conn.execute(text(
+                        "SELECT column_name FROM information_schema.columns WHERE table_name='users'"
+                    ))
+                    col_names = [row[0] for row in cols.fetchall()]
+                except Exception:
+                    col_names = []
+            
+            if col_names:
+                new_cols = {
+                    "clerk_user_id": "VARCHAR",
+                    "role": "VARCHAR DEFAULT 'Viewer'",
+                    "created_at": "TIMESTAMP",
+                    "updated_at": "TIMESTAMP"
+                }
+                for col, col_type in new_cols.items():
+                    if col not in col_names:
+                        try:
+                            sync_conn.execute(text(f"ALTER TABLE users ADD COLUMN {col} {col_type}"))
+                            startup_logger.info(f"Dynamically added missing column {col} to users table")
+                        except Exception as e:
+                            startup_logger.warning(f"Could not add column {col} to users: {e}")
+                
+                if not USE_SQLITE:
+                    try:
+                        sync_conn.execute(text("ALTER TABLE users ALTER COLUMN hashed_password DROP NOT NULL"))
+                        startup_logger.info("Successfully dropped NOT NULL constraint on users.hashed_password")
+                    except Exception as e:
+                        startup_logger.warning(f"Could not drop NOT NULL on users.hashed_password: {e}")
+
         await conn.run_sync(check_and_upgrade_datasets_table)
+        await conn.run_sync(check_and_upgrade_users_table)
 
     if settings.DEV_AUTH_BYPASS and not is_prod:
         startup_logger.warning("!" * 80)

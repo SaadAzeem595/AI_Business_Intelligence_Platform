@@ -95,11 +95,11 @@ def test_rbac_dependency():
     # Setup a dummy app to test RBAC logic in isolation
     test_app = FastAPI()
     
-    @test_app.get("/admin-only", dependencies=[require_role(["Admin"])])
+    @test_app.get("/admin-only", dependencies=[Depends(require_role(["Admin"]))])
     def admin_endpoint():
         return {"status": "authorized"}
         
-    @test_app.get("/executive-or-analyst", dependencies=[require_role(["Executive", "Analyst"])])
+    @test_app.get("/executive-or-analyst", dependencies=[Depends(require_role(["Executive", "Analyst"]))])
     def executive_endpoint():
         return {"status": "authorized"}
 

@@ -32,7 +32,7 @@ export default function LandingPage() {
           <a href="https://github.com" target="_blank" rel="noopener noreferrer" className="hover:text-foreground transition-colors">Docs</a>
         </nav>
         <div className="flex items-center gap-4">
-          <Link href="/login">
+          <Link href="/sign-in">
             <Button variant="ghost" size="sm">Sign In</Button>
           </Link>
           <Link href="/dashboard">
@@ -53,7 +53,7 @@ export default function LandingPage() {
           Upload spreadsheets, CSVs, or unstructured documents. Instantly forecast trends, detect anomalies, segment users, and compile PDF reports using clean natural language interfaces.
         </p>
         <div className="flex flex-wrap items-center justify-center gap-4 pt-4">
-          <Link href="/dashboard">
+          <Link href="/sign-up">
             <Button size="lg" variant="brand">
               Get Started for Free <ArrowRight className="ml-1 h-4 w-4" />
             </Button>

@@ -5,7 +5,9 @@ from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
-from app.core.dependencies import get_current_user, MockUser
+from app.core.dependencies import get_current_user, MockUser, require_role
+from app.features.reports.models import ReportSchedule
+from sqlalchemy import select
 from app.features.reports.schemas import (
     GenerateReportPayload,
     ReportResponse,
@@ -29,6 +31,7 @@ async def list_reports(
     db: AsyncSession = Depends(get_db_session),
 ) -> List[ReportResponse]:
     """Retrieves list of compiled reports history, supporting query filters and searches."""
+    workspace = current_user.workspace_id
     cache_key = f"reports:list:{workspace}:{report_type}:{author}:{delivery_status}:{search}"
     try:
         cached = await cache_client.get(cache_key)
@@ -57,10 +60,11 @@ async def list_reports(
 @router.post("/generate", response_model=ReportResponse)
 async def generate_report(
     payload: GenerateReportPayload,
-    current_user: MockUser = Depends(get_current_user),
+    current_user: MockUser = Depends(require_role(["Analyst", "Admin", "Executive"])),
     db: AsyncSession = Depends(get_db_session),
 ) -> ReportResponse:
     """Queues a document compiler action in background Celery workers and returns initial pending log."""
+    payload.workspace = current_user.workspace_id
     author_email = current_user.email if hasattr(current_user, "email") else "system"
     res = await ReportService.trigger_celery_report_generation(db, payload, author=author_email)
     try:
@@ -91,6 +95,11 @@ async def get_report(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Report with ID {id} not found."
         )
+    if report.workspace != current_user.workspace_id and report.workspace != "default":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to access this report."
+        )
     res_obj = ReportResponse.model_validate(report)
     try:
         await cache_client.set(cache_key, res_obj.model_dump(), ttl=60)
@@ -112,6 +121,11 @@ async def download_report(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Report with ID {id} not found."
         )
+    if report.workspace != current_user.workspace_id and report.workspace != "default":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to download this report."
+        )
     
     if not report.file_path or not os.path.exists(report.file_path):
         raise HTTPException(
@@ -132,10 +146,21 @@ async def download_report(
 @router.delete("/{id}")
 async def delete_report(
     id: str,
-    current_user: MockUser = Depends(get_current_user),
+    current_user: MockUser = Depends(require_role(["Admin", "Analyst"])),
     db: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Removes a report archive and delete files on host."""
+    report = await ReportService.get_report_by_id(db, id)
+    if not report:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Report with ID {id} not found."
+        )
+    if report.workspace != current_user.workspace_id and report.workspace != "default":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to delete this report."
+        )
     success = await ReportService.delete_report(db, id)
     if not success:
         raise HTTPException(
@@ -153,10 +178,11 @@ async def delete_report(
 @router.post("/schedule", response_model=ReportScheduleResponse)
 async def create_schedule(
     payload: ReportSchedulePayload,
-    current_user: MockUser = Depends(get_current_user),
+    current_user: MockUser = Depends(require_role(["Admin", "Analyst"])),
     db: AsyncSession = Depends(get_db_session),
 ) -> ReportScheduleResponse:
     """Registers a new periodic reporting rule schedule."""
+    payload.workspace = current_user.workspace_id
     author_email = current_user.email if hasattr(current_user, "email") else "system"
     schedule = await ReportService.create_schedule(db, payload, author=author_email)
     try:
@@ -173,6 +199,7 @@ async def list_schedules(
     db: AsyncSession = Depends(get_db_session),
 ) -> List[ReportScheduleResponse]:
     """Lists current scheduled routines."""
+    workspace = current_user.workspace_id
     schedules = await ReportService.list_schedules(db, workspace=workspace)
     return [ReportScheduleResponse.model_validate(s) for s in schedules]
 
@@ -180,10 +207,22 @@ async def list_schedules(
 @router.delete("/schedules/{id}")
 async def cancel_schedule(
     id: str,
-    current_user: MockUser = Depends(get_current_user),
+    current_user: MockUser = Depends(require_role(["Admin", "Analyst"])),
     db: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Deletes/cancels a periodic reporting schedule."""
+    result = await db.execute(select(ReportSchedule).where(ReportSchedule.id == id))
+    schedule = result.scalars().first()
+    if not schedule:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Schedule ID {id} not found."
+        )
+    if schedule.workspace != current_user.workspace_id and schedule.workspace != "default":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to delete this schedule."
+        )
     success = await ReportService.cancel_schedule(db, id)
     if not success:
         raise HTTPException(
