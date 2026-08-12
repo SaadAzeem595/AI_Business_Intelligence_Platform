@@ -93,28 +93,23 @@ export const AnalyticsService = {
     }
   },
 
-  async executeSQL(query: string): Promise<SQLResult> {
+  async executeSQL(query: string, projectId?: string): Promise<SQLResult> {
     try {
-      const response = await apiClient.post<SQLResult>(API_ENDPOINTS.SQL.RUN, { query });
+      const response = await apiClient.post<SQLResult>(API_ENDPOINTS.SQL.RUN, { 
+        query, 
+        project_id: projectId 
+      });
       return response.data;
-    } catch {
-      return {
-        columns: ["id", "customer_name", "region", "amount", "status"],
-        rows: [
-          { id: 101, customer_name: "John Doe", region: "North", amount: 120.5, status: "Completed" },
-          { id: 104, customer_name: "Bob Johnson", region: "North", amount: 15.2, status: "Completed" },
-          { id: 108, customer_name: "Emma Watson", region: "North", amount: 480.0, status: "Completed" },
-          { id: 112, customer_name: "Robert Downey", region: "North", amount: 1420.0, status: "Processing" },
-          { id: 115, customer_name: "Chris Evans", region: "North", amount: 95.0, status: "Completed" },
-        ],
-        elapsedMs: 12,
-      };
+    } catch (error) {
+      console.error("SQL query execution failed:", error);
+      throw error;
     }
   },
 
-  async getSQLSchema(): Promise<any[]> {
+  async getSQLSchema(projectId?: string): Promise<any[]> {
     try {
-      const response = await apiClient.get<any[]>(API_ENDPOINTS.SQL.SCHEMA);
+      const url = projectId ? `${API_ENDPOINTS.SQL.SCHEMA}?project_id=${projectId}` : API_ENDPOINTS.SQL.SCHEMA;
+      const response = await apiClient.get<any[]>(url);
       return response.data;
     } catch {
       return [

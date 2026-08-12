@@ -150,9 +150,15 @@ async def chat_with_agents(
         from app.features.datasets.models import Dataset
         
         # Load all datasets asynchronously (thread-safe, loop-safe)
-        stmt = select(Dataset).where(
-            (Dataset.workspace_id == current_user.workspace_id) | (Dataset.workspace_id == "default")
-        )
+        if payload.active_project:
+            from app.features.projects.router import get_project_and_verify_access
+            await get_project_and_verify_access(payload.active_project, current_user, db)
+            stmt = select(Dataset).where(Dataset.project_id == payload.active_project)
+        else:
+            stmt = select(Dataset).where(
+                (Dataset.project_id == None) & 
+                ((Dataset.workspace_id == current_user.workspace_id) | (Dataset.workspace_id == "default"))
+            )
         result = await db.execute(stmt)
         db_items = list(result.scalars().all())
         available_datasets = [

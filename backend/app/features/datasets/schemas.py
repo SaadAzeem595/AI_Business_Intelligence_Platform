@@ -19,6 +19,10 @@ class DatasetResponse(BaseModel):
     duckdb_table: Optional[str] = None
     columns_json: Optional[str] = None
     schema_json: Optional[str] = None
+    project_id: Optional[str] = None
+    owner_id: Optional[str] = None
+    original_filename: Optional[str] = None
+    error_message: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -55,6 +59,10 @@ class DatasetDetailsResponse(BaseModel):
     display_name: Optional[str] = None
     storage_path: Optional[str] = None
     duckdb_table: Optional[str] = None
+    project_id: Optional[str] = None
+    owner_id: Optional[str] = None
+    original_filename: Optional[str] = None
+    error_message: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

@@ -4,18 +4,22 @@ import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { DatasetService } from "../services/dataset.service";
 
-export function useUpload() {
+export function useUpload(projectId?: string) {
   const queryClient = useQueryClient();
   const [progress, setProgress] = useState(0);
 
   const uploadMutation = useMutation({
     mutationFn: ({ file, tableName }: { file: File; tableName: string }) =>
-      DatasetService.upload(file, tableName, (progressEvent) => {
+      DatasetService.upload(file, tableName, projectId, (progressEvent) => {
         const percentCompleted = Math.round((progressEvent.loaded * 100) / (progressEvent.total || 1));
         setProgress(percentCompleted);
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["datasets", "list"] });
+      if (projectId) {
+        queryClient.invalidateQueries({ queryKey: ["project-datasets", projectId] });
+      } else {
+        queryClient.invalidateQueries({ queryKey: ["datasets", "list"] });
+      }
       setProgress(0);
     },
     onError: () => {

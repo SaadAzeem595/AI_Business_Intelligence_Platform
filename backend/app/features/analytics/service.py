@@ -18,12 +18,14 @@ from app.features.analytics.engine.anomaly import AnomalyDetectionService
 from app.features.analytics.engine.explainability import ExplainabilityService
 
 
-def register_all_datasets_in_duckdb(conn: duckdb.DuckDBPyConnection):
+def register_all_datasets_in_duckdb(conn: duckdb.DuckDBPyConnection, project_id: Optional[str] = None):
     """
     Registers all uploaded and sample datasets as views in DuckDB.
     """
     import os
     import logging
+    from sqlalchemy import select
+    from app.features.datasets.models import Dataset
     from app.core.database import AsyncSessionLocal, IS_TESTING
     from app.features.datasets.repository import dataset_repo
     from app.core.cache import run_async_as_sync
@@ -34,7 +36,14 @@ def register_all_datasets_in_duckdb(conn: duckdb.DuckDBPyConnection):
 
     async def fetch_all_datasets_async():
         async with AsyncSessionLocal() as db:
-            return await dataset_repo.get_multi(db, limit=1000)
+            if project_id:
+                stmt = select(Dataset).where(Dataset.project_id == project_id)
+                result = await db.execute(stmt)
+                return list(result.scalars().all())
+            else:
+                stmt = select(Dataset).where(Dataset.project_id == None)
+                result = await db.execute(stmt)
+                return list(result.scalars().all())
 
     if IS_TESTING:
         db_items = []
@@ -76,6 +85,11 @@ def register_all_datasets_in_duckdb(conn: duckdb.DuckDBPyConnection):
         file_path = item["path"]
         if file_path in registered_paths:
             continue
+        if project_id and item.get("project_id") != project_id:
+            continue
+        if not project_id and item.get("project_id") is not None:
+            continue
+            
         view_name = item.get("duckdb_table") or os.path.splitext(item["filename"])[0].lower().replace(" ", "_").replace("-", "_").replace(".", "_")
         try:
             if file_path.endswith('.csv'):
@@ -93,37 +107,38 @@ def register_all_datasets_in_duckdb(conn: duckdb.DuckDBPyConnection):
         except Exception as e:
             logger.warning(f"Failed to register uploaded view {view_name} in DuckDB: {str(e)}")
 
-    # Register sample files
-    sample_dir = os.path.join(root_dir, "sample_data")
-    if os.path.exists(sample_dir):
-        for f in os.listdir(sample_dir):
-            if f.endswith(('.csv', '.xlsx', '.xls', '.json', '.parquet')):
-                file_path = os.path.join(sample_dir, f)
-                base_name = os.path.splitext(f)[0].lower()
-                try:
-                    if f.endswith('.csv'):
-                        conn.execute(f"CREATE OR REPLACE TEMP VIEW \"{base_name}\" AS SELECT * FROM read_csv_auto('{file_path}')")
-                        # Also register short name (e.g. customer_churn instead of customer_churn_data)
-                        short_name = base_name.replace("_data", "")
-                        conn.execute(f"CREATE OR REPLACE TEMP VIEW \"{short_name}\" AS SELECT * FROM read_csv_auto('{file_path}')")
-                    elif f.endswith(('.xlsx', '.xls')):
-                        import pandas as pd
-                        df = pd.read_excel(file_path)
-                        conn.register(base_name, df)
-                        short_name = base_name.replace("_data", "")
-                        conn.register(short_name, df)
-                    elif f.endswith('.json'):
-                        import pandas as pd
-                        df = pd.read_json(file_path)
-                        conn.register(base_name, df)
-                        short_name = base_name.replace("_data", "")
-                        conn.register(short_name, df)
-                    elif f.endswith('.parquet'):
-                        conn.execute(f"CREATE OR REPLACE TEMP VIEW \"{base_name}\" AS SELECT * FROM read_parquet('{file_path}')")
-                        short_name = base_name.replace("_data", "")
-                        conn.execute(f"CREATE OR REPLACE TEMP VIEW \"{short_name}\" AS SELECT * FROM read_parquet('{file_path}')")
-                except Exception as e:
-                    logger.warning(f"Failed to register sample view {base_name} in DuckDB: {str(e)}")
+    # Register sample files (only in global / legacy mode when project_id is None)
+    if not project_id:
+        sample_dir = os.path.join(root_dir, "sample_data")
+        if os.path.exists(sample_dir):
+            for f in os.listdir(sample_dir):
+                if f.endswith(('.csv', '.xlsx', '.xls', '.json', '.parquet')):
+                    file_path = os.path.join(sample_dir, f)
+                    base_name = os.path.splitext(f)[0].lower()
+                    try:
+                        if f.endswith('.csv'):
+                            conn.execute(f"CREATE OR REPLACE TEMP VIEW \"{base_name}\" AS SELECT * FROM read_csv_auto('{file_path}')")
+                            # Also register short name (e.g. customer_churn instead of customer_churn_data)
+                            short_name = base_name.replace("_data", "")
+                            conn.execute(f"CREATE OR REPLACE TEMP VIEW \"{short_name}\" AS SELECT * FROM read_csv_auto('{file_path}')")
+                        elif f.endswith(('.xlsx', '.xls')):
+                            import pandas as pd
+                            df = pd.read_excel(file_path)
+                            conn.register(base_name, df)
+                            short_name = base_name.replace("_data", "")
+                            conn.register(short_name, df)
+                        elif f.endswith('.json'):
+                            import pandas as pd
+                            df = pd.read_json(file_path)
+                            conn.register(base_name, df)
+                            short_name = base_name.replace("_data", "")
+                            conn.register(short_name, df)
+                        elif f.endswith('.parquet'):
+                            conn.execute(f"CREATE OR REPLACE TEMP VIEW \"{base_name}\" AS SELECT * FROM read_parquet('{file_path}')")
+                            short_name = base_name.replace("_data", "")
+                            conn.execute(f"CREATE OR REPLACE TEMP VIEW \"{short_name}\" AS SELECT * FROM read_parquet('{file_path}')")
+                    except Exception as e:
+                        logger.warning(f"Failed to register sample view {base_name} in DuckDB: {str(e)}")
 
 
 class AnalyticsService:
@@ -155,7 +170,7 @@ class AnalyticsService:
         self.explainability = explainability or ExplainabilityService()
 
     @staticmethod
-    def execute_duckdb_query(query: str) -> SQLResponse:
+    def execute_duckdb_query(query: str, project_id: Optional[str] = None) -> SQLResponse:
         """Loads active cached datasets into temporary views inside DuckDB and executes SQL queries."""
         import hashlib
         import re
@@ -174,7 +189,7 @@ class AnalyticsService:
                 raise Exception("The generated query was rejected for safety.")
 
         query_hash = hashlib.md5(query.strip().encode("utf-8")).hexdigest()
-        cache_key = f"sql_query:{query_hash}"
+        cache_key = f"sql_query:{project_id or 'global'}:{query_hash}"
 
         # 2. Try Cache Lookup
         try:
@@ -195,7 +210,7 @@ class AnalyticsService:
 
         try:
             # Dynamically register all uploaded and sample files as temporary views in DuckDB
-            register_all_datasets_in_duckdb(conn)
+            register_all_datasets_in_duckdb(conn, project_id)
         except Exception:
             pass
 

@@ -76,6 +76,7 @@ class AnomalyResponse(BaseModel):
 
 class SQLPayload(BaseModel):
     query: str = Field(..., description="The read-only SQL query statement to execute against DuckDB", examples=["SELECT region, SUM(revenue) FROM active_dataset GROUP BY region"])
+    project_id: Optional[str] = Field(None, description="Scope the query context to a specific project workspace")
 
 
 class SQLResponse(BaseModel):

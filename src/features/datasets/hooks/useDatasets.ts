@@ -3,14 +3,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { DatasetService } from "../services/dataset.service";
 
-export function useDatasets(id?: string) {
+export function useDatasets(id?: string, projectId?: string) {
   const queryClient = useQueryClient();
 
   const listQuery = useQuery({
-    queryKey: ["datasets", "list"],
-    queryFn: DatasetService.getList,
+    queryKey: projectId ? ["project-datasets", projectId] : ["datasets", "list"],
+    queryFn: () => DatasetService.getList(projectId),
     enabled: !id,
-    staleTime: 60 * 1000,
+    staleTime: 30 * 1000,
   });
 
   const detailQuery = useQuery({
@@ -24,30 +24,37 @@ export function useDatasets(id?: string) {
     mutationFn: ({ actions }: { actions: string[] }) => DatasetService.clean(id!, actions),
     onSuccess: (data) => {
       queryClient.setQueryData(["datasets", "detail", id], data);
-      queryClient.invalidateQueries({ queryKey: ["datasets", "list"] });
+      if (projectId) {
+        queryClient.invalidateQueries({ queryKey: ["project-datasets", projectId] });
+      } else {
+        queryClient.invalidateQueries({ queryKey: ["datasets", "list"] });
+      }
     },
   });
 
   const deleteMutation = useMutation({
     mutationFn: (targetId: string) => DatasetService.delete(targetId),
     onMutate: async (deletedId) => {
-      await queryClient.cancelQueries({ queryKey: ["datasets", "list"] });
-      const previousList = queryClient.getQueryData<any[]>(["datasets", "list"]);
+      const queryKey = projectId ? ["project-datasets", projectId] : ["datasets", "list"];
+      await queryClient.cancelQueries({ queryKey });
+      const previousList = queryClient.getQueryData<any[]>(queryKey);
       if (previousList) {
         queryClient.setQueryData(
-          ["datasets", "list"],
+          queryKey,
           previousList.filter((d) => d.id !== deletedId)
         );
       }
       return { previousList };
     },
     onError: (err, deletedId, context) => {
+      const queryKey = projectId ? ["project-datasets", projectId] : ["datasets", "list"];
       if (context?.previousList) {
-        queryClient.setQueryData(["datasets", "list"], context.previousList);
+        queryClient.setQueryData(queryKey, context.previousList);
       }
     },
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ["datasets", "list"] });
+      const queryKey = projectId ? ["project-datasets", projectId] : ["datasets", "list"];
+      queryClient.invalidateQueries({ queryKey });
     },
   });
 

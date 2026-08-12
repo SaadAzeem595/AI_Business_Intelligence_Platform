@@ -13,6 +13,7 @@ from app.core.telemetry import setup_telemetry
 
 # Import feature routers endpoints
 from app.features.auth.router import router as auth_router
+from app.features.projects.router import router as projects_router
 from app.features.datasets.router import router as datasets_router
 from app.features.analytics.router import router as analytics_router
 from app.features.chat.router import router as chat_router
@@ -104,6 +105,7 @@ async def startup_event():
     # Import all models to ensure they register on Base
     try:
         from app.features.auth.models import User
+        from app.features.projects.models import Project
         from app.features.datasets.models import Dataset
         from app.features.reports.models import Report, ReportSchedule
     except ImportError:
@@ -136,6 +138,10 @@ async def startup_event():
                     "duckdb_table": "VARCHAR",
                     "columns_json": "VARCHAR",
                     "schema_json": "VARCHAR",
+                    "project_id": "VARCHAR",
+                    "owner_id": "VARCHAR",
+                    "original_filename": "VARCHAR",
+                    "error_message": "VARCHAR",
                     "created_at": "TIMESTAMP",
                     "updated_at": "TIMESTAMP"
                 }
@@ -323,6 +329,7 @@ async def ready_check() -> dict:
 
 # Register versioned routers endpoints
 app.include_router(auth_router, prefix=settings.API_V1_STR)
+app.include_router(projects_router, prefix=settings.API_V1_STR)
 app.include_router(datasets_router, prefix=settings.API_V1_STR)
 app.include_router(analytics_router, prefix=settings.API_V1_STR)
 app.include_router(chat_router, prefix=settings.API_V1_STR)

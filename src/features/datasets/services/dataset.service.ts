@@ -34,11 +34,15 @@ const splitCSVLine = (line: string): string[] => {
 };
 
 export const DatasetService = {
-  async getList(): Promise<Dataset[]> {
+  async getList(projectId?: string): Promise<Dataset[]> {
     try {
-      const response = await apiClient.get<Dataset[]>(API_ENDPOINTS.DATASETS.LIST);
+      const url = projectId ? `/projects/${projectId}/datasets` : API_ENDPOINTS.DATASETS.LIST;
+      const response = await apiClient.get<Dataset[]>(url);
       return response.data;
     } catch {
+      if (projectId) {
+        return mockDatasetsList.filter((d) => (d as any).project_id === projectId);
+      }
       return mockDatasetsList;
     }
   },
@@ -104,20 +108,26 @@ export const DatasetService = {
     }
   },
 
-  async upload(file: File, tableName: string, onUploadProgress?: (progressEvent: any) => void): Promise<Dataset> {
+  async upload(
+    file: File,
+    tableName: string,
+    projectId?: string,
+    onUploadProgress?: (progressEvent: any) => void
+  ): Promise<Dataset> {
     try {
       const formData = new FormData();
       formData.append("file", file);
       formData.append("tableName", tableName);
 
-      const response = await apiClient.post<Dataset>(API_ENDPOINTS.DATASETS.UPLOAD, formData, {
-        headers: {
-          "Content-Type": "multipart/form-data",
-        },
+      const url = projectId ? `/projects/${projectId}/datasets` : API_ENDPOINTS.DATASETS.UPLOAD;
+
+      const response = await apiClient.post<Dataset>(url, formData, {
         onUploadProgress,
       });
       return response.data;
-    } catch {
+    } catch (error) {
+      console.warn("Upload API failed, falling back to client-side parsing:", error);
+      
       let parsedHeaders: string[] = ["id", "name", "value"];
       let parsedRows: any[] = [];
       let rowCount = 0;

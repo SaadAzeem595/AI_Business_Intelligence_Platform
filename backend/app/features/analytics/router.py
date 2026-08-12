@@ -365,10 +365,17 @@ async def detect_anomalies(
 async def run_sql_query(
     payload: SQLPayload,
     current_user: MockUser = Depends(require_role(["Analyst", "Admin"])),
+    db: AsyncSession = Depends(get_db_session),
 ) -> SQLResponse:
     """Executes SQL queries against temporary CSV view mappings via the DuckDB engine."""
     try:
-        return AnalyticsService.execute_duckdb_query(payload.query)
+        if payload.project_id:
+            from app.features.projects.router import get_project_and_verify_access
+            await get_project_and_verify_access(payload.project_id, current_user, db)
+            
+        return AnalyticsService.execute_duckdb_query(payload.query, payload.project_id)
+    except HTTPException as e:
+        raise e
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -378,21 +385,47 @@ async def run_sql_query(
 
 @router.get("/sql/schema", response_model=List[Dict[str, Any]])
 async def get_sql_schema(
+    project_id: Optional[str] = None,
     current_user: MockUser = Depends(require_role(["Analyst", "Admin"])),
+    db: AsyncSession = Depends(get_db_session),
 ) -> List[Dict[str, Any]]:
     """Returns currently available view mappings registered in the DuckDB context."""
     from app.features.datasets.router import UPLOADED_PATHS_CACHE
+    from app.features.datasets.models import Dataset
+    from sqlalchemy import select
 
-    schema_list = []
-    for dataset_id, item in UPLOADED_PATHS_CACHE.items():
-        view_name = item["filename"].split(".")[0]
-        schema_list.append({"name": view_name, "rowsCount": 100})
+    if project_id:
+        from app.features.projects.router import get_project_and_verify_access
+        await get_project_and_verify_access(project_id, current_user, db)
         
-    if not schema_list:
-        schema_list = [
-            {"name": "q3_financials", "rowsCount": 14020},
-            {"name": "customer_churn", "rowsCount": 6200},
-            {"name": "raw_clicks_logs", "rowsCount": 185000},
-        ]
-    return schema_list
+        # Get datasets belonging to the project
+        stmt = select(Dataset).where(Dataset.project_id == project_id)
+        result = await db.execute(stmt)
+        db_items = result.scalars().all()
+        
+        schema_list = []
+        for item in db_items:
+            schema_list.append({"name": item.duckdb_table, "rowsCount": item.rows})
+            
+        # Also check cache
+        for d_id, item in UPLOADED_PATHS_CACHE.items():
+            if item.get("project_id") == project_id:
+                if not any(x["name"] == item["duckdb_table"] for x in schema_list):
+                    schema_list.append({"name": item["duckdb_table"], "rowsCount": item["rows"]})
+                    
+        return schema_list
+    else:
+        schema_list = []
+        for dataset_id, item in UPLOADED_PATHS_CACHE.items():
+            if item.get("project_id") is None:
+                view_name = item["filename"].split(".")[0]
+                schema_list.append({"name": view_name, "rowsCount": 100})
+            
+        if not schema_list:
+            schema_list = [
+                {"name": "q3_financials", "rowsCount": 14020},
+                {"name": "customer_churn", "rowsCount": 6200},
+                {"name": "raw_clicks_logs", "rowsCount": 185000},
+            ]
+        return schema_list
 

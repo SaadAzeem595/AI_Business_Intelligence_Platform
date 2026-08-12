@@ -52,17 +52,17 @@ export function useAnomalies(sensitivity?: number) {
   };
 }
 
-export function useSQL() {
+export function useSQL(projectId?: string) {
   const queryClient = useQueryClient();
 
   const schemaQuery = useQuery({
-    queryKey: ["sql", "schema"],
-    queryFn: AnalyticsService.getSQLSchema,
-    staleTime: 10 * 60 * 1000,
+    queryKey: projectId ? ["sql", "schema", projectId] : ["sql", "schema"],
+    queryFn: () => AnalyticsService.getSQLSchema(projectId),
+    staleTime: 30 * 1000,
   });
 
   const executeMutation = useMutation({
-    mutationFn: (queryText: string) => AnalyticsService.executeSQL(queryText),
+    mutationFn: (queryText: string) => AnalyticsService.executeSQL(queryText, projectId),
   });
 
   return {

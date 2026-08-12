@@ -1,7 +1,7 @@
 from typing import Optional
 from datetime import datetime
-from sqlalchemy import Integer, String, DateTime
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import Integer, String, DateTime, ForeignKey
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
 from app.db.base import Base
@@ -27,6 +27,16 @@ class Dataset(Base):
     columns_json: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     schema_json: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
+    # Scoped project fields
+    project_id: Mapped[Optional[str]] = mapped_column(String, ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
+    owner_id: Mapped[Optional[str]] = mapped_column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    original_filename: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), onupdate=func.now())
+
+    project = relationship("Project")
+    owner = relationship("User")
+
 

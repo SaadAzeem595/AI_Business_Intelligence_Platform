@@ -6,6 +6,7 @@ from app.db.base import Base
 # Import all models to ensure they register on Base.metadata
 try:
     from app.features.auth.models import User
+    from app.features.projects.models import Project
     from app.features.datasets.models import Dataset
     from app.features.reports.models import Report, ReportSchedule
 except ImportError:
