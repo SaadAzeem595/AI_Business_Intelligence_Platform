@@ -53,7 +53,7 @@ export default function LandingPage() {
           Upload spreadsheets, CSVs, or unstructured documents. Instantly forecast trends, detect anomalies, segment users, and compile PDF reports using clean natural language interfaces.
         </p>
         <div className="flex flex-wrap items-center justify-center gap-4 pt-4">
-          <Link href="/sign-up">
+          <Link href="/dashboard">
             <Button size="lg" variant="brand">
               Get Started for Free <ArrowRight className="ml-1 h-4 w-4" />
             </Button>

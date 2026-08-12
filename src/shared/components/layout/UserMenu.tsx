@@ -4,12 +4,14 @@ import React, { useState, useRef, useEffect } from "react";
 import Link from "next/link";
 import { User, CreditCard, Settings, LogOut, ChevronDown } from "lucide-react";
 import { useUser, useClerk } from "@clerk/nextjs";
+import { useRouter } from "next/navigation";
 
 export function UserMenu() {
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const { user } = useUser();
   const { signOut } = useClerk();
+  const router = useRouter();
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -91,7 +93,8 @@ export function UserMenu() {
             <button
               onClick={async () => {
                 setIsOpen(false);
-                await signOut();
+                await signOut({ redirectUrl: "/sign-in" });
+                router.push("/sign-in");
               }}
               className="w-full flex items-center gap-2 px-3 py-2 rounded-md text-xs hover:bg-rose-500/10 text-rose-500 hover:text-rose-600 transition-colors text-left cursor-pointer"
             >
