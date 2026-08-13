@@ -190,7 +190,7 @@ export default function ProjectWorkspacePage() {
 
   // SQL Playground Logic
   const [sqlQuery, setSqlQuery] = useState("");
-  const { schema, isLoadingSchema, executeSQL, isExecuting, results } = useSQL();
+  const { schema, isLoadingSchema, executeSQL, isExecuting, results } = useSQL(projectId);
   const [runStats, setRunStats] = useState<{ elapsed: number; rows: number } | null>(null);
 
   useEffect(() => {

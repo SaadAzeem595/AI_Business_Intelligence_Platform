@@ -38,7 +38,9 @@ export function useProjects(id?: string) {
   return {
     projects: listQuery.data || [],
     project: detailQuery.data || null,
-    isLoading: listQuery.isLoading || detailQuery.isLoading,
+    isLoading: id ? detailQuery.isLoading : listQuery.isLoading,
+    isError: id ? detailQuery.isError : listQuery.isError,
+    refetch: id ? detailQuery.refetch : listQuery.refetch,
     isCreating: createMutation.isPending,
     createProject: createMutation.mutateAsync,
     deleteProject: deleteMutation.mutateAsync,

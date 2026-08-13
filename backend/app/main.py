@@ -190,8 +190,36 @@ async def startup_event():
                     except Exception as e:
                         startup_logger.warning(f"Could not drop NOT NULL on users.hashed_password: {e}")
 
+        def check_and_upgrade_projects_table(sync_conn):
+            try:
+                # SQLite
+                cols = sync_conn.execute(text("PRAGMA table_info(projects)"))
+                col_names = [row[1] for row in cols.fetchall()]
+            except Exception:
+                try:
+                    # Postgres
+                    cols = sync_conn.execute(text(
+                        "SELECT column_name FROM information_schema.columns WHERE table_name='projects'"
+                    ))
+                    col_names = [row[0] for row in cols.fetchall()]
+                except Exception:
+                    col_names = []
+            
+            if col_names:
+                new_cols = {
+                    "status": "VARCHAR DEFAULT 'Active'",
+                }
+                for col, col_type in new_cols.items():
+                    if col not in col_names:
+                        try:
+                            sync_conn.execute(text(f"ALTER TABLE projects ADD COLUMN {col} {col_type}"))
+                            startup_logger.info(f"Dynamically added missing column {col} to projects table")
+                        except Exception as e:
+                            startup_logger.warning(f"Could not add column {col} to projects: {e}")
+
         await conn.run_sync(check_and_upgrade_datasets_table)
         await conn.run_sync(check_and_upgrade_users_table)
+        await conn.run_sync(check_and_upgrade_projects_table)
 
     if settings.DEV_AUTH_BYPASS and not is_prod:
         startup_logger.warning("!" * 80)

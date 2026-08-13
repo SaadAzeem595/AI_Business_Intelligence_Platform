@@ -61,7 +61,7 @@ export function useDatasets(id?: string, projectId?: string) {
   return {
     datasets: listQuery.data || [],
     datasetDetails: detailQuery.data || null,
-    isLoading: listQuery.isLoading || detailQuery.isLoading,
+    isLoading: id ? detailQuery.isLoading : listQuery.isLoading,
     isCleaning: cleanMutation.isPending,
     clean: cleanMutation.mutateAsync,
     deleteDataset: deleteMutation.mutateAsync,

@@ -48,20 +48,33 @@ const getAccessToken = async () => {
     const Clerk = (window as any).Clerk;
     if (Clerk) {
       if (!Clerk.isReady) {
-        // Wait for Clerk to be ready
+        // Wait for Clerk to be ready with a safety timeout to prevent hanging requests
         await new Promise((resolve) => {
-          const interval = setInterval(() => {
+          const timeoutId = setTimeout(() => {
+            clearInterval(intervalId);
+            console.warn("[API Client] Clerk initialization timed out after 1000ms. Continuing without token.");
+            resolve(null);
+          }, 1000);
+
+          const intervalId = setInterval(() => {
             if (Clerk.isReady) {
-              clearInterval(interval);
+              clearInterval(intervalId);
+              clearTimeout(timeoutId);
               resolve(null);
             }
           }, 50);
         });
       }
       try {
-        const token = await Clerk.session?.getToken();
-        if (token) {
-          return token;
+        const tokenPromise = Clerk.session?.getToken();
+        if (tokenPromise) {
+          const timeoutPromise = new Promise((_, reject) =>
+            setTimeout(() => reject(new Error("Clerk token retrieval timed out")), 2000)
+          );
+          const token = await Promise.race([tokenPromise, timeoutPromise]);
+          if (token && typeof token === "string") {
+            return token;
+          }
         }
       } catch (err) {
         console.error("Failed to retrieve Clerk token:", err);
@@ -94,6 +107,10 @@ apiClient.interceptors.request.use(
 // 2. Inject JWT Authorization header (runs first due to reverse execution in Axios)
 apiClient.interceptors.request.use(
   async (config) => {
+    // If dev auth bypass is active, do not block or try to query Clerk
+    if (isDevAuthBypass) {
+      return config;
+    }
     const token = await getAccessToken();
     if (token && config.headers) {
       config.headers.Authorization = `Bearer ${token}`;
@@ -141,7 +158,7 @@ apiClient.interceptors.response.use(
     let descriptiveMessage = "An unexpected network error occurred.";
 
     if (error.code === "ECONNABORTED") {
-      descriptiveMessage = "The request timed out. The backend took too long to respond.";
+      descriptiveMessage = "Project creation timed out. Please check that the backend and database are running.";
     } else if (!error.response) {
       // No response was received (Connection refused or CORS error)
       if (error.message && error.message.toLowerCase().includes("network error")) {

@@ -312,7 +312,7 @@ def extract_requested_dataset_name(query: str) -> Optional[str]:
     return None
 
 
-def generate_sql_query(query: str, resolved: Dict[str, Any]) -> str:
+def generate_sql_query(query: str, resolved: Dict[str, Any], project_id: Optional[str] = None) -> str:
     """Generates schema-aware DuckDB SQL query based on target view columns."""
     view_name = resolved["view_name"]
     query_lower = query.lower()
@@ -332,7 +332,7 @@ def generate_sql_query(query: str, resolved: Dict[str, Any]) -> str:
     
     try:
         from app.features.analytics.service import register_all_datasets_in_duckdb
-        register_all_datasets_in_duckdb(conn)
+        register_all_datasets_in_duckdb(conn, project_id=project_id)
         cols_info = conn.execute(f"DESCRIBE SELECT * FROM \"{view_name}\"").fetchall()
         columns = [c[0].lower() for c in cols_info]
     except Exception:
@@ -689,9 +689,9 @@ def sql_agent(state: AgentState) -> Dict[str, Any]:
                 sql_query = llm_response.strip().replace("```sql", "").replace("```", "").strip()
             except Exception as e:
                 logger.error(f"Failed to generate SQL via LLM, falling back to pattern matching: {e}")
-                sql_query = generate_sql_query(query, resolved)
+                sql_query = generate_sql_query(query, resolved, project_id=state.get("active_project"))
         else:
-            sql_query = generate_sql_query(query, resolved)
+            sql_query = generate_sql_query(query, resolved, project_id=state.get("active_project"))
 
     # 4. Auto-Approval Layer
     # Check if query is safe SELECT-only
@@ -732,7 +732,7 @@ def sql_agent(state: AgentState) -> Dict[str, Any]:
     
     try:
         analytics_svc = AnalyticsService()
-        result = analytics_svc.execute_duckdb_query(sql_query)
+        result = analytics_svc.execute_duckdb_query(sql_query, project_id=state.get("active_project"))
         result_dict = {
             "columns": result.columns,
             "rows": result.rows,

@@ -144,9 +144,28 @@ async def get_current_user(
     env_vars = [settings.ENVIRONMENT, settings.NODE_ENV, settings.APP_ENV]
     is_prod = any(v and v.strip().lower() == "production" for v in env_vars)
     if settings.DEV_AUTH_BYPASS and not is_prod:
+        dev_user_id = "dev-user-001"
+        dev_email = "developer@datapilot.com"
+        try:
+            stmt = select(User).where(User.id == dev_user_id)
+            result = await db.execute(stmt)
+            user_in_db = result.scalars().first()
+            if not user_in_db:
+                user_in_db = User(
+                    id=dev_user_id,
+                    email=dev_email,
+                    name="Saad A.",
+                    role="Admin",
+                    is_active=True
+                )
+                db.add(user_in_db)
+                await db.flush()
+        except Exception as sync_err:
+            logger.warning(f"Dev user DB sync warning: {sync_err}")
+
         return MockUser(
-            id="dev-user-001",
-            email="developer@datapilot.com",
+            id=dev_user_id,
+            email=dev_email,
             name="Saad A.",
             role="Admin",
             workspace_id="default"

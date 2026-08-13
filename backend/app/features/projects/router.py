@@ -60,18 +60,72 @@ async def create_project(
     db: AsyncSession = Depends(get_db_session),
 ) -> ProjectResponse:
     """Creates a new project for the authenticated user."""
+    import time
+    start_time = time.perf_counter()
     project_id = f"proj-{uuid.uuid4().hex[:8]}"
-    project_data = {
-        "id": project_id,
-        "name": payload.name,
-        "description": payload.description,
-        "owner_id": current_user.id,
-        "created_at": datetime.now(),
-        "updated_at": datetime.now(),
-    }
-    db_item = await project_repo.create(db, obj_in=project_data)
-    logger.info(f"project_created: project_id={project_id} user_id={current_user.id}")
-    return ProjectResponse.model_validate(db_item)
+    logger.info(f"PROJECT_CREATE_STARTED: project_id={project_id} user_id={current_user.id} name='{payload.name}'")
+    
+    try:
+        logger.info(f"PROJECT_CREATE_AUTHENTICATED: user_id={current_user.id} role={current_user.role}")
+        
+        # 1. Ensure user record exists in database (prevents foreign key owner_id failure)
+        from app.features.auth.models import User
+        stmt = select(User).where(User.id == current_user.id)
+        result = await db.execute(stmt)
+        user_in_db = result.scalars().first()
+        if not user_in_db:
+            user_in_db = User(
+                id=current_user.id,
+                email=current_user.email,
+                name=current_user.name,
+                role=current_user.role,
+                is_active=True
+            )
+            db.add(user_in_db)
+            await db.flush()
+
+        # 2. Insert project record into database
+        project_data = {
+            "id": project_id,
+            "name": payload.name,
+            "description": payload.description,
+            "owner_id": current_user.id,
+            "status": payload.status or "Active",
+            "created_at": datetime.now(),
+            "updated_at": datetime.now(),
+        }
+        logger.info(f"PROJECT_CREATE_DB_INSERT: project_id={project_id} owner_id={current_user.id}")
+        db_item = await project_repo.create(db, obj_in=project_data)
+        logger.info(f"PROJECT_CREATE_DB_COMMITTED: project_id={project_id}")
+        
+        # 3. Invalidate projects cache
+        try:
+            await cache_client.invalidate_pattern(f"projects:{current_user.id}:*")
+            logger.info(f"PROJECT_CREATE_CACHE_INVALIDATED: user_id={current_user.id}")
+        except Exception as cache_err:
+            logger.warning(f"Cache invalidation non-fatal warning: {cache_err}")
+
+        duration = time.perf_counter() - start_time
+        logger.info(f"PROJECT_CREATE_SUCCESS: project_id={project_id} user_id={current_user.id} duration={duration:.4f}s")
+        
+        return ProjectResponse(
+            id=db_item.id,
+            name=db_item.name,
+            description=db_item.description,
+            owner_id=db_item.owner_id,
+            created_at=db_item.created_at,
+            updated_at=db_item.updated_at,
+            datasetsCount=0,
+            dataset_count=0,
+            status=db_item.status
+        )
+    except Exception as e:
+        duration = time.perf_counter() - start_time
+        logger.error(f"PROJECT_CREATE_FAILED: project_id={project_id} user_id={current_user.id} duration={duration:.4f}s error='{str(e)}'")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create project: {str(e)}"
+        )
 
 
 @router.get("", response_model=List[ProjectResponse])
@@ -80,29 +134,45 @@ async def list_projects(
     db: AsyncSession = Depends(get_db_session),
 ) -> List[ProjectResponse]:
     """Lists all projects owned by the authenticated user."""
-    from sqlalchemy import func
+    import time
+    start_time = time.perf_counter()
+    logger.info(f"PROJECT_LIST_STARTED: user_id={current_user.id}")
     
-    result = await db.execute(select(Project).where(Project.owner_id == current_user.id).order_by(Project.created_at.desc()))
-    projects = result.scalars().all()
-    
-    res_list = []
-    for p in projects:
-        ds_stmt = select(func.count(Dataset.id)).where(Dataset.project_id == p.id)
-        ds_res = await db.execute(ds_stmt)
-        count = ds_res.scalar() or 0
+    try:
+        from sqlalchemy import func
         
-        res_list.append(
-            ProjectResponse(
-                id=p.id,
-                name=p.name,
-                description=p.description,
-                owner_id=p.owner_id,
-                created_at=p.created_at,
-                updated_at=p.updated_at,
-                datasetsCount=count,
+        result = await db.execute(select(Project).where(Project.owner_id == current_user.id).order_by(Project.created_at.desc()))
+        projects = result.scalars().all()
+        
+        res_list = []
+        for p in projects:
+            ds_stmt = select(func.count(Dataset.id)).where(Dataset.project_id == p.id)
+            ds_res = await db.execute(ds_stmt)
+            count = ds_res.scalar() or 0
+            
+            res_list.append(
+                ProjectResponse(
+                    id=p.id,
+                    name=p.name,
+                    description=p.description,
+                    owner_id=p.owner_id,
+                    created_at=p.created_at,
+                    updated_at=p.updated_at,
+                    datasetsCount=count,
+                    dataset_count=count,
+                    status=getattr(p, "status", "Active")
+                )
             )
+        duration = time.perf_counter() - start_time
+        logger.info(f"PROJECT_LIST_SUCCESS: user_id={current_user.id} count={len(res_list)} duration={duration:.4f}s")
+        return res_list
+    except Exception as e:
+        duration = time.perf_counter() - start_time
+        logger.error(f"PROJECT_LIST_FAILED: user_id={current_user.id} duration={duration:.4f}s error='{str(e)}'")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list projects: {str(e)}"
         )
-    return res_list
 
 
 @router.get("/{project_id}", response_model=ProjectResponse)
@@ -113,7 +183,23 @@ async def get_project(
 ) -> ProjectResponse:
     """Retrieves project details after verifying access."""
     project = await get_project_and_verify_access(project_id, current_user, db)
-    return ProjectResponse.model_validate(project)
+    
+    from sqlalchemy import func
+    ds_stmt = select(func.count(Dataset.id)).where(Dataset.project_id == project_id)
+    ds_res = await db.execute(ds_stmt)
+    count = ds_res.scalar() or 0
+    
+    return ProjectResponse(
+        id=project.id,
+        name=project.name,
+        description=project.description,
+        owner_id=project.owner_id,
+        created_at=project.created_at,
+        updated_at=project.updated_at,
+        datasetsCount=count,
+        dataset_count=count,
+        status=getattr(project, "status", "Active")
+    )
 
 
 @router.patch("/{project_id}", response_model=ProjectResponse)
@@ -126,7 +212,23 @@ async def update_project(
     """Updates an existing project owned by the user."""
     project = await get_project_and_verify_access(project_id, current_user, db)
     updated = await project_repo.update(db, db_obj=project, obj_in=payload)
-    return ProjectResponse.model_validate(updated)
+    
+    from sqlalchemy import func
+    ds_stmt = select(func.count(Dataset.id)).where(Dataset.project_id == project_id)
+    ds_res = await db.execute(ds_stmt)
+    count = ds_res.scalar() or 0
+    
+    return ProjectResponse(
+        id=updated.id,
+        name=updated.name,
+        description=updated.description,
+        owner_id=updated.owner_id,
+        created_at=updated.created_at,
+        updated_at=updated.updated_at,
+        datasetsCount=count,
+        dataset_count=count,
+        status=getattr(updated, "status", "Active")
+    )
 
 
 @router.delete("/{project_id}")
@@ -218,7 +320,9 @@ async def upload_project_dataset(
         )
     
     dataset_id = str(uuid.uuid4())
-    logger.info(f"dataset_upload_started: dataset_id={dataset_id} project_id={project_id} user_id={current_user.id}")
+    import time
+    start_time = time.perf_counter()
+    logger.info(f"DATASET_UPLOAD_STARTED: dataset_id={dataset_id} project_id={project_id} user_id={current_user.id} filename='{filename}'")
     
     try:
         # Save file to disk
@@ -296,7 +400,8 @@ async def upload_project_dataset(
         await cache_client.invalidate_pattern("sql_query:*")
         await cache_client.invalidate_pattern("dashboard_kpi:*")
         
-        logger.info(f"dataset_upload_completed: dataset_id={dataset_id} project_id={project_id} duration_sec=0")
+        duration = time.perf_counter() - start_time
+        logger.info(f"DATASET_UPLOAD_SUCCESS: dataset_id={dataset_id} project_id={project_id} user_id={current_user.id} duration={duration:.4f}s")
         
         return DatasetResponse(
             id=dataset_id,
@@ -321,7 +426,8 @@ async def upload_project_dataset(
             updated_at=db_item.updated_at
         )
     except Exception as e:
-        logger.error(f"dataset_upload_failed: dataset_id={dataset_id} error={str(e)}")
+        duration = time.perf_counter() - start_time
+        logger.error(f"DATASET_UPLOAD_FAILED: dataset_id={dataset_id} project_id={project_id} user_id={current_user.id} duration={duration:.4f}s error='{str(e)}'")
         # Save fail state to DB if possible to prevent orphan files/failed parsing mapping
         try:
             # Cleanup saved file if it exists
