@@ -140,42 +140,6 @@ async def get_current_user(
     2. Then tries JWT token validation against Clerk.
     3. Falls back to mock user in test/development mode if bypass is active.
     """
-    # 0. Check Dev Auth Bypass
-    env_vars = [settings.ENVIRONMENT, settings.NODE_ENV, settings.APP_ENV]
-    is_prod = any(v and v.strip().lower() == "production" for v in env_vars)
-    if settings.DEV_AUTH_BYPASS and not is_prod:
-        dev_user_id = "dev-user-001"
-        dev_email = "developer@datapilot.com"
-        try:
-            stmt = select(User).where(User.id == dev_user_id)
-            result = await db.execute(stmt)
-            user_in_db = result.scalars().first()
-            if not user_in_db:
-                user_in_db = User(
-                    id=dev_user_id,
-                    email=dev_email,
-                    name="Saad A.",
-                    role="Admin",
-                    is_active=True,
-                    hashed_password="dev_auth_bypass_hash"
-                )
-                db.add(user_in_db)
-                await db.flush()
-        except Exception as sync_err:
-            logger.warning(f"Dev user DB sync warning: {sync_err}")
-            try:
-                await db.rollback()
-            except Exception:
-                pass
-
-        return MockUser(
-            id=dev_user_id,
-            email=dev_email,
-            name="Saad A.",
-            role="Admin",
-            workspace_id="default"
-        )
-
     # 1. API Key Auth
     if x_api_key:
         valid_keys = [k.strip() for k in settings.API_KEYS.split(",") if k.strip()]
@@ -217,7 +181,8 @@ async def get_current_user(
                     email=username,
                     name=username.split("@")[0].capitalize(),
                     role=role,
-                    is_active=True
+                    is_active=True,
+                    hashed_password="dev_auth_bypass_hash"
                 )
                 db.add(user)
                 await db.flush()
@@ -299,7 +264,8 @@ async def get_current_user(
                         email=email,
                         name=name,
                         role=role,
-                        is_active=True
+                        is_active=True,
+                        hashed_password="dev_auth_bypass_hash"
                     )
                     db.add(user)
                     await db.flush()
@@ -312,6 +278,42 @@ async def get_current_user(
                 role=user.role,
                 workspace_id=user.id
             )
+
+    # 3. Check Dev Auth Bypass (when unauthenticated request)
+    env_vars = [settings.ENVIRONMENT, settings.NODE_ENV, settings.APP_ENV]
+    is_prod = any(v and v.strip().lower() == "production" for v in env_vars)
+    if settings.DEV_AUTH_BYPASS and not is_prod:
+        dev_user_id = "dev-user-001"
+        dev_email = "developer@datapilot.com"
+        try:
+            stmt = select(User).where(User.id == dev_user_id)
+            result = await db.execute(stmt)
+            user_in_db = result.scalars().first()
+            if not user_in_db:
+                user_in_db = User(
+                    id=dev_user_id,
+                    email=dev_email,
+                    name="Saad A.",
+                    role="Admin",
+                    is_active=True,
+                    hashed_password="dev_auth_bypass_hash"
+                )
+                db.add(user_in_db)
+                await db.flush()
+        except Exception as sync_err:
+            logger.warning(f"Dev user DB sync warning: {sync_err}")
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+
+        return MockUser(
+            id=dev_user_id,
+            email=dev_email,
+            name="Saad A.",
+            role="Admin",
+            workspace_id="default"
+        )
 
     # 3. Fallback for testing/dev ease
     if IS_TESTING:
@@ -329,10 +331,10 @@ def require_role(allowed_roles: List[str]):
         if current_user.role == "Owner":
             return current_user
 
-        # When dev auth bypass is enabled, let it pass all checks
+        # When dev auth bypass is enabled, let dev-user-001 pass all checks
         env_vars = [settings.ENVIRONMENT, settings.NODE_ENV, settings.APP_ENV]
         is_prod = any(v and v.strip().lower() == "production" for v in env_vars)
-        if settings.DEV_AUTH_BYPASS and not is_prod:
+        if settings.DEV_AUTH_BYPASS and not is_prod and current_user.id == "dev-user-001":
             return current_user
 
         if current_user.role not in allowed_roles:

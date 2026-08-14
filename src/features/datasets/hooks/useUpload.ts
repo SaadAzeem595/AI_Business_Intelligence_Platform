@@ -17,9 +17,11 @@ export function useUpload(projectId?: string) {
     onSuccess: () => {
       if (projectId) {
         queryClient.invalidateQueries({ queryKey: ["project-datasets", projectId] });
-      } else {
-        queryClient.invalidateQueries({ queryKey: ["datasets", "list"] });
+        queryClient.invalidateQueries({ queryKey: ["sql", "schema", projectId] });
       }
+      queryClient.invalidateQueries({ queryKey: ["datasets", "list"] });
+      queryClient.invalidateQueries({ queryKey: ["projects"] });
+      queryClient.invalidateQueries({ queryKey: ["sql", "schema"] });
       setProgress(0);
     },
     onError: () => {

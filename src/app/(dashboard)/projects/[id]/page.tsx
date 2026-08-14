@@ -69,15 +69,29 @@ export default function ProjectWorkspacePage() {
   // File Upload Logic
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragActive, setIsDragActive] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
+
+  const processUpload = async (file: File) => {
+    setUploadError(null);
+    setUploadSuccess(null);
+    const cleanTableName = file.name
+      .replace(/\.[^/.]+$/, "")
+      .replace(/[^a-zA-Z0-9]/g, "_")
+      .toLowerCase();
+    try {
+      const res = await upload({ file, tableName: cleanTableName });
+      setUploadSuccess(`Successfully uploaded "${file.name}" (${res?.rows?.toLocaleString() || 0} rows registered in DuckDB as table "${res?.duckdb_table || cleanTableName}")`);
+    } catch (err: any) {
+      console.error("Project dataset upload failed:", err);
+      setUploadError(err.message || "Failed to upload and register dataset.");
+    }
+  };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      const cleanTableName = file.name
-        .replace(/\.[^/.]+$/, "")
-        .replace(/[^a-zA-Z0-9]/g, "_")
-        .toLowerCase();
-      upload({ file, tableName: cleanTableName });
+      processUpload(file);
     }
   };
 
@@ -96,11 +110,7 @@ export default function ProjectWorkspacePage() {
     setIsDragActive(false);
     const file = e.dataTransfer.files?.[0];
     if (file) {
-      const cleanTableName = file.name
-        .replace(/\.[^/.]+$/, "")
-        .replace(/[^a-zA-Z0-9]/g, "_")
-        .toLowerCase();
-      upload({ file, tableName: cleanTableName });
+      processUpload(file);
     }
   };
 
@@ -335,6 +345,20 @@ export default function ProjectWorkspacePage() {
       {/* Tabs Contents */}
       {activeTab === "database" && (
         <div className="space-y-6">
+          {uploadError && (
+            <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-lg text-xs text-rose-500 font-medium flex items-center justify-between">
+              <span>{uploadError}</span>
+              <button onClick={() => setUploadError(null)} className="ml-2 font-bold cursor-pointer hover:underline">✕</button>
+            </div>
+          )}
+
+          {uploadSuccess && (
+            <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-lg text-xs text-emerald-500 font-medium flex items-center justify-between">
+              <span>{uploadSuccess}</span>
+              <button onClick={() => setUploadSuccess(null)} className="ml-2 font-bold cursor-pointer hover:underline">✕</button>
+            </div>
+          )}
+
           {/* Drag & Drop Upload Zone */}
           <Card 
             onDragOver={handleDragOver}

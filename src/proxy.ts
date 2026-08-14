@@ -1,4 +1,5 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
+import { NextResponse, type NextRequest } from "next/server";
 
 const isProtectedRoute = createRouteMatcher([
   "/dashboard(.*)",
@@ -15,19 +16,23 @@ const isProtectedRoute = createRouteMatcher([
   "/billing(.*)",
 ]);
 
-export default clerkMiddleware(async (auth, req) => {
-  // Support local dev auth bypass check
-  const isDevAuthBypass =
-    process.env.NEXT_PUBLIC_DEV_AUTH_BYPASS === "true" &&
-    process.env.NODE_ENV !== "production";
-  if (isDevAuthBypass) {
-    return;
-  }
-
+const clerkHandler = clerkMiddleware(async (auth, req) => {
   if (isProtectedRoute(req)) {
     await auth.protect();
   }
 });
+
+export default function proxy(req: NextRequest, event: any) {
+  const isDevAuthBypass =
+    process.env.NEXT_PUBLIC_DEV_AUTH_BYPASS === "true" &&
+    process.env.NODE_ENV !== "production";
+
+  if (isDevAuthBypass) {
+    return NextResponse.next();
+  }
+
+  return clerkHandler(req, event);
+}
 
 export const config = {
   matcher: [

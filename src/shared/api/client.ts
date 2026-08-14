@@ -143,6 +143,8 @@ apiClient.interceptors.response.use(
       );
       if (responseData) {
         console.error(`[HTTP Response Data]:`, responseData);
+      } else {
+        console.error(`[HTTP Error Details]:`, error.message || error);
       }
     }
 

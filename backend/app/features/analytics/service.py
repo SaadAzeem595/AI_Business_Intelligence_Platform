@@ -63,22 +63,35 @@ def register_all_datasets_in_duckdb(conn: duckdb.DuckDBPyConnection, project_id:
         if not file_path or not os.path.exists(file_path):
             continue
         registered_paths.add(file_path)
-        view_name = item.duckdb_table or os.path.splitext(item.filename)[0].lower().replace(" ", "_").replace("-", "_").replace(".", "_")
-        try:
-            if file_path.endswith('.csv'):
-                conn.execute(f"CREATE OR REPLACE TEMP VIEW \"{view_name}\" AS SELECT * FROM read_csv_auto('{file_path}')")
-            elif file_path.endswith(('.xlsx', '.xls')):
-                import pandas as pd
-                df = pd.read_excel(file_path)
-                conn.register(view_name, df)
-            elif file_path.endswith('.json'):
-                import pandas as pd
-                df = pd.read_json(file_path)
-                conn.register(view_name, df)
-            elif file_path.endswith('.parquet'):
-                conn.execute(f"CREATE OR REPLACE TEMP VIEW \"{view_name}\" AS SELECT * FROM read_parquet('{file_path}')")
-        except Exception as e:
-            logger.warning(f"Failed to register uploaded view {view_name} in DuckDB: {str(e)}")
+        
+        view_names = set()
+        if item.duckdb_table:
+            view_names.add(item.duckdb_table)
+        if item.display_name:
+            v = item.display_name.strip().lower().replace(" ", "_").replace("-", "_").replace(".", "_")
+            if v:
+                view_names.add(v)
+        if item.filename:
+            v = os.path.splitext(item.filename)[0].strip().lower().replace(" ", "_").replace("-", "_").replace(".", "_")
+            if v:
+                view_names.add(v)
+                
+        for view_name in view_names:
+            try:
+                if file_path.endswith('.csv'):
+                    conn.execute(f"CREATE OR REPLACE TEMP VIEW \"{view_name}\" AS SELECT * FROM read_csv_auto('{file_path}')")
+                elif file_path.endswith(('.xlsx', '.xls')):
+                    import pandas as pd
+                    df = pd.read_excel(file_path)
+                    conn.register(view_name, df)
+                elif file_path.endswith('.json'):
+                    import pandas as pd
+                    df = pd.read_json(file_path)
+                    conn.register(view_name, df)
+                elif file_path.endswith('.parquet'):
+                    conn.execute(f"CREATE OR REPLACE TEMP VIEW \"{view_name}\" AS SELECT * FROM read_parquet('{file_path}')")
+            except Exception as e:
+                logger.warning(f"Failed to register uploaded view {view_name} in DuckDB: {str(e)}")
 
     # 2. Register from UPLOADED_PATHS_CACHE fallback
     for d_id, item in UPLOADED_PATHS_CACHE.items():
@@ -90,22 +103,30 @@ def register_all_datasets_in_duckdb(conn: duckdb.DuckDBPyConnection, project_id:
         if not project_id and item.get("project_id") is not None:
             continue
             
-        view_name = item.get("duckdb_table") or os.path.splitext(item["filename"])[0].lower().replace(" ", "_").replace("-", "_").replace(".", "_")
-        try:
-            if file_path.endswith('.csv'):
-                conn.execute(f"CREATE OR REPLACE TEMP VIEW \"{view_name}\" AS SELECT * FROM read_csv_auto('{file_path}')")
-            elif file_path.endswith(('.xlsx', '.xls')):
-                import pandas as pd
-                df = pd.read_excel(file_path)
-                conn.register(view_name, df)
-            elif file_path.endswith('.json'):
-                import pandas as pd
-                df = pd.read_json(file_path)
-                conn.register(view_name, df)
-            elif file_path.endswith('.parquet'):
-                conn.execute(f"CREATE OR REPLACE TEMP VIEW \"{view_name}\" AS SELECT * FROM read_parquet('{file_path}')")
-        except Exception as e:
-            logger.warning(f"Failed to register uploaded view {view_name} in DuckDB: {str(e)}")
+        view_names = set()
+        if item.get("duckdb_table"):
+            view_names.add(item["duckdb_table"])
+        if item.get("filename"):
+            v = os.path.splitext(item["filename"])[0].strip().lower().replace(" ", "_").replace("-", "_").replace(".", "_")
+            if v:
+                view_names.add(v)
+                
+        for view_name in view_names:
+            try:
+                if file_path.endswith('.csv'):
+                    conn.execute(f"CREATE OR REPLACE TEMP VIEW \"{view_name}\" AS SELECT * FROM read_csv_auto('{file_path}')")
+                elif file_path.endswith(('.xlsx', '.xls')):
+                    import pandas as pd
+                    df = pd.read_excel(file_path)
+                    conn.register(view_name, df)
+                elif file_path.endswith('.json'):
+                    import pandas as pd
+                    df = pd.read_json(file_path)
+                    conn.register(view_name, df)
+                elif file_path.endswith('.parquet'):
+                    conn.execute(f"CREATE OR REPLACE TEMP VIEW \"{view_name}\" AS SELECT * FROM read_parquet('{file_path}')")
+            except Exception as e:
+                logger.warning(f"Failed to register uploaded view {view_name} in DuckDB: {str(e)}")
 
     # Register sample files (only in global / legacy mode when project_id is None)
     if not project_id:

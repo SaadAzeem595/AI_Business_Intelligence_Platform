@@ -59,6 +59,9 @@ export const DatasetService = {
 
     const response = await apiClient.post<Dataset>(url, formData, {
       onUploadProgress,
+      headers: {
+        "Content-Type": "multipart/form-data",
+      },
     });
     return response.data;
   },

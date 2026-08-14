@@ -123,6 +123,10 @@ async def create_project(
     except Exception as e:
         duration = time.perf_counter() - start_time
         logger.error(f"PROJECT_CREATE_FAILED: project_id={project_id} user_id={current_user.id} duration={duration:.4f}s error='{str(e)}'")
+        try:
+            await db.rollback()
+        except Exception:
+            pass
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to create project: {str(e)}"
@@ -170,6 +174,10 @@ async def list_projects(
     except Exception as e:
         duration = time.perf_counter() - start_time
         logger.error(f"PROJECT_LIST_FAILED: user_id={current_user.id} duration={duration:.4f}s error='{str(e)}'")
+        try:
+            await db.rollback()
+        except Exception:
+            pass
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to list projects: {str(e)}"
