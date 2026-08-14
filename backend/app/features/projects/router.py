@@ -79,7 +79,8 @@ async def create_project(
                 email=current_user.email,
                 name=current_user.name,
                 role=current_user.role,
-                is_active=True
+                is_active=True,
+                hashed_password="dev_auth_bypass_hash"
             )
             db.add(user_in_db)
             await db.flush()

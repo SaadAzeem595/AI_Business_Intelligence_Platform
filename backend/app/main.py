@@ -238,6 +238,7 @@ async def startup_event():
 
 
 @app.get("/health", tags=["Health & Status Checks"])
+@app.get(f"{settings.API_V1_STR}/health", tags=["Health & Status Checks"])
 async def health_check() -> dict:
     """Core health check route inspecting databases and analytics layers connectivity."""
     from app.core.llm import LLMService

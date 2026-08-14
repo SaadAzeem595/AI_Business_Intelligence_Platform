@@ -16,10 +16,11 @@ class RedisCache:
         self.memory_store = {}
         self.is_connected = False
         self._connect_in_progress = False
+        self._connection_failed = False
 
     async def connect(self) -> None:
         """Initializes the Redis connection client pool."""
-        if self.is_connected or self._connect_in_progress:
+        if self.is_connected or self._connect_in_progress or self._connection_failed:
             return
             
         self._connect_in_progress = True
@@ -30,7 +31,7 @@ class RedisCache:
                 url, 
                 encoding="utf-8", 
                 decode_responses=True,
-                socket_connect_timeout=2.0
+                socket_connect_timeout=0.5
             )
             # Ping to verify
             await self.redis.ping()
@@ -38,6 +39,7 @@ class RedisCache:
             logger.info("Successfully connected to Redis cache backend.")
         except Exception as e:
             self.is_connected = False
+            self._connection_failed = True
             self.redis = None
             logger.warning(
                 f"Redis cache connection failed: {str(e)}. "

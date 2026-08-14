@@ -156,12 +156,17 @@ async def get_current_user(
                     email=dev_email,
                     name="Saad A.",
                     role="Admin",
-                    is_active=True
+                    is_active=True,
+                    hashed_password="dev_auth_bypass_hash"
                 )
                 db.add(user_in_db)
                 await db.flush()
         except Exception as sync_err:
             logger.warning(f"Dev user DB sync warning: {sync_err}")
+            try:
+                await db.rollback()
+            except Exception:
+                pass
 
         return MockUser(
             id=dev_user_id,

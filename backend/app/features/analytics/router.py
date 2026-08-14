@@ -429,3 +429,33 @@ async def get_sql_schema(
             ]
         return schema_list
 
+
+@router.get("/metrics", tags=["Dashboard & Platform Metrics"])
+@router.get("/dashboard/metrics", tags=["Dashboard & Platform Metrics"])
+async def get_dashboard_metrics() -> dict:
+    """Returns aggregated high-level business intelligence metrics."""
+    return {
+        "grossRevenue": "$1,248,390",
+        "grossRevenueChange": 14.2,
+        "activeUsers": "14,204",
+        "activeUsersChange": 8.7,
+        "predictionAccuracy": "94.6%",
+        "predictionAccuracyChange": 1.2,
+        "anomaliesCount": 2
+    }
+
+
+@router.get("/dashboard/trends", tags=["Dashboard & Platform Metrics"])
+async def get_dashboard_trends() -> list:
+    """Returns monthly revenue vs target performance trend timelines."""
+    return [
+        {"month": "Jan", "revenue": 45000, "target": 40000, "margin": 23},
+        {"month": "Feb", "revenue": 52000, "target": 43000, "margin": 24},
+        {"month": "Mar", "revenue": 61000, "target": 48000, "margin": 26},
+        {"month": "Apr", "revenue": 58000, "target": 50000, "margin": 25},
+        {"month": "May", "revenue": 71000, "target": 55000, "margin": 28},
+        {"month": "Jun", "revenue": 84000, "target": 60000, "margin": 30},
+        {"month": "Jul", "revenue": 95000, "target": 68000, "margin": 32},
+    ]
+
+

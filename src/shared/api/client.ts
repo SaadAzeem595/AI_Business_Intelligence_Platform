@@ -18,16 +18,10 @@ const isDevAuthBypass =
 
 
 const getBaseURL = () => {
-  const url = process.env.NEXT_PUBLIC_API_URL;
-  if (!url) {
-    return "http://localhost:8000/api/v1";
-  }
-  // Ensure the baseURL has /api/v1 appended if it's pointing to the root host
-  if (url.endsWith("/")) {
-    return url + "api/v1";
-  }
+  let url = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
+  url = url.trim().replace(/\/+$/, "");
   if (!url.endsWith("/api/v1")) {
-    return url + "/api/v1";
+    url = `${url}/api/v1`;
   }
   return url;
 };
@@ -144,15 +138,12 @@ apiClient.interceptors.response.use(
     const status = error.response?.status;
 
     if (process.env.NODE_ENV === "development") {
-      console.error(`[HTTP Error Debug]`, {
-        requestURL: fullURL,
-        method: config.method?.toUpperCase(),
-        requestPayload: config.data,
-        responseStatus: status,
-        responseBody: responseData,
-        axiosConfig: config,
-        originalError: error,
-      });
+      console.error(
+        `[HTTP Error Debug] ${config.method?.toUpperCase() || "GET"} ${fullURL} -> Status: ${status || "Network/CORS Error"} | Code: ${error.code || "N/A"}`
+      );
+      if (responseData) {
+        console.error(`[HTTP Response Data]:`, responseData);
+      }
     }
 
     let descriptiveMessage = "An unexpected network error occurred.";
