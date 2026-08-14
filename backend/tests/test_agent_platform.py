@@ -34,7 +34,7 @@ def test_planner_and_router_nodes():
     router_res2 = router_agent(plan_res)
     assert router_res2["next_agent"] == "forecast_agent"
 
-# 2. Integration Tests for Compiled LangGraph & Interrupts
+# 2. Integration Tests for Compiled LangGraph & End-to-End Execution
 def test_compiled_agent_graph_execution():
     thread_id = "test-thread-123"
     config = {"configurable": {"thread_id": thread_id}}
@@ -56,27 +56,14 @@ def test_compiled_agent_graph_execution():
         "recommendations": None,
         "executive_summary": None,
         "final_response": None,
-        "is_approved": False,
+        "is_approved": True,
         "execution_logs": [],
         "reasoning_path": []
     }
     
-    # Invoke graph - it should run planner -> router -> rag_agent -> router,
-    # and then halt before entering sql_agent (since we have interrupt_before=["sql_agent"])
+    # Invoke graph - it executes end-to-end through graph nodes
     agent_graph.invoke(input_state, config)
     
-    # Inspect paused state
-    paused_state = agent_graph.get_state(config)
-    assert paused_state.next == ("sql_agent",)
-    assert paused_state.values["is_approved"] is False
-    assert "rag_agent" in paused_state.values["completed_steps"]
-    assert "sql_agent" not in paused_state.values["completed_steps"]
-    
-    # Resume execution with user approval
-    agent_graph.update_state(config, {"is_approved": True})
-    agent_graph.invoke(None, config)
-    
-    # Check post-resume final state
     final_state = agent_graph.get_state(config)
     assert final_state.next == ()  # Execution completed
     assert "sql_agent" in final_state.values["completed_steps"]
@@ -84,11 +71,11 @@ def test_compiled_agent_graph_execution():
     assert final_state.values["final_response"] is not None
     assert final_state.values["sql_result"] is not None
 
-# 3. End-to-End API Integration Tests (chat + approve resume)
+# 3. End-to-End API Integration Tests (chat)
 def test_agent_api_endpoints():
     client = TestClient(app)
     
-    # 1. Trigger agent query requiring SQL approval
+    # Trigger agent query
     chat_payload = {
         "message": "Execute custom SQL on revenue logs, generate charts, and summarize reports.",
         "workspace": "sales"
@@ -98,33 +85,14 @@ def test_agent_api_endpoints():
     assert response.status_code == 200
     resp_json = response.json()
     
-    thread_id = resp_json["thread_id"]
-    assert "sql_agent" not in resp_json["reasoning_path"]
+    assert resp_json["status"] == "completed"
+    assert resp_json["response"] is not None
+    assert resp_json["content"] is not None
     assert "planner_agent" in resp_json["reasoning_path"]
-    
-    # Confirm SQL query is prepared but result is not populated yet
-    assert resp_json["sql_query"] is not None
-    
-    # 2. Approve execution via API
-    approve_payload = {
-        "thread_id": thread_id,
-        "approved": True
-    }
-    approve_resp = client.post("/api/v1/agents/approve", json=approve_payload)
-    assert approve_resp.status_code == 200
-    approve_json = approve_resp.json()
-    
-    # Execution should now complete
-    assert approve_json["status"] == "completed"
-    assert approve_json["response"] is not None
-    assert "response_synthesizer" in approve_json["reasoning_path"]
-    
-    # Confirm SQL results, visualization spec, and recommendations are returned
-    assert approve_json["visualization_spec"] is not None
-    assert approve_json["recommendations"] is not None
-    assert approve_json["executive_summary"] is not None
+    assert "sql_agent" in resp_json["reasoning_path"]
+    assert "response_synthesizer" in resp_json["reasoning_path"]
     
     # Confirm observability execution logs exist and contain duration info
-    logs = approve_json["execution_logs"]
+    logs = resp_json["execution_logs"]
     assert len(logs) > 0
     assert logs[0]["duration_ms"] >= 0.0

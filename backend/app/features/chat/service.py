@@ -1,52 +1,51 @@
 from typing import Any, Dict
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.core.dependencies import MockUser
 from app.features.chat.schemas import ChatMessageResponse, ChatMessagePayload
+from app.features.agents.schemas import AgentChatPayload
+from app.features.agents.router import chat_with_agents
 
 
 class ChatService:
-    """Mock agentic assistant coordinating natural language requests to charts or structured tables."""
+    """Agentic assistant coordinating natural language requests to charts or structured tables."""
 
     @staticmethod
-    def get_assistant_response(payload: ChatMessagePayload) -> ChatMessageResponse:
-        text = payload.message.lower()
-        res = ChatMessageResponse(
-            role="assistant",
-            content="I parsed your request successfully. Let me know if you need to run specific database operations.",
+    async def get_assistant_response(
+        payload: ChatMessagePayload,
+        current_user: MockUser,
+        db: AsyncSession
+    ) -> ChatMessageResponse:
+        active_proj = payload.active_project or payload.project_id
+        session_id = getattr(payload, "sessionId", None)
+        
+        agent_payload = AgentChatPayload(
+            message=payload.message,
+            thread_id=payload.thread_id or session_id or payload.conversation_id,
+            conversation_id=payload.conversation_id or payload.thread_id or session_id,
+            workspace=payload.workspace or payload.workspace_id or "default",
+            workspace_id=payload.workspace_id or payload.workspace or current_user.workspace_id,
+            dataset=payload.dataset,
+            dataset_id=payload.dataset_id or payload.dataset,
+            selected_dataset_ids=payload.selected_dataset_ids,
+            active_project=active_proj,
+            project_id=active_proj,
+            history=payload.history
         )
 
-        if any(term in text for term in ["forecast", "sales", "chart", "trend"]):
-            res = ChatMessageResponse(
-                role="assistant",
-                content="I queried the active dataset via DuckDB and compiled the monthly sales compared to targets. Here is the chart view:",
-                chart={
-                    "type": "bar" if "bar" in text else "line",
-                    "xKey": "month",
-                    "yKeys": ["sales", "target"],
-                    "data": [
-                        {"month": "Jan", "sales": 4200, "target": 4000},
-                        {"month": "Feb", "sales": 4800, "target": 4100},
-                        {"month": "Mar", "sales": 5100, "target": 4300},
-                        {"month": "Apr", "sales": 4900, "target": 4500},
-                        {"month": "May", "sales": 6200, "target": 4800},
-                        {"month": "Jun", "sales": 7400, "target": 5000},
-                    ],
-                },
-            )
-        elif any(term in text for term in ["segment", "cohort", "cluster", "customer"]):
-            res = ChatMessageResponse(
-                role="assistant",
-                content="I executed a clustering operation on your cohort records. Here are the user profiles clustered by monthly active engagement scores:",
-                table={
-                    "columns": [
-                        {"header": "Cohort Cluster ID", "accessorKey": "cluster"},
-                        {"header": "Average engagement", "accessorKey": "engagement"},
-                        {"header": "Size (Users)", "accessorKey": "size"},
-                    ],
-                    "data": [
-                        {"cluster": "Cluster Alpha (Power Users)", "engagement": "94.2/100", "size": 1402},
-                        {"cluster": "Cluster Beta (Casual)", "engagement": "48.7/100", "size": 6820},
-                        {"cluster": "Cluster Gamma (Inactive)", "engagement": "12.4/100", "size": 5982},
-                    ],
-                },
-            )
+        agent_res = await chat_with_agents(agent_payload, current_user, db)
+        res_text = agent_res.content or agent_res.response or "I processed your request successfully."
 
-        return res
+        return ChatMessageResponse(
+            role="assistant",
+            content=res_text,
+            response=res_text,
+            thread_id=agent_res.thread_id,
+            dataset_id=agent_res.dataset_id,
+            dataset_name=agent_res.dataset_name,
+            sql_query=agent_res.sql_query,
+            data=agent_res.data,
+            columns=agent_res.columns,
+            row_count=agent_res.row_count,
+            chart=agent_res.chart,
+            table=agent_res.table
+        )

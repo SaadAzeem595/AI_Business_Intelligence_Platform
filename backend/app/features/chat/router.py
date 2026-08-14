@@ -1,6 +1,8 @@
 from typing import List
 from fastapi import APIRouter, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import get_db_session
 from app.core.dependencies import get_current_user, MockUser
 from app.features.chat.schemas import ChatMessagePayload, ChatMessageResponse, ChatSessionResponse
 from app.features.chat.service import ChatService
@@ -23,6 +25,7 @@ async def list_chat_sessions(
 async def post_chat_message(
     payload: ChatMessagePayload,
     current_user: MockUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
 ) -> ChatMessageResponse:
-    """Submits a message and yields streaming responses containing inline visuals or tables."""
-    return ChatService.get_assistant_response(payload)
+    """Submits a message and yields responses containing analysis text, charts, or structured data tables."""
+    return await ChatService.get_assistant_response(payload, current_user, db)

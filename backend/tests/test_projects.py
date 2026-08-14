@@ -148,3 +148,51 @@ def test_project_dataset_upload_and_scoped_query():
     
     # Clean up dependency override
     app.dependency_overrides.clear()
+
+
+def test_datetime_dataset_ingestion_and_project_delete():
+    """Tests dataset upload containing date/timestamp columns and verifies project deletion with cleanup."""
+    client = TestClient(app)
+    
+    # 1. Setup User and Project
+    set_active_user("user_date_test", role="Admin")
+    response = client.post("/api/v1/projects", json={"name": "Date Test Workspace"})
+    assert response.status_code == 201
+    project_id = response.json()["id"]
+    
+    # 2. Upload CSV dataset with date and timestamp columns
+    csv_content = b"order_id,order_date,created_at,amount\n101,2026-08-01,2026-08-01 10:30:00,150.50\n102,2026-08-02,2026-08-02 14:15:00,299.99"
+    csv_file = io.BytesIO(csv_content)
+    files = {"file": ("orders_with_dates.csv", csv_file, "text/csv")}
+    data = {"tableName": "orders_with_dates"}
+    
+    # Should succeed with HTTP 200 without datetime serialization errors
+    response = client.post(f"/api/v1/projects/{project_id}/datasets", files=files, data=data)
+    assert response.status_code == 200
+    dataset_data = response.json()
+    assert dataset_data["project_id"] == project_id
+    assert dataset_data["rows"] == 2
+    
+    # 3. Query date and timestamp columns via SQL
+    sql_payload = {
+        "query": f"SELECT order_id, order_date, created_at, amount FROM {dataset_data['duckdb_table']}",
+        "project_id": project_id
+    }
+    response = client.post("/api/v1/sql/run", json=sql_payload)
+    assert response.status_code == 200
+    query_result = response.json()
+    assert len(query_result["rows"]) == 2
+    assert "order_date" in query_result["columns"]
+    
+    # 4. Delete Project
+    delete_res = client.delete(f"/api/v1/projects/{project_id}")
+    assert delete_res.status_code == 200
+    assert delete_res.json()["status"] == "success"
+    
+    # 5. Confirm project no longer exists
+    get_res = client.get(f"/api/v1/projects/{project_id}")
+    assert get_res.status_code == 404
+    
+    # Clean up dependency override
+    app.dependency_overrides.clear()
+

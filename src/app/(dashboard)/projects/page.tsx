@@ -18,22 +18,28 @@ import {
   X,
   AlertCircle,
   CheckCircle2,
-  RefreshCw
+  RefreshCw,
+  Trash2
 } from "lucide-react";
 import { useProjects } from "@/features/projects/hooks/useProjects";
 import { AnimatePresence, motion } from "framer-motion";
 import { cn } from "@/shared/lib/utils";
 
 export default function ProjectsPage() {
-  const { projects, isLoading, isError, refetch, createProject, isCreating } = useProjects();
+  const { projects, isLoading, isError, refetch, createProject, isCreating, deleteProject } = useProjects();
   
-  // Dialog state
+  // Create Dialog state
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [errors, setErrors] = useState<{ name?: string }>({});
   const [apiError, setApiError] = useState<string | null>(null);
+
+  // Delete Dialog state
+  const [projectToDelete, setProjectToDelete] = useState<{ id: string; name: string } | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   
   // Success Toast state
   const [successToast, setSuccessToast] = useState<string | null>(null);
@@ -82,6 +88,26 @@ export default function ProjectsPage() {
       setApiError(errMsg);
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleDeleteProject = async () => {
+    if (!projectToDelete || isDeleting) return;
+    setDeleteError(null);
+
+    try {
+      setIsDeleting(true);
+      await deleteProject(projectToDelete.id);
+      const deletedName = projectToDelete.name;
+      setProjectToDelete(null);
+      setSuccessToast(`Project "${deletedName}" deleted successfully.`);
+      setTimeout(() => setSuccessToast(null), 3000);
+    } catch (err: any) {
+      console.error("Failed to delete project:", err);
+      const errMsg = err?.response?.data?.detail || err.message || "Failed to delete project.";
+      setDeleteError(errMsg);
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -234,6 +260,18 @@ export default function ProjectsPage() {
                 <Button size="icon" variant="ghost" className="h-8 w-8 hover:bg-muted text-muted-foreground hover:text-foreground shrink-0">
                   <Share2 className="h-4 w-4" />
                 </Button>
+                <Button 
+                  size="icon" 
+                  variant="ghost" 
+                  onClick={() => {
+                    setDeleteError(null);
+                    setProjectToDelete({ id: project.id, name: project.name });
+                  }}
+                  className="h-8 w-8 hover:bg-rose-500/10 text-muted-foreground hover:text-rose-500 shrink-0 cursor-pointer transition-colors"
+                  title="Delete project"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
                 <Link href={`/projects/${project.id}`} className="grow">
                   <Button size="sm" variant="outline" className="w-full text-xs font-semibold hover:bg-brand-indigo hover:text-brand-indigo-foreground cursor-pointer transition-all">
                     Open Workspace <ArrowRight className="h-3.5 w-3.5 ml-1.5" />
@@ -344,6 +382,92 @@ export default function ProjectsPage() {
                     </Button>
                   </div>
                 </form>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Delete Project Confirmation Modal */}
+      <AnimatePresence>
+        {projectToDelete && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            {/* Backdrop */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => !isDeleting && setProjectToDelete(null)}
+              className="fixed inset-0 bg-background/80 backdrop-blur-xs"
+            />
+            
+            {/* Dialog Content */}
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              transition={{ duration: 0.2 }}
+              className="w-full max-w-md bg-card border border-border/85 rounded-xl shadow-lg relative overflow-hidden z-10"
+            >
+              <div className="p-6 space-y-4">
+                <div className="flex items-center justify-between border-b border-border/40 pb-3">
+                  <div className="flex items-center gap-2">
+                    <Trash2 className="h-5 w-5 text-rose-500" />
+                    <h3 className="text-lg font-semibold text-foreground">Delete Project</h3>
+                  </div>
+                  <button
+                    onClick={() => setProjectToDelete(null)}
+                    disabled={isDeleting}
+                    className="text-muted-foreground hover:text-foreground cursor-pointer rounded-md p-1 hover:bg-muted transition-colors disabled:opacity-50 disabled:pointer-events-none"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+                
+                {deleteError && (
+                  <div className="bg-rose-500/10 border border-rose-500/20 text-rose-500 text-xs p-3 rounded-lg flex items-center gap-2">
+                    <AlertCircle className="h-4.5 w-4.5 shrink-0" />
+                    <span>{deleteError}</span>
+                  </div>
+                )}
+                
+                <p className="text-sm text-muted-foreground leading-relaxed">
+                  Delete this project? This will permanently remove the project and its connected datasets.
+                </p>
+
+                <div className="p-3 bg-muted/20 border border-border/60 rounded-lg">
+                  <p className="text-xs font-semibold text-foreground line-clamp-1">
+                    {projectToDelete.name}
+                  </p>
+                </div>
+                
+                <div className="flex items-center justify-end gap-3 pt-3 border-t border-border/40">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setProjectToDelete(null)}
+                    disabled={isDeleting}
+                    className="cursor-pointer"
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    type="button"
+                    onClick={handleDeleteProject}
+                    disabled={isDeleting}
+                    className="bg-rose-600 hover:bg-rose-700 text-white cursor-pointer font-semibold min-w-[100px]"
+                  >
+                    {isDeleting ? (
+                      <span className="flex items-center gap-1.5">
+                        <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                        Deleting...
+                      </span>
+                    ) : (
+                      "Delete"
+                    )}
+                  </Button>
+                </div>
               </div>
             </motion.div>
           </div>

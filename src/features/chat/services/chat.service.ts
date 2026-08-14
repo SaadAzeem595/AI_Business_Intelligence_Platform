@@ -11,6 +11,7 @@ export interface ChatMessagePayload {
   datasetId?: string;
   selectedDatasetIds?: string[];
   activeProject?: string;
+  projectId?: string;
   history?: { role: "user" | "assistant"; content: string }[];
 }
 
@@ -20,6 +21,12 @@ export interface ChatMessageResponse {
   chart?: any;
   table?: any;
   sessionId?: string;
+  datasetId?: string;
+  datasetName?: string;
+  sqlQuery?: string;
+  data?: any[];
+  columns?: string[];
+  rowCount?: number;
 }
 
 export const ChatService = {
@@ -34,6 +41,7 @@ export const ChatService = {
 
   async sendMessage(data: ChatMessagePayload): Promise<ChatMessageResponse> {
     try {
+      const activeProj = data.activeProject || data.projectId;
       const payload = {
         message: data.message,
         thread_id: data.sessionId || data.conversationId,
@@ -43,7 +51,8 @@ export const ChatService = {
         dataset: data.dataset,
         dataset_id: data.datasetId || data.dataset,
         selected_dataset_ids: data.selectedDatasetIds,
-        active_project: data.activeProject,
+        active_project: activeProj,
+        project_id: activeProj,
         history: data.history,
       };
       
@@ -56,20 +65,37 @@ export const ChatService = {
       if (process.env.NODE_ENV === "development") {
         console.log("[AI Chat API Response]", response.data);
       }
+
+      // If backend returns data & columns but no formatted table object, format table for UI
+      let tableSpec = response.data.table || null;
+      if (!tableSpec && response.data.data && response.data.columns) {
+        tableSpec = {
+          columns: response.data.columns.map((c: string) => ({ header: c.toUpperCase(), accessorKey: c })),
+          data: response.data.data,
+        };
+      }
+
+      const resContent = response.data.content || response.data.response || "I processed your request, but no response content was returned.";
       
       return {
         role: "assistant",
-        content: response.data.response || "I processed your request, but no response content was returned.",
+        content: resContent,
         chart: response.data.chart || null,
-        table: response.data.table || null,
+        table: tableSpec,
         sessionId: response.data.thread_id,
+        datasetId: response.data.dataset_id,
+        datasetName: response.data.dataset_name,
+        sqlQuery: response.data.sql_query,
+        data: response.data.data,
+        columns: response.data.columns,
+        rowCount: response.data.row_count,
       };
     } catch (err: any) {
       if (process.env.NODE_ENV === "development") {
         console.error("[AI Chat API Error]", err);
       }
       
-      // If the error response contains details from backend validation/resolution
+      // If error detail from backend resolution
       const errDetail = err?.response?.data?.detail;
       if (errDetail && errDetail.startsWith("I couldn't analyze the requested dataset")) {
         return {
@@ -78,7 +104,6 @@ export const ChatService = {
         };
       }
       
-      // Fallback
       throw err;
     }
   },

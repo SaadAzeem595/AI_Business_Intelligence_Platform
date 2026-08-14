@@ -262,6 +262,19 @@ async def delete_project(
         await db.delete(ds)
         
     await project_repo.remove(db, id=project_id)
+    
+    # Clean up UPLOADED_PATHS_CACHE for project datasets
+    keys_to_delete = [d_id for d_id, item in UPLOADED_PATHS_CACHE.items() if item.get("project_id") == project_id]
+    for key in keys_to_delete:
+        UPLOADED_PATHS_CACHE.pop(key, None)
+
+    try:
+        await cache_client.invalidate_pattern(f"projects:{current_user.id}:*")
+        await cache_client.invalidate_pattern("sql_query:*")
+        await cache_client.invalidate_pattern("dashboard_kpi:*")
+    except Exception:
+        pass
+
     logger.info(f"project_deleted: project_id={project_id} user_id={current_user.id}")
     return {"status": "success"}
 
@@ -365,6 +378,7 @@ async def upload_project_dataset(
         
         display_name = tableName.strip() if tableName else os.path.splitext(filename)[0]
         clean_table_name = sanitize_table_name(project_id, display_name)
+        from app.core.json_utils import safe_json_dumps
         
         dataset_data = {
             "id": dataset_id,
@@ -379,8 +393,8 @@ async def upload_project_dataset(
             "display_name": display_name,
             "storage_path": file_path,
             "duckdb_table": clean_table_name,
-            "columns_json": json.dumps(columns),
-            "schema_json": json.dumps(schema),
+            "columns_json": safe_json_dumps(columns),
+            "schema_json": safe_json_dumps(schema),
             "project_id": project_id,
             "owner_id": current_user.id,
             "original_filename": filename,
@@ -425,8 +439,8 @@ async def upload_project_dataset(
             display_name=display_name,
             storage_path=file_path,
             duckdb_table=clean_table_name,
-            columns_json=json.dumps(columns),
-            schema_json=json.dumps(schema),
+            columns_json=safe_json_dumps(columns),
+            schema_json=safe_json_dumps(schema),
             project_id=project_id,
             owner_id=current_user.id,
             original_filename=filename,

@@ -25,6 +25,7 @@ UPLOADED_PATHS_CACHE = {}
 # Helper to analyze file schema in a schema-intelligent way
 def analyze_file_schema(file_path: str, file_type: str):
     from app.core.database import get_duckdb_conn
+    from app.core.json_utils import make_json_serializable
     import os
     gen = get_duckdb_conn()
     conn = next(gen)
@@ -67,8 +68,8 @@ def analyze_file_schema(file_path: str, file_type: str):
                     try:
                         min_res = conn.execute(f"SELECT MIN(\"{col_name}\"), MAX(\"{col_name}\") FROM {read_expr}").fetchone()
                         if min_res:
-                            min_val = str(min_res[0]) if min_res[0] is not None else None
-                            max_val = str(min_res[1]) if min_res[1] is not None else None
+                            min_val = str(make_json_serializable(min_res[0])) if min_res[0] is not None else None
+                            max_val = str(make_json_serializable(min_res[1])) if min_res[1] is not None else None
                     except Exception:
                         pass
                 
@@ -77,7 +78,7 @@ def analyze_file_schema(file_path: str, file_type: str):
                 if rows_count > 0:
                     try:
                         sample_res = conn.execute(f"SELECT DISTINCT \"{col_name}\" FROM {read_expr} WHERE \"{col_name}\" IS NOT NULL LIMIT 5").fetchall()
-                        sample_values = [r[0] for r in sample_res]
+                        sample_values = [make_json_serializable(r[0]) for r in sample_res]
                     except Exception:
                         pass
                 
@@ -100,7 +101,7 @@ def analyze_file_schema(file_path: str, file_type: str):
                     "is_numeric": is_numeric
                 }
                 
-            return rows_count, columns, schema
+            return int(rows_count), make_json_serializable(columns), make_json_serializable(schema)
             
         elif file_type in ("EXCEL", "XLSX", "XLS") or file_ext in (".xlsx", ".xls"):
             import pandas as pd
@@ -117,11 +118,11 @@ def analyze_file_schema(file_path: str, file_type: str):
                 min_val = None
                 max_val = None
                 if pd.api.types.is_numeric_dtype(df[col]) and rows_count > 0:
-                    min_val = str(df[col].min()) if not pd.isna(df[col].min()) else None
-                    max_val = str(df[col].max()) if not pd.isna(df[col].max()) else None
+                    min_val = str(make_json_serializable(df[col].min())) if not pd.isna(df[col].min()) else None
+                    max_val = str(make_json_serializable(df[col].max())) if not pd.isna(df[col].max()) else None
                 
                 sample_values = df[col].dropna().unique()[:5].tolist()
-                sample_values = [str(v) for v in sample_values]
+                sample_values = [make_json_serializable(v) for v in sample_values]
                 
                 schema[str(col)] = {
                     "type": col_type,
@@ -136,7 +137,7 @@ def analyze_file_schema(file_path: str, file_type: str):
                     "is_date": "date" in col_type.lower() or "datetime" in col_type.lower(),
                     "is_numeric": pd.api.types.is_numeric_dtype(df[col])
                 }
-            return rows_count, columns, schema
+            return int(rows_count), make_json_serializable(columns), make_json_serializable(schema)
             
         elif file_type == "JSON" or file_ext == ".json":
             import pandas as pd
@@ -153,11 +154,11 @@ def analyze_file_schema(file_path: str, file_type: str):
                 min_val = None
                 max_val = None
                 if pd.api.types.is_numeric_dtype(df[col]) and rows_count > 0:
-                    min_val = str(df[col].min()) if not pd.isna(df[col].min()) else None
-                    max_val = str(df[col].max()) if not pd.isna(df[col].max()) else None
+                    min_val = str(make_json_serializable(df[col].min())) if not pd.isna(df[col].min()) else None
+                    max_val = str(make_json_serializable(df[col].max())) if not pd.isna(df[col].max()) else None
                 
                 sample_values = df[col].dropna().unique()[:5].tolist()
-                sample_values = [str(v) for v in sample_values]
+                sample_values = [make_json_serializable(v) for v in sample_values]
                 
                 schema[str(col)] = {
                     "type": col_type,
@@ -172,7 +173,7 @@ def analyze_file_schema(file_path: str, file_type: str):
                     "is_date": "date" in col_type.lower() or "datetime" in col_type.lower(),
                     "is_numeric": pd.api.types.is_numeric_dtype(df[col])
                 }
-            return rows_count, columns, schema
+            return int(rows_count), make_json_serializable(columns), make_json_serializable(schema)
             
     except Exception as e:
         logger.error(f"Error in analyze_file_schema: {e}")
@@ -260,6 +261,8 @@ async def upload_dataset(
         if not clean_table_name:
             clean_table_name = os.path.splitext(file.filename)[0].lower().replace(" ", "_").replace("-", "_").replace(".", "_")
             
+        from app.core.json_utils import safe_json_dumps
+        
         dataset_data = {
             "id": dataset_id,
             "filename": file.filename,
@@ -273,8 +276,8 @@ async def upload_dataset(
             "display_name": tableName or os.path.splitext(file.filename)[0],
             "storage_path": file_path,
             "duckdb_table": clean_table_name,
-            "columns_json": json.dumps(columns),
-            "schema_json": json.dumps(schema),
+            "columns_json": safe_json_dumps(columns),
+            "schema_json": safe_json_dumps(schema),
             "created_at": datetime.now(),
             "updated_at": datetime.now()
         }
@@ -311,8 +314,8 @@ async def upload_dataset(
             display_name=tableName or os.path.splitext(file.filename)[0],
             storage_path=file_path,
             duckdb_table=clean_table_name,
-            columns_json=json.dumps(columns),
-            schema_json=json.dumps(schema),
+            columns_json=safe_json_dumps(columns),
+            schema_json=safe_json_dumps(schema),
             created_at=db_item.created_at,
             updated_at=db_item.updated_at
         )

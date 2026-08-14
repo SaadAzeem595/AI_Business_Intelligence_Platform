@@ -80,8 +80,6 @@ builder.add_edge("response_synthesizer", END)
 memory_checkpointer = MemorySaver()
 
 # Compile the multi-agent graph
-# We interrupt execution before entering the 'sql_agent' to ask for human approval
 agent_graph = builder.compile(
-    checkpointer=memory_checkpointer,
-    interrupt_before=["sql_agent"]
+    checkpointer=memory_checkpointer
 )

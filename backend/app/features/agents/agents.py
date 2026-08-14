@@ -10,6 +10,12 @@ from app.features.analytics.service import AnalyticsService
 from app.features.ml.inference import InferenceService
 from app.features.rag.router import retrieval_svc as rag_retrieval_svc
 from app.features.agents.schemas import ExecutionLogItem
+from app.features.agents.semantic_sql import (
+    build_catalog_from_datasets,
+    parse_and_generate_semantic_sql,
+    validate_semantic_sql,
+    is_analytical_query
+)
 
 logger = logging.getLogger(__name__)
 
@@ -201,21 +207,35 @@ def resolve_dataset(query: str, selected_dataset_id: Optional[str] = None, avail
             if dataset["id"].lower() == selected_dataset_id.lower() or dataset["filename"].lower() == selected_dataset_id.lower():
                 return dataset
 
-    # 2. Check if query contains explicit filename or table name
-    matches = []
+    # 2. Check if query contains explicit filename or dataset ID
     query_lower = query.lower()
     
+    # 2.0 Exact filename match priority
     for dataset in catalog:
-        if (dataset["id"].lower() in query_lower or
-            dataset["filename"].lower() in query_lower or
-            (dataset["display_name"] and dataset["display_name"].lower() in query_lower) or
+        fn = dataset["filename"].lower()
+        if fn and fn in query_lower:
+            return dataset
+
+    fn_matches = []
+    for dataset in catalog:
+        fn = dataset["filename"].lower()
+        fn_base = os.path.splitext(fn)[0]
+        if fn in query_lower or (len(fn_base) > 3 and fn_base in query_lower) or dataset["id"].lower() in query_lower:
+            fn_matches.append(dataset)
+            
+    if len(fn_matches) == 1:
+        return fn_matches[0]
+
+    # 2.1 Check if query contains display name or view name
+    matches = []
+    for dataset in catalog:
+        if ((dataset["display_name"] and dataset["display_name"].lower() in query_lower) or
             dataset["view_name"].lower() in query_lower):
             matches.append(dataset)
             
-    # Deduplicate matches
     dedup_matches = []
     seen_match_ids = set()
-    for m in matches:
+    for m in (fn_matches + matches):
         if m["id"] not in seen_match_ids:
             seen_match_ids.add(m["id"])
             dedup_matches.append(m)
@@ -312,8 +332,8 @@ def extract_requested_dataset_name(query: str) -> Optional[str]:
     return None
 
 
-def generate_sql_query(query: str, resolved: Dict[str, Any], project_id: Optional[str] = None) -> str:
-    """Generates schema-aware DuckDB SQL query based on target view columns."""
+def generate_sql_query(query: str, resolved: Dict[str, Any], project_id: Optional[str] = None, available_datasets: Optional[List[Dict[str, Any]]] = None) -> str:
+    """Generates schema-aware DuckDB SQL query based on target view columns and multi-table relationships."""
     view_name = resolved["view_name"]
     query_lower = query.lower()
     
@@ -324,76 +344,36 @@ def generate_sql_query(query: str, resolved: Dict[str, Any], project_id: Optiona
         raw_sql = re.sub(r'from\s+[\w\.\"\-]+', f'FROM "{view_name}"', raw_sql, flags=re.IGNORECASE)
         return raw_sql
 
-    # 2. Inspect table schema
-    import duckdb
-    from app.core.database import get_duckdb_conn
-    gen = get_duckdb_conn()
-    conn = next(gen)
+    # 2. Build multi-dataset catalog
+    datasets_to_catalog = available_datasets or [resolved]
+    catalog = build_catalog_from_datasets(datasets_to_catalog)
     
-    try:
-        from app.features.analytics.service import register_all_datasets_in_duckdb
-        register_all_datasets_in_duckdb(conn, project_id=project_id)
-        cols_info = conn.execute(f"DESCRIBE SELECT * FROM \"{view_name}\"").fetchall()
-        columns = [c[0].lower() for c in cols_info]
-    except Exception:
-        columns = []
-    finally:
-        try:
-            gen.close()
-        except Exception:
-            pass
+    # 3. Use Semantic SQL Reasoning Layer
+    sem_res = parse_and_generate_semantic_sql(query, catalog)
+    if sem_res.get("success") and sem_res.get("sql"):
+        return sem_res["sql"]
+    elif sem_res.get("missing_dataset_msg"):
+        return f"MISSING_DATASET:{sem_res['missing_dataset_msg']}"
 
-    # 3. Pattern Matching
-    # A. Top selling products / categories
-    if "top" in query_lower and ("product" in query_lower or "selling" in query_lower or "sales" in query_lower):
-        cat_col = next((c for c in columns if 'category' in c or 'product' in c or 'name' in c), None)
-        qty_col = next((c for c in columns if 'quantity' in c or 'sold' in c or 'count' in c), None)
-        rev_col = next((c for c in columns if 'revenue' in c or 'sales' in c or 'amount' in c or 'selling_price' in c), None)
-        
-        if cat_col:
-            if qty_col and rev_col:
-                return f'SELECT "{cat_col}", SUM("{qty_col}") as units_sold, SUM("{rev_col}") as total_revenue FROM "{view_name}" GROUP BY 1 ORDER BY total_revenue DESC LIMIT 5'
-            elif qty_col:
-                return f'SELECT "{cat_col}", SUM("{qty_col}") as units_sold FROM "{view_name}" GROUP BY 1 ORDER BY units_sold DESC LIMIT 5'
-            elif rev_col:
-                return f'SELECT "{cat_col}", SUM("{rev_col}") as total_revenue FROM "{view_name}" GROUP BY 1 ORDER BY total_revenue DESC LIMIT 5'
-            else:
-                return f'SELECT "{cat_col}", COUNT(*) as items_count FROM "{view_name}" GROUP BY 1 ORDER BY items_count DESC LIMIT 5'
-
-    # B. Average Review Score
-    if "review" in query_lower or "rating" in query_lower or "score" in query_lower:
-        rating_col = next((c for c in columns if 'review' in c or 'score' in c or 'rating' in c or 'stars' in c), None)
-        if rating_col:
-            group_col = next((c for c in columns if 'category' in c or 'product' in c or 'region' in c or 'state' in c), None)
-            if group_col:
-                return f'SELECT "{group_col}", ROUND(AVG("{rating_col}"), 2) as average_rating FROM "{view_name}" GROUP BY 1 ORDER BY average_rating DESC'
-            return f'SELECT ROUND(AVG("{rating_col}"), 2) as average_rating FROM "{view_name}"'
-
-    # C. Revenue by state / region
-    if "revenue by" in query_lower or "sales by" in query_lower:
-        region_col = next((c for c in columns if 'state' in c or 'region' in c or 'country' in c or 'city' in c), None)
-        rev_col = next((c for c in columns if 'revenue' in c or 'sales' in c or 'amount' in c or 'total' in c or 'spend' in c), None)
-        if region_col and rev_col:
-            return f'SELECT "{region_col}", SUM("{rev_col}") as total_revenue FROM "{view_name}" GROUP BY 1 ORDER BY total_revenue DESC'
-
-    # D. Summarize
-    if "summarize" in query_lower or "summary" in query_lower or "product" in query_lower:
-        cat_col = next((c for c in columns if 'category' in c or 'type' in c), None)
-        price_col = next((c for c in columns if 'price' in c or 'charges' in c or 'cost' in c or 'revenue' in c), None)
-        if cat_col and price_col:
-            return f'SELECT "{cat_col}", COUNT(*) as item_count, ROUND(AVG("{price_col}"), 2) as avg_price FROM "{view_name}" GROUP BY 1'
-        elif cat_col:
-            return f'SELECT "{cat_col}", COUNT(*) as item_count FROM "{view_name}" GROUP BY 1'
-
-    # E. Duplicate rows
-    if "duplicate" in query_lower:
-        return f'SELECT *, COUNT(*) as duplicate_occurrences FROM "{view_name}" GROUP BY ALL HAVING COUNT(*) > 1 LIMIT 10'
-
-    # F. Default Fallback preview
-    if columns:
-        col_str = ", ".join([f'"{c}"' for c in columns[:5]])
-        return f'SELECT {col_str} FROM "{view_name}" LIMIT 5'
+    # Fallback preview if no analytical query was detected
     return f'SELECT * FROM "{view_name}" LIMIT 5'
+
+
+def is_conversational_query(query: str) -> bool:
+    if not query or not query.strip():
+        return True
+    q = query.strip().lower()
+    greetings = {
+        "hi", "hello", "hey", "greetings", "good morning", "good afternoon", "good evening",
+        "thanks", "thank you", "thx", "what can you do", "what can you do?", "help", "who are you",
+        "who are you?", "how are you", "how are you?", "what is this", "what is this?", "capabilities"
+    }
+    if q in greetings:
+        return True
+    cleaned = re.sub(r'[^\w\s]', '', q)
+    if cleaned in greetings or cleaned in {"hi", "hello", "hey", "thanks", "thank you"}:
+        return True
+    return False
 
 
 # ==========================================
@@ -408,6 +388,31 @@ def planner_agent(state: AgentState) -> Dict[str, Any]:
     selected_dataset = state.get("dataset")
     query_lower = query.lower()
     
+    # 0. Check conversational intent (greetings, thanks, capabilities)
+    if is_conversational_query(query):
+        greeting_msg = (
+            "Hello! I am your AI Business Intelligence Assistant. "
+            "I can analyze your uploaded datasets, execute DuckDB SQL queries, generate charts, "
+            "build predictive ML models, forecast time series trends, and answer business questions. "
+            "How can I help you today?"
+        )
+        return {
+            "plan": ["response_synthesizer"],
+            "completed_steps": [],
+            "next_agent": "response_synthesizer",
+            "final_response": greeting_msg,
+            "intent": "conversation",
+            "sql_query": None,
+            "sql_result": None,
+            "analytics_result": None,
+            "workspace_id": workspace,
+            "dataset_id": None,
+            "dataset_context": None,
+            "dataset_schema": None,
+            "execution_logs": log_execution(state, "planner_agent", start_time, status="success", details="Conversational response"),
+            "reasoning_path": ["planner_agent"]
+        }
+
     # Build unique catalog of available datasets to check for ambiguity or presence
     from app.core.database import AsyncSessionLocal
     from app.features.datasets.repository import dataset_repo
@@ -433,12 +438,50 @@ def planner_agent(state: AgentState) -> Dict[str, Any]:
             seen.add(i_id)
             unique_items.append(item)
 
+    catalog = build_catalog_from_datasets(unique_items)
+    
+    # Check semantic SQL availability across multi-dataset catalog
+    is_analytical = is_analytical_query(query)
+    sem_res = parse_and_generate_semantic_sql(query, catalog) if catalog else {"success": False}
+
+    # If missing required dataset for analytical query, fail early with clear message
+    if sem_res.get("missing_dataset_msg"):
+        err_msg = sem_res["missing_dataset_msg"]
+        return {
+            "plan": ["response_synthesizer"],
+            "completed_steps": [],
+            "next_agent": "response_synthesizer",
+            "final_response": err_msg,
+            "intent": "clarification",
+            "sql_query": None,
+            "sql_result": None,
+            "execution_logs": log_execution(state, "planner_agent", start_time, status="failure", details=err_msg),
+            "reasoning_path": ["planner_agent"],
+            "workspace_id": workspace,
+            "dataset_id": None,
+            "dataset_context": None,
+            "dataset_schema": None,
+            "errors": [err_msg]
+        }
+
     # Fuzzy resolve active dataset
     resolved = resolve_dataset(query, selected_dataset, available_datasets=db_items)
+
+    # If unresolved but semantic SQL was built across multiple catalog tables, pick primary
+    if not resolved and sem_res.get("success") and sem_res.get("sql"):
+        if unique_items:
+            first_item = unique_items[0]
+            resolved = {
+                "id": str(first_item["id"] if isinstance(first_item, dict) else first_item.id),
+                "filename": first_item["filename"] if isinstance(first_item, dict) else first_item.filename,
+                "view_name": first_item["duckdb_table"] if isinstance(first_item, dict) else first_item.duckdb_table,
+                "display_name": first_item.get("display_name") if isinstance(first_item, dict) else getattr(first_item, "display_name", None),
+                "schema": {}
+            }
     
     # Check if a dataset was explicitly requested (e.g. olist_orders_dataset.csv) but couldn't be resolved
     requested_dataset = extract_requested_dataset_name(query)
-    if requested_dataset and not resolved:
+    if requested_dataset and not resolved and not (sem_res.get("success")):
         available_names = get_available_dataset_names()
         err_msg = f"I couldn't analyze the requested dataset because the dataset '{requested_dataset}' was not found in the active workspace. Available datasets: {', '.join(available_names)}."
         return {
@@ -456,9 +499,8 @@ def planner_agent(state: AgentState) -> Dict[str, Any]:
             "errors": [err_msg]
         }
 
-    # If multiple datasets exist and none resolved unambiguously (and not requesting RAG/pdf)
-    if not resolved and len(unique_items) > 1:
-        # Check if RAG is requested
+    # If multiple datasets exist and none resolved unambiguously (and not an analytical or RAG request)
+    if not resolved and len(unique_items) > 1 and not sem_res.get("success"):
         is_rag_request = any(k in query_lower for k in ["pdf", "invoice", "document", "unstructured", "rag", "search knowledge"])
         if not is_rag_request:
             names_list = []
@@ -507,7 +549,7 @@ def planner_agent(state: AgentState) -> Dict[str, Any]:
     dataset_id = None
     if resolved:
         dataset_id = resolved["id"]
-        dataset_context = f"Resolved Dataset: {resolved['display_name']} (Table: {resolved['view_name']}, File: {resolved['filename']}, Rows: {resolved.get('rows', 'unknown')})"
+        dataset_context = f"Resolved Dataset: {resolved.get('display_name') or resolved.get('view_name')} (Table: {resolved['view_name']}, File: {resolved.get('filename')}, Rows: {resolved.get('rows', 'unknown')})"
         dataset_schema = resolved.get("schema", {})
 
     # Intent classification
@@ -520,7 +562,7 @@ def planner_agent(state: AgentState) -> Dict[str, Any]:
         intent = "rag"
         
     # SQL analytics
-    if any(k in query_lower for k in ["sql", "select", "query", "run query", "table", "average review", "top selling", "revenue by state", "products list", "database", "summarize", "how many", "count", "total", "orders", "most", "least", "average", "sum", "max", "min"]):
+    if sem_res.get("success") or is_analytical or any(k in query_lower for k in ["sql", "select", "query", "run query", "table", "average review", "top selling", "revenue by state", "products list", "database", "summarize", "how many", "count", "total", "orders", "most", "least", "average", "sum", "max", "min"]):
         plan.append("sql_agent")
         intent = "sql"
         
@@ -561,7 +603,7 @@ def planner_agent(state: AgentState) -> Dict[str, Any]:
     if "sql_agent" in plan and resolved:
         from app.core.llm import LLMService
         if not LLMService.is_configured():
-            sql_query = generate_sql_query(query, resolved)
+            sql_query = generate_sql_query(query, resolved, project_id=state.get("active_project"), available_datasets=state.get("available_datasets"))
             
     return {
         "plan": plan,
@@ -593,25 +635,41 @@ def router_agent(state: AgentState) -> Dict[str, Any]:
         next_agent = "response_synthesizer"
         
     logger.info(f"Router checking: completed={completed}, next_agent={next_agent}")
+    logs = log_execution(state, "router_agent", start_time, details=f"Routed to next agent: {next_agent}")
     reasoning = list(state.get("reasoning_path", []))
     reasoning.append("router_agent")
     
-    logs = log_execution(state, "router_agent", start_time, details=f"Routed to next agent: {next_agent}")
-    
-    return {
+    res = {
         "next_agent": next_agent,
         "execution_logs": logs,
         "reasoning_path": reasoning
     }
+    if state.get("final_response"):
+        res["final_response"] = state["final_response"]
+    if state.get("sql_query"):
+        res["sql_query"] = state["sql_query"]
+    if state.get("sql_result"):
+        res["sql_result"] = state["sql_result"]
+    return res
 
 
 # 3. SQL Agent
 def sql_agent(state: AgentState) -> Dict[str, Any]:
     start_time = time.perf_counter()
     query = state.get("query", "")
+
+    # 0. Check conversational intent or pre-set final_response
+    if state.get("intent") == "conversation" or (state.get("final_response") and not state.get("sql_query")):
+        return {
+            "completed_steps": list(state.get("completed_steps", [])) + ["sql_agent"],
+            "reasoning_path": list(state.get("reasoning_path", [])) + ["sql_agent"],
+            "execution_logs": log_execution(state, "sql_agent", start_time, status="success", details="Skipped SQL execution for conversational/pre-set response")
+        }
+
     resolved = resolve_dataset(query, state.get("dataset"), available_datasets=state.get("available_datasets"))
+    catalog = build_catalog_from_datasets(state.get("available_datasets") or ([resolved] if resolved else []))
     
-    if not resolved:
+    if not resolved and not catalog:
         err = "No active dataset resolved for SQL query execution."
         completed = list(state.get("completed_steps", [])) + ["sql_agent"]
         reasoning = list(state.get("reasoning_path", [])) + ["sql_agent"]
@@ -623,56 +681,37 @@ def sql_agent(state: AgentState) -> Dict[str, Any]:
             "errors": list(state.get("errors", [])) + [err]
         }
 
+    if not resolved and catalog:
+        first_table = catalog[0]
+        resolved = {
+            "id": first_table["id"],
+            "filename": first_table["filename"],
+            "view_name": first_table["table_name"],
+            "display_name": first_table["display_name"],
+            "schema": {}
+        }
+
     from app.core.llm import LLMService
     
     sql_query = state.get("sql_query")
     if not sql_query:
         if LLMService.is_configured():
             try:
-                # Compile all available tables schemas for joins
                 all_tables_info = ""
-                from app.core.database import AsyncSessionLocal
-                from app.features.datasets.repository import dataset_repo
-                from app.core.cache import run_async_as_sync
-                import json
-                
-                db_items = state.get("available_datasets")
-                if db_items is None:
-                    async def fetch_all_datasets_async():
-                        async with AsyncSessionLocal() as db:
-                            return await dataset_repo.get_multi(db, limit=1000)
-                    try:
-                        db_items = run_async_as_sync(fetch_all_datasets_async())
-                    except Exception:
-                        db_items = []
-                
-                for item in db_items:
-                    is_dict = isinstance(item, dict)
-                    t_name = item["duckdb_table"] if is_dict else item.duckdb_table
-                    schema_json = item.get("schema_json") if is_dict else getattr(item, "schema_json", None)
-                    cols_str = ""
-                    if schema_json:
-                        try:
-                            stored_schema = json.loads(schema_json) if isinstance(schema_json, str) else schema_json
-                            cols_str = ", ".join(f"\"{col}\" ({info.get('type')})" for col, info in stored_schema.items())
-                        except Exception:
-                            pass
-                    if not cols_str:
-                        cols_json = item.get("columns_json") if is_dict else getattr(item, "columns_json", None)
-                        if cols_json:
-                            try:
-                                cols_list = json.loads(cols_json) if isinstance(cols_json, str) else cols_json
-                                cols_str = ", ".join(f"\"{c}\"" for c in cols_list)
-                            except Exception:
-                                pass
-                    if t_name:
-                        all_tables_info += f"- Table: \"{t_name}\" (Columns: {cols_str})\n"
+                for tbl in catalog:
+                    cols_str = ", ".join(f"\"{col_info['name']}\" ({col_info['type']})" for col_info in tbl["columns"].values())
+                    all_tables_info += f"- Table: \"{tbl['table_name']}\" (File: {tbl['filename']}) (Columns: {cols_str})\n"
                         
                 system_prompt = (
                     "You are an expert SQL Generator for DuckDB. Your job is to translate a user request into a valid, optimized DuckDB SQL query.\n"
-                    "Generate ONLY the raw SQL query. Do not wrap it in markdown code blocks, do not explain anything, and do not add any comments.\n"
-                    "The query must ONLY perform read operations (SELECT). Mutating queries (INSERT, UPDATE, DELETE, DROP, etc.) are strictly forbidden.\n"
-                    "Ensure you use correct table names wrapped in double quotes, e.g. FROM \"olist_orders_dataset\"."
+                    "RULES:\n"
+                    "1. Generate ONLY the raw SQL query. Do not wrap it in markdown code blocks, do not explain anything.\n"
+                    "2. The query must ONLY perform read operations (SELECT).\n"
+                    "3. For analytical questions (highest/most orders, top categories, monthly trends, revenue), NEVER generate un-aggregated 'SELECT * LIMIT 5'.\n"
+                    "4. For number of orders, use COUNT(DISTINCT order_id).\n"
+                    "5. For revenue, use SUM(price) or SUM(revenue).\n"
+                    "6. If the dimension (e.g. category) and metric (e.g. order_id, price) live in different tables, JOIN them using matching keys (e.g. product_id, order_id).\n"
+                    "7. Ensure table names are enclosed in double quotes, e.g. FROM \"olist_products_dataset\"."
                 )
                 
                 user_prompt = (
@@ -684,17 +723,69 @@ def sql_agent(state: AgentState) -> Dict[str, Any]:
                 )
                 
                 llm_response = LLMService.generate_response(system_prompt, user_prompt)
-                
-                # Strip markdown code blocks formatting if present
                 sql_query = llm_response.strip().replace("```sql", "").replace("```", "").strip()
+
+                # Perform semantic validation on LLM output
+                is_valid, rejection_reason = validate_semantic_sql(sql_query, query, catalog, target_dataset=resolved)
+                if not is_valid:
+                    logger.info(f"LLM SQL query failed validation ({rejection_reason}). Falling back to SemanticSQLPlanner.")
+                    sem_res = parse_and_generate_semantic_sql(query, catalog)
+                    if sem_res.get("success") and sem_res.get("sql"):
+                        sql_query = sem_res["sql"]
+                    elif sem_res.get("missing_dataset_msg"):
+                        sql_query = f"MISSING_DATASET:{sem_res['missing_dataset_msg']}"
+
             except Exception as e:
-                logger.error(f"Failed to generate SQL via LLM, falling back to pattern matching: {e}")
-                sql_query = generate_sql_query(query, resolved, project_id=state.get("active_project"))
+                logger.error(f"Failed to generate SQL via LLM, falling back to semantic query builder: {e}")
+                sql_query = generate_sql_query(query, resolved, project_id=state.get("active_project"), available_datasets=state.get("available_datasets"))
         else:
-            sql_query = generate_sql_query(query, resolved, project_id=state.get("active_project"))
+            sql_query = generate_sql_query(query, resolved, project_id=state.get("active_project"), available_datasets=state.get("available_datasets"))
+
+    # Check for missing dataset signal
+    if sql_query and sql_query.startswith("MISSING_DATASET:"):
+        missing_msg = sql_query.replace("MISSING_DATASET:", "").strip()
+        completed = list(state.get("completed_steps", [])) + ["sql_agent"]
+        reasoning = list(state.get("reasoning_path", [])) + ["sql_agent"]
+        return {
+            "final_response": missing_msg,
+            "sql_result": {"error": missing_msg},
+            "completed_steps": completed,
+            "execution_logs": log_execution(state, "sql_agent", start_time, status="failure", details=missing_msg),
+            "reasoning_path": reasoning,
+            "errors": list(state.get("errors", [])) + [missing_msg]
+        }
+
+    # Perform semantic validation on fallback/generated query
+    is_valid, rejection_reason = validate_semantic_sql(sql_query, query, catalog, target_dataset=resolved)
+    if not is_valid:
+        sem_res = parse_and_generate_semantic_sql(query, catalog)
+        if sem_res.get("success") and sem_res.get("sql"):
+            sql_query = sem_res["sql"]
+        elif sem_res.get("missing_dataset_msg"):
+            missing_msg = sem_res["missing_dataset_msg"]
+            completed = list(state.get("completed_steps", [])) + ["sql_agent"]
+            reasoning = list(state.get("reasoning_path", [])) + ["sql_agent"]
+            return {
+                "final_response": missing_msg,
+                "sql_result": {"error": missing_msg},
+                "completed_steps": completed,
+                "execution_logs": log_execution(state, "sql_agent", start_time, status="failure", details=missing_msg),
+                "reasoning_path": reasoning,
+                "errors": list(state.get("errors", [])) + [missing_msg]
+            }
+        else:
+            completed = list(state.get("completed_steps", [])) + ["sql_agent"]
+            reasoning = list(state.get("reasoning_path", [])) + ["sql_agent"]
+            return {
+                "final_response": rejection_reason,
+                "sql_result": {"error": rejection_reason},
+                "completed_steps": completed,
+                "execution_logs": log_execution(state, "sql_agent", start_time, status="failure", details=rejection_reason),
+                "reasoning_path": reasoning,
+                "errors": list(state.get("errors", [])) + [rejection_reason]
+            }
 
     # 4. Auto-Approval Layer
-    # Check if query is safe SELECT-only
     is_safe = False
     if sql_query:
         try:
@@ -713,7 +804,6 @@ def sql_agent(state: AgentState) -> Dict[str, Any]:
         except Exception:
             pass
 
-    # If not approved and not auto-approved as safe, pause execution
     if not is_safe and not state.get("is_approved", False):
         logger.info("SQL execution requires approval. Halting execution.")
         logs = log_execution(state, "sql_agent", start_time, status="paused", details=f"Awaiting human approval for SQL query: {sql_query}")
@@ -731,14 +821,21 @@ def sql_agent(state: AgentState) -> Dict[str, Any]:
     errors_list = list(state.get("errors", []))
     
     try:
+        from app.core.json_utils import make_json_serializable
         analytics_svc = AnalyticsService()
         result = analytics_svc.execute_duckdb_query(sql_query, project_id=state.get("active_project"))
+        clean_rows = make_json_serializable(result.rows)
         result_dict = {
             "columns": result.columns,
-            "rows": result.rows,
+            "rows": clean_rows,
             "elapsed_ms": result.elapsedMs
         }
-        details = f"Executed SQL: '{sql_query}' returning {len(result.rows)} rows."
+        details = f"Executed SQL: '{sql_query}' returning {len(clean_rows)} rows."
+        logger.info(
+            f"AI_CHAT_SQL_EXECUTED: project_id={state.get('active_project')} user_id={state.get('user_id')} "
+            f"dataset_id={resolved.get('id')} filename='{resolved.get('filename')}' duckdb_table='{resolved.get('view_name')}' "
+            f"generated_sql='{sql_query}' row_count={len(clean_rows)}"
+        )
     except Exception as e:
         err_msg = str(e)
         result_dict = {"error": err_msg}
@@ -1290,12 +1387,13 @@ def response_synthesizer(state: AgentState) -> Dict[str, Any]:
             "reasoning_path": list(state.get("reasoning_path", [])) + ["response_synthesizer"]
         }
         
-    # Check if a final response is already populated with an error
-    if state.get("final_response") and state["final_response"].startswith("I couldn't analyze the requested dataset"):
+    # Check if a final response is already populated (conversational greeting, dataset error, missing dataset msg)
+    if state.get("final_response") and (state.get("intent") in ["conversation", "clarification"] or not state.get("sql_result")):
         completed_steps = list(completed) + ["response_synthesizer"]
         return {
+            "final_response": state["final_response"],
             "completed_steps": completed_steps,
-            "execution_logs": log_execution(state, "response_synthesizer", start_time, status="failure", details=state["final_response"]),
+            "execution_logs": log_execution(state, "response_synthesizer", start_time, status="success", details=state["final_response"]),
             "reasoning_path": list(state.get("reasoning_path", [])) + ["response_synthesizer"]
         }
 
@@ -1381,13 +1479,31 @@ def response_synthesizer(state: AgentState) -> Dict[str, Any]:
             
     if "sql_agent" in completed and state.get("sql_result"):
         sr = state["sql_result"]
-        if "error" not in sr:
-            response += "#### DuckDB SQL Query Execution:\n"
+        if "error" not in sr and sr.get("rows"):
+            rows = sr["rows"]
+            cols = sr.get("columns", [])
+            response += "Here are the query results:\n\n"
+            for idx, row in enumerate(rows[:10], 1):
+                label_val = list(row.values())[0]
+                metric_val = list(row.values())[1] if len(row) > 1 else ""
+                
+                if isinstance(metric_val, (int, float)):
+                    if isinstance(metric_val, float) and not metric_val.is_integer():
+                        metric_str = f"{metric_val:,.2f}"
+                    else:
+                        metric_str = f"{int(metric_val):,}"
+                else:
+                    metric_str = str(metric_val)
+                    
+                metric_name = cols[1] if len(cols) > 1 else "count"
+                metric_name_clean = metric_name.replace("_", " ")
+                
+                response += f"{idx}. **{label_val}** — {metric_str} {metric_name_clean}\n"
+            response += "\n"
             response += f"```sql\n{state.get('sql_query')}\n```\n"
-            response += f"- Executed query successfully in {sr['elapsed_ms']}ms.\n"
-            response += f"- Returned {len(sr['rows'])} rows.\n\n"
-        else:
-            response += f"❌ **SQL Execution Failed**: {sr['error']}\n\n"
+            response += f"- Executed query successfully in {sr['elapsed_ms']}ms.\n\n"
+        elif "error" in sr:
+            response += f"❌ **SQL Execution**: {sr['error']}\n\n"
             
     if "forecast_agent" in completed and state.get("forecast_result"):
         fr = state["forecast_result"]

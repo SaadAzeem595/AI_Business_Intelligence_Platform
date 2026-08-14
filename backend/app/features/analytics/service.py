@@ -236,6 +236,7 @@ class AnalyticsService:
             pass
 
         try:
+            from app.core.json_utils import make_json_serializable
             res = conn.execute(query)
             columns = [desc[0] for desc in res.description] if res.description else []
             rows = []
@@ -244,7 +245,7 @@ class AnalyticsService:
                 for row in res.fetchall():
                     row_dict = {}
                     for idx, col_name in enumerate(columns):
-                        row_dict[col_name] = row[idx]
+                        row_dict[col_name] = make_json_serializable(row[idx])
                     rows.append(row_dict)
 
             process_time_ms = int((time.perf_counter() - start_time) * 1000)

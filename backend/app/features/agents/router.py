@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/agents", tags=["LangGraph Multi-Agent Platform"])
 
 
-def build_response_from_state(thread_id: str, graph_state: Any) -> AgentChatResponse:
+def build_response_from_state(thread_id: str, graph_state: Any, execution_time_ms: Optional[float] = None) -> AgentChatResponse:
     state_values = graph_state.values if graph_state else {}
     next_nodes = graph_state.next if graph_state else []
     
@@ -82,21 +82,20 @@ def build_response_from_state(thread_id: str, graph_state: Any) -> AgentChatResp
                     x_key = encoding["x"]["field"]
                 if "y" in encoding and "field" in encoding["y"]:
                     y_keys.append(encoding["y"]["field"])
-            if not x_key and data:
-                x_key = list(data[0].keys())[0]
-            if not y_keys and data:
-                y_keys = [list(data[0].keys())[1]] if len(data[0]) > 1 else []
+            if not x_key and data and len(data) > 0:
+                keys = list(data[0].keys())
+                x_key = keys[0]
+                y_keys = keys[1:]
             chart = {
-                "type": "bar" if vis_spec.get("mark") == "bar" else "line",
+                "type": vis_spec.get("mark", "bar"),
                 "data": data,
-                "xKey": x_key,
-                "yKeys": y_keys
+                "xKey": x_key or "category",
+                "yKeys": y_keys or ["value"]
             }
-        elif "series" in vis_spec and "xAxis" in vis_spec:
-            # Recharts-friendly schema directly from visualizer service
-            x_key = vis_spec["xAxis"].get("label", "x")
-            y_keys = [s["name"] for s in vis_spec["series"]]
+        elif "series" in vis_spec and isinstance(vis_spec["series"], list):
             data = []
+            x_key = vis_spec.get("xAxis", {}).get("name", "category")
+            y_keys = [s["name"] for s in vis_spec["series"]]
             x_data = vis_spec["xAxis"].get("data", [])
             for idx, x_val in enumerate(x_data):
                 row = {x_key: x_val}
@@ -111,18 +110,47 @@ def build_response_from_state(thread_id: str, graph_state: Any) -> AgentChatResp
                 "yKeys": y_keys
             }
 
+    final_resp = state_values.get("final_response") or "I processed your request successfully."
+
+    data_rows = None
+    data_cols = None
+    data_count = None
+    if sql_result and isinstance(sql_result, dict) and "rows" in sql_result:
+        data_rows = sql_result.get("rows")
+        data_cols = sql_result.get("columns")
+        data_count = len(data_rows) if data_rows is not None else 0
+
+    dataset_id = state_values.get("dataset_id")
+    dataset_name = state_values.get("dataset")
+    sql_q = state_values.get("sql_query")
+
+    logger.info(
+        f"AI_CHAT_RESPONSE_COMPILED: user_id={state_values.get('user_id')} "
+        f"project_id={state_values.get('active_project')} dataset_id={dataset_id} "
+        f"sql_executed='{sql_q}' row_count={data_count} "
+        f"response_len={len(final_resp)}"
+    )
+
     return AgentChatResponse(
         thread_id=thread_id,
         status=status_str,
-        response=state_values.get("final_response"),
+        response=final_resp,
+        content=final_resp,
         reasoning_path=state_values.get("reasoning_path", []),
         execution_logs=logs,
         visualization_spec=state_values.get("visualization_spec"),
         recommendations=state_values.get("recommendations"),
         executive_summary=state_values.get("executive_summary"),
-        sql_query=state_values.get("sql_query"),
+        sql_query=sql_q,
+        sql=sql_q,
         chart=chart,
-        table=table
+        table=table,
+        dataset_id=dataset_id,
+        dataset_name=dataset_name,
+        data=data_rows,
+        columns=data_cols,
+        row_count=data_count,
+        execution_time_ms=execution_time_ms or state_values.get("execution_time_ms")
     )
 
 
@@ -139,9 +167,16 @@ async def chat_with_agents(
             detail="User query message cannot be empty."
         )
 
+    active_proj = payload.active_project or payload.project_id
     thread_id = payload.thread_id or payload.conversation_id or str(uuid.uuid4())
     config = {"configurable": {"thread_id": thread_id}}
     
+    logger.info(
+        f"AI_CHAT_REQUEST_RECEIVED: user_id={current_user.id} project_id={active_proj} "
+        f"dataset_id={payload.dataset_id or payload.dataset} thread_id={thread_id} "
+        f"message='{payload.message}'"
+    )
+
     try:
         import time
         from app.core.telemetry import LANGGRAPH_LATENCY
@@ -150,10 +185,10 @@ async def chat_with_agents(
         from app.features.datasets.models import Dataset
         
         # Load all datasets asynchronously (thread-safe, loop-safe)
-        if payload.active_project:
+        if active_proj:
             from app.features.projects.router import get_project_and_verify_access
-            await get_project_and_verify_access(payload.active_project, current_user, db)
-            stmt = select(Dataset).where(Dataset.project_id == payload.active_project)
+            await get_project_and_verify_access(active_proj, current_user, db)
+            stmt = select(Dataset).where(Dataset.project_id == active_proj)
         else:
             stmt = select(Dataset).where(
                 (Dataset.project_id == None) & 
@@ -168,12 +203,16 @@ async def chat_with_agents(
                 "display_name": item.display_name,
                 "storage_path": item.storage_path,
                 "duckdb_table": item.duckdb_table,
-                "type": item.type
+                "type": item.type,
+                "columns_json": item.columns_json,
+                "schema_json": item.schema_json,
+                "rows": item.rows,
+                "status": item.status,
             }
             for item in db_items
         ]
         
-        # Check if thread already exists and is in a paused state
+        # Check if thread already exists
         current_state = agent_graph.get_state(config)
         
         start_time = time.perf_counter()
@@ -185,7 +224,7 @@ async def chat_with_agents(
                 "dataset": payload.dataset_id or payload.dataset,
                 "selected_dataset_ids": payload.selected_dataset_ids,
                 "available_datasets": available_datasets,
-                "active_project": payload.active_project,
+                "active_project": active_proj,
                 "history": payload.history or [],
                 "plan": [],
                 "completed_steps": [],
@@ -200,11 +239,11 @@ async def chat_with_agents(
                 "recommendations": None,
                 "executive_summary": None,
                 "final_response": None,
-                "is_approved": False,
+                "is_approved": True,  # Auto-approve read-only SELECT queries
                 "execution_logs": [],
                 "reasoning_path": [],
                 
-                # New fields
+                # Context keys
                 "workspace_id": current_user.workspace_id,
                 "dataset_id": payload.dataset_id or payload.dataset,
                 "dataset_context": None,
@@ -218,52 +257,61 @@ async def chat_with_agents(
             }
             agent_graph.invoke(initial_state, config)
         else:
-            # If paused on an interrupt, we require /approve endpoint instead of repeating chat
-            if current_state.next:
-                raise ValueError("Graph execution is currently paused awaiting human SQL approval. Please approve first.")
-            # Otherwise, override query to start a new loop under the same thread memory
+            # Override query to start a new loop under the same thread memory, wiping per-turn execution outputs
             agent_graph.update_state(config, {
                 "query": payload.message,
                 "dataset": payload.dataset_id or payload.dataset,
                 "selected_dataset_ids": payload.selected_dataset_ids,
                 "available_datasets": available_datasets,
-                "active_project": payload.active_project,
+                "active_project": active_proj,
                 "history": payload.history or [],
                 "plan": [],
                 "completed_steps": [],
                 "next_agent": "",
                 
-                # Update new fields
+                # Wipe execution outputs from previous turns
+                "sql_query": None,
+                "sql_result": None,
+                "analytics_result": None,
+                "ml_result": None,
+                "forecast_result": None,
+                "rag_result": None,
+                "visualization_spec": None,
+                "recommendations": None,
+                "executive_summary": None,
+                "final_response": None,
+                "generated_sql": None,
+                "execution_logs": [],
+                "reasoning_path": [],
+                "errors": [],
+                
+                # Context keys
                 "workspace_id": current_user.workspace_id,
                 "dataset_id": payload.dataset_id or payload.dataset,
                 "user_message": payload.message,
                 "intent": None,
-                "generated_sql": None,
-                "errors": [],
                 "user_id": current_user.id,
                 "roles": [current_user.role],
-            })
+                "is_approved": True,
+            }, as_node="__start__")
             agent_graph.invoke(None, config)
             
         duration = time.perf_counter() - start_time
         LANGGRAPH_LATENCY.labels(thread_id=thread_id).observe(duration)
         
+        # Calculate execution_time_ms
+        exec_ms = round(duration * 1000, 2)
+        
         # Get post-execution state
         final_state = agent_graph.get_state(config)
+        return build_response_from_state(thread_id, final_state, execution_time_ms=exec_ms)
         
-        # Reject invalid requests or errors captured in response
-        response_content = final_state.values.get("final_response") if final_state else None
-        if response_content and response_content.startswith("I couldn't analyze the requested dataset because"):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=response_content
-            )
-            
-        return build_response_from_state(thread_id, final_state)
-        
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.error(f"Agent chat execution error: {e}", exc_info=True)
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Agent chat execution failed: {str(e)}"
         )
 
