@@ -53,6 +53,7 @@ class LLMService:
     @classmethod
     def get_configured_model(cls) -> str:
         """Returns the configured model string for OpenRouter or default providers."""
+        key, provider = cls.get_api_key_and_provider()
         model = os.environ.get("OPENROUTER_MODEL")
         if not model:
             try:
@@ -86,12 +87,15 @@ class LLMService:
         key, provider = cls.get_api_key_and_provider()
         model = cls.get_configured_model()
         base_url = cls.get_base_url()
+        has_key = key is not None and len(key.strip()) > 0
         return {
             "provider": provider or "none",
             "provider_configured": provider is not None,
             "model": model,
-            "api_key_configured": key is not None and len(key.strip()) > 0,
+            "model_configured": bool(model),
+            "api_key_configured": has_key,
             "base_url": base_url,
+            "base_url_configured": bool(base_url),
         }
 
     @classmethod
@@ -102,8 +106,11 @@ class LLMService:
         if not key:
             return {
                 "status": "unconfigured",
-                "error": "Missing OPENROUTER_API_KEY environment variable.",
-                "latency_ms": 0
+                "provider": provider or "none",
+                "model": cls.get_configured_model(),
+                "http_status": None,
+                "error": "Missing API key for LLM provider.",
+                "latency_ms": 0.0
             }
         start = time.perf_counter()
         try:
@@ -113,6 +120,18 @@ class LLMService:
                 "status": "healthy",
                 "provider": provider,
                 "model": cls.get_configured_model(),
+                "http_status": 200,
+                "error": None,
+                "latency_ms": latency
+            }
+        except LLMConfigurationError as e:
+            latency = round((time.perf_counter() - start) * 1000, 2)
+            return {
+                "status": "unhealthy",
+                "provider": provider or "unknown",
+                "model": cls.get_configured_model(),
+                "http_status": getattr(e, "http_status", None),
+                "error": str(e),
                 "latency_ms": latency
             }
         except Exception as e:
@@ -120,7 +139,9 @@ class LLMService:
             return {
                 "status": "unhealthy",
                 "provider": provider or "unknown",
-                "error": str(e),
+                "model": cls.get_configured_model(),
+                "http_status": 500,
+                "error": f"Unexpected error during health check: {str(e)}",
                 "latency_ms": latency
             }
 
@@ -129,7 +150,7 @@ class LLMService:
         """Sends chat completion query to the configured LLM provider synchronously with model fallbacks."""
         key, provider = cls.get_api_key_and_provider()
         if not key:
-            raise LLMConfigurationError("OPENROUTER_API_KEY is not configured in backend environment variables.")
+            raise LLMConfigurationError("Missing API key for LLM provider.")
 
         if provider == "openrouter":
             base_url = cls.get_base_url()
@@ -145,9 +166,9 @@ class LLMService:
             # Candidate models to try in sequence if primary is rate limited (429) or unavailable (404/503)
             candidate_models = [primary_model]
             fallback_defaults = [
-                "meta-llama/llama-3.3-70b-instruct:free",
-                "google/gemini-2.0-flash-lite-001",
-                "qwen/qwen-2.5-72b-instruct:free",
+                "google/gemini-2.0-flash-001",
+                "meta-llama/llama-3.3-70b-instruct",
+                "qwen/qwen-2.5-72b-instruct",
                 "openai/gpt-4o-mini"
             ]
             for fbm in fallback_defaults:
@@ -155,6 +176,8 @@ class LLMService:
                     candidate_models.append(fbm)
 
             last_error = None
+            last_status = None
+
             with httpx.Client(timeout=30.0) as client:
                 for model_name in candidate_models:
                     payload = {
@@ -168,19 +191,26 @@ class LLMService:
                     try:
                         logger.info(f"OPENROUTER_LLM_REQUEST: model={model_name} url={url}")
                         response = client.post(url, headers=headers, json=payload)
+                        last_status = response.status_code
                         
                         if response.status_code == 401:
-                            raise LLMConfigurationError("Invalid OPENROUTER_API_KEY configured for OpenRouter (HTTP 401).")
+                            err = LLMConfigurationError("Invalid API key configured for OpenRouter (HTTP 401 authentication error).")
+                            err.http_status = 401
+                            raise err
+                        elif response.status_code == 403:
+                            err = LLMConfigurationError(f"OpenRouter permission error for model '{model_name}' (HTTP 403 permission error).")
+                            err.http_status = 403
+                            raise err
                         elif response.status_code == 429:
-                            last_error = f"OpenRouter API rate limit exceeded for model '{model_name}' (HTTP 429)."
+                            last_error = f"OpenRouter API rate limit exceeded for model '{model_name}' (HTTP 429 rate limit)."
                             logger.warning(f"{last_error} Trying fallback model...")
                             continue
-                        elif response.status_code in (404, 503):
-                            last_error = f"OpenRouter model '{model_name}' is unavailable (HTTP {response.status_code})."
+                        elif response.status_code == 404:
+                            last_error = f"OpenRouter model '{model_name}' was not found (HTTP 404 invalid model)."
                             logger.warning(f"{last_error} Trying fallback model...")
                             continue
                         elif response.status_code >= 500:
-                            last_error = f"OpenRouter upstream provider error (HTTP {response.status_code})."
+                            last_error = f"OpenRouter provider server error (HTTP {response.status_code})."
                             logger.warning(f"{last_error} Trying fallback model...")
                             continue
                         
@@ -196,23 +226,28 @@ class LLMService:
 
                         choices = res_json.get("choices", [])
                         if not choices or "message" not in choices[0] or "content" not in choices[0]["message"]:
-                            last_error = "OpenRouter returned an empty completion response structure."
+                            last_error = "OpenRouter returned a malformed or empty response structure."
                             continue
 
                         content = choices[0]["message"]["content"]
                         if not content or not content.strip():
-                            last_error = "OpenRouter returned empty content."
+                            last_error = "OpenRouter returned empty content in completion response."
                             continue
 
                         logger.info(f"OPENROUTER_LLM_SUCCESS: model={model_name} response_len={len(content)}")
                         return content
+                    except httpx.TimeoutException:
+                        last_error = f"OpenRouter provider request timed out after 30 seconds for model '{model_name}'."
+                        logger.warning(last_error)
+                        continue
                     except (httpx.HTTPStatusError, httpx.RequestError) as e:
-                        last_error = f"OpenRouter HTTP error with model '{model_name}': {str(e)}"
+                        last_error = f"OpenRouter network connection error with model '{model_name}': {str(e)}"
                         logger.warning(last_error)
                         continue
 
-            raise LLMConfigurationError(last_error or "OpenRouter LLM request failed across all candidate models.")
-
+            err = LLMConfigurationError(last_error or "OpenRouter LLM request failed across all candidate models.")
+            err.http_status = last_status
+            raise err
 
         elif provider == "openai":
             url = "https://api.openai.com/v1/chat/completions"
@@ -221,7 +256,7 @@ class LLMService:
                 "Content-Type": "application/json"
             }
             payload = {
-                "model": "gpt-4o-mini",
+                "model": model_override or cls.get_configured_model() or "gpt-4o-mini",
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
@@ -229,27 +264,42 @@ class LLMService:
                 "temperature": 0.1,
             }
             try:
-                with httpx.Client(timeout=25.0) as client:
+                with httpx.Client(timeout=30.0) as client:
                     response = client.post(url, headers=headers, json=payload)
                     
                     if response.status_code == 401:
-                        raise LLMConfigurationError("Invalid API key configured for OpenAI.")
+                        err = LLMConfigurationError("Invalid API key configured for OpenAI (HTTP 401 authentication error).")
+                        err.http_status = 401
+                        raise err
+                    elif response.status_code == 403:
+                        err = LLMConfigurationError("OpenAI permission error (HTTP 403 permission error).")
+                        err.http_status = 403
+                        raise err
                     elif response.status_code == 429:
-                        raise LLMConfigurationError("OpenAI API rate limit exceeded.")
+                        err = LLMConfigurationError("OpenAI API rate limit exceeded (HTTP 429 rate limit).")
+                        err.http_status = 429
+                        raise err
                     
                     response.raise_for_status()
                     res_json = response.json()
+                    choices = res_json.get("choices", [])
+                    if not choices or "message" not in choices[0] or "content" not in choices[0]["message"]:
+                        raise LLMConfigurationError("OpenAI returned a malformed or empty response structure.")
                     return res_json["choices"][0]["message"]["content"]
+            except httpx.TimeoutException:
+                err = LLMConfigurationError("OpenAI provider request timed out after 30 seconds.")
+                err.http_status = 504
+                raise err
             except httpx.HTTPStatusError as e:
-                err_detail = e.response.text
-                logger.error(f"OpenAI API status error: {err_detail}")
-                raise LLMConfigurationError(f"OpenAI LLM request failed with status {e.response.status_code}.")
+                err = LLMConfigurationError(f"OpenAI LLM request failed with status {e.response.status_code}.")
+                err.http_status = e.response.status_code
+                raise err
             except httpx.RequestError as e:
-                logger.error(f"OpenAI API connection error: {str(e)}")
-                raise LLMConfigurationError(f"OpenAI LLM connection failed: {str(e)}")
+                raise LLMConfigurationError(f"OpenAI network connection error: {str(e)}")
                 
         elif provider == "gemini":
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
+            model = model_override or cls.get_configured_model() or "gemini-1.5-flash"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
             headers = {
                 "Content-Type": "application/json"
             }
@@ -267,28 +317,36 @@ class LLMService:
                 }
             }
             try:
-                with httpx.Client(timeout=25.0) as client:
+                with httpx.Client(timeout=30.0) as client:
                     response = client.post(url, headers=headers, json=payload)
                     
                     if response.status_code in (400, 403):
-                        raise LLMConfigurationError("Invalid API key configured for Gemini or malformed request parameters.")
+                        err = LLMConfigurationError("Invalid API key configured for Gemini or malformed request parameters.")
+                        err.http_status = response.status_code
+                        raise err
                     elif response.status_code == 429:
-                        raise LLMConfigurationError("Gemini API rate limit exceeded.")
+                        err = LLMConfigurationError("Gemini API rate limit exceeded (HTTP 429 rate limit).")
+                        err.http_status = 429
+                        raise err
                     
                     response.raise_for_status()
                     res_json = response.json()
                     
                     candidates = res_json.get("candidates", [])
                     if not candidates or "content" not in candidates[0]:
-                        raise LLMConfigurationError("Gemini returned an empty completion response.")
+                        raise LLMConfigurationError("Gemini returned a malformed or empty completion response.")
                     return candidates[0]["content"]["parts"][0]["text"]
+            except httpx.TimeoutException:
+                err = LLMConfigurationError("Gemini provider request timed out after 30 seconds.")
+                err.http_status = 504
+                raise err
             except httpx.HTTPStatusError as e:
-                err_detail = e.response.text
-                logger.error(f"Gemini API status error: {err_detail}")
-                raise LLMConfigurationError(f"Gemini LLM request failed with status {e.response.status_code}.")
+                err = LLMConfigurationError(f"Gemini LLM request failed with status {e.response.status_code}.")
+                err.http_status = e.response.status_code
+                raise err
             except httpx.RequestError as e:
-                logger.error(f"Gemini API connection error: {str(e)}")
-                raise LLMConfigurationError(f"Gemini LLM connection failed: {str(e)}")
+                raise LLMConfigurationError(f"Gemini network connection error: {str(e)}")
         else:
             raise LLMConfigurationError("Unknown LLM provider setup.")
+
 

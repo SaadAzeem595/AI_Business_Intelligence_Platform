@@ -104,9 +104,11 @@ def test_sql_safety_validation():
     assert "rejected for safety" in str(exc_info.value)
 
 
+@patch("app.features.agents.agents.execute_duckdb_query", return_value={"columns": ["count"], "rows": [{"count": 99441}], "elapsed_ms": 5})
 @patch("app.core.llm.LLMService.is_configured")
 @patch("app.core.llm.LLMService.generate_response")
-def test_end_to_end_chat_pipeline(mock_generate, mock_is_configured):
+def test_end_to_end_chat_pipeline(mock_generate, mock_is_configured, mock_exec_duckdb):
+
     """Tests the full pipeline from planner to SQL generation and dynamic synthesis response."""
     mock_is_configured.return_value = True
     

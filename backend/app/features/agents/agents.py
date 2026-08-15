@@ -1396,6 +1396,8 @@ def response_synthesizer(state: AgentState) -> Dict[str, Any]:
         except Exception as e:
             llm_error_reason = f"LLM provider call failed: {str(e)}"
             logger.error(f"Failed to synthesize response via LLM, falling back to template synthesis: {e}")
+    else:
+        llm_error_reason = "Missing API key for LLM provider."
 
     # Fallback to template synthesis if LLM is unconfigured or fails
     response = "### AI Assistant Execution Response\n\n"

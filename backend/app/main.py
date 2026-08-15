@@ -232,7 +232,15 @@ async def startup_event():
     startup_logger.info("=" * 80)
     startup_logger.info("AI Business Intelligence Platform FastAPI backend started successfully!")
     startup_logger.info(f"Database engine in use: {'SQLite (resilient dev fallback)' if USE_SQLITE else 'PostgreSQL'}")
-    startup_logger.info(f"LLM Provider Diagnostic: provider={llm_diag['provider']} model={llm_diag['model']} api_key_configured={llm_diag['api_key_configured']} base_url={llm_diag['base_url']}")
+    startup_logger.info(
+        f"LLM Provider Diagnostic: provider={llm_diag['provider']} "
+        f"provider_configured={'yes' if llm_diag['provider_configured'] else 'no'} "
+        f"model={llm_diag['model']} "
+        f"model_configured={'yes' if llm_diag['model_configured'] else 'no'} "
+        f"api_key_configured={'yes' if llm_diag['api_key_configured'] else 'no'} "
+        f"base_url_configured={'yes' if llm_diag['base_url_configured'] else 'no'} "
+        f"base_url={llm_diag['base_url']}"
+    )
     startup_logger.info(f"Local API gateway prefix: http://localhost:8000{settings.API_V1_STR}")
     startup_logger.info("API Server listening on host: 0.0.0.0, port: 8000")
     startup_logger.info("Interactive OpenAPI Swagger Documentation: http://localhost:8000/docs")
@@ -256,7 +264,6 @@ async def health_check() -> dict:
         "redis": "unhealthy",
         "llm": LLMService.get_diagnostic_status()
     }
-
 
     # 1. Probe PostgreSQL/SQLite
     try:
@@ -290,6 +297,12 @@ async def health_check() -> dict:
 
     return status_info
 
+
+@app.get(f"{settings.API_V1_STR}/health/llm", tags=["Health & Status Checks"])
+async def llm_health_probe() -> dict:
+    """Performs an active probe test request against the configured LLM service."""
+    from app.core.llm import LLMService
+    return LLMService.health_check()
 
 
 @app.get("/live", tags=["Health & Status Checks"])

@@ -1,12 +1,25 @@
+import os
 from typing import Any, Dict, Optional
 from pydantic import Field, PostgresDsn, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+import dotenv
+
+# Load environment variables explicitly from candidate paths (backend/.env, root/.env, CWD .env)
+base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+for env_path in [
+    os.path.join(base_dir, ".env"),
+    os.path.join(os.path.dirname(base_dir), ".env"),
+    os.path.abspath(".env"),
+]:
+    if os.path.exists(env_path):
+        dotenv.load_dotenv(env_path, override=False)
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8", case_sensitive=True, extra="ignore"
+        env_file=(".env", "backend/.env"), env_file_encoding="utf-8", case_sensitive=True, extra="ignore"
     )
+
 
     API_V1_STR: str = "/api/v1"
     PROJECT_NAME: str = "AI Business Intelligence Platform"
