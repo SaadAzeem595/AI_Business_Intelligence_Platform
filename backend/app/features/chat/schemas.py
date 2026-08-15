@@ -23,12 +23,17 @@ class ChatMessageResponse(BaseModel):
     thread_id: Optional[str] = None
     dataset_id: Optional[str] = None
     dataset_name: Optional[str] = None
+    dataset_ids: List[str] = Field(default_factory=list)
+    dataset_names: List[str] = Field(default_factory=list)
     sql_query: Optional[str] = None
+    sql: Optional[str] = None
     data: Optional[List[Dict[str, Any]]] = None
     columns: Optional[List[str]] = None
     row_count: Optional[int] = None
+    execution_time_ms: Optional[float] = None
     chart: Optional[Dict[str, Any]] = None
     table: Optional[Dict[str, Any]] = None
+
 
 
 class ChatSessionResponse(BaseModel):

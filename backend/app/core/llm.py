@@ -9,28 +9,70 @@ class LLMConfigurationError(Exception):
     pass
 
 class LLMService:
-    """Provides client wrappers for OpenAI and Gemini APIs using HTTP REST."""
+    """Provides client wrappers for OpenRouter, OpenAI, and Gemini APIs using HTTP REST."""
 
     @staticmethod
     def get_api_key_and_provider():
         """Reads environment configurations to decide on LLM provider."""
+        provider_override = os.environ.get("LLM_PROVIDER", "").strip().lower()
+        openrouter_key = os.environ.get("OPENROUTER_API_KEY")
         gemini_key = os.environ.get("GEMINI_API_KEY")
         openai_key = os.environ.get("OPENAI_API_KEY")
         
         # Check settings database or core settings as fallback
-        if not gemini_key and not openai_key:
-            try:
-                from app.core.config import settings
+        try:
+            from app.core.config import settings
+            if not openrouter_key:
+                openrouter_key = getattr(settings, "OPENROUTER_API_KEY", None)
+            if not gemini_key:
                 gemini_key = getattr(settings, "GEMINI_API_KEY", None)
+            if not openai_key:
                 openai_key = getattr(settings, "OPENAI_API_KEY", None)
-            except Exception:
-                pass
+            if not provider_override:
+                provider_override = (getattr(settings, "LLM_PROVIDER", None) or "").strip().lower()
+        except Exception:
+            pass
+
+        # Respect explicit provider preference if specified
+        if provider_override == "openrouter" and openrouter_key:
+            return openrouter_key.strip(), "openrouter"
+        if provider_override == "gemini" and gemini_key:
+            return gemini_key.strip(), "gemini"
+        if provider_override == "openai" and openai_key:
+            return openai_key.strip(), "openai"
             
+        # Default priority: OpenRouter -> Gemini -> OpenAI
+        if openrouter_key and openrouter_key.strip():
+            return openrouter_key.strip(), "openrouter"
         if gemini_key and gemini_key.strip():
             return gemini_key.strip(), "gemini"
         if openai_key and openai_key.strip():
             return openai_key.strip(), "openai"
         return None, None
+
+    @classmethod
+    def get_configured_model(cls) -> str:
+        """Returns the configured model string for OpenRouter or default providers."""
+        model = os.environ.get("OPENROUTER_MODEL")
+        if not model:
+            try:
+                from app.core.config import settings
+                model = getattr(settings, "OPENROUTER_MODEL", "openai/gpt-4o-mini")
+            except Exception:
+                model = "openai/gpt-4o-mini"
+        return model or "openai/gpt-4o-mini"
+
+    @classmethod
+    def get_base_url(cls) -> str:
+        """Returns the OpenRouter base URL."""
+        base_url = os.environ.get("OPENROUTER_BASE_URL")
+        if not base_url:
+            try:
+                from app.core.config import settings
+                base_url = getattr(settings, "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+            except Exception:
+                base_url = "https://openrouter.ai/api/v1"
+        return (base_url or "https://openrouter.ai/api/v1").rstrip("/")
 
     @classmethod
     def is_configured(cls) -> bool:
@@ -39,13 +81,71 @@ class LLMService:
         return key is not None
 
     @classmethod
-    def generate_response(cls, system_prompt: str, user_prompt: str) -> str:
+    def generate_response(cls, system_prompt: str, user_prompt: str, model_override: str = None) -> str:
         """Sends chat completion query to the configured LLM provider synchronously."""
         key, provider = cls.get_api_key_and_provider()
         if not key:
             raise LLMConfigurationError("AI model configuration is unavailable.")
 
-        if provider == "openai":
+        if provider == "openrouter":
+            base_url = cls.get_base_url()
+            url = f"{base_url}/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://datapilot.ai",
+                "X-Title": "DataPilot AI"
+            }
+            model_name = model_override or cls.get_configured_model()
+            payload = {
+                "model": model_name,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                "temperature": 0.1,
+            }
+            try:
+                with httpx.Client(timeout=30.0) as client:
+                    logger.info(f"OPENROUTER_LLM_REQUEST: model={model_name} url={url}")
+                    response = client.post(url, headers=headers, json=payload)
+                    
+                    if response.status_code == 401:
+                        raise LLMConfigurationError("Invalid API key configured for OpenRouter.")
+                    elif response.status_code == 429:
+                        raise LLMConfigurationError("OpenRouter API rate limit exceeded.")
+                    elif response.status_code in (404, 503):
+                        raise LLMConfigurationError(f"OpenRouter model '{model_name}' is currently unavailable or invalid.")
+                    elif response.status_code >= 500:
+                        raise LLMConfigurationError(f"OpenRouter upstream provider error (HTTP {response.status_code}).")
+                    
+                    response.raise_for_status()
+                    res_json = response.json()
+
+                    if "error" in res_json:
+                        err_obj = res_json["error"]
+                        err_msg = err_obj.get("message") if isinstance(err_obj, dict) else str(err_obj)
+                        raise LLMConfigurationError(f"OpenRouter provider returned an error: {err_msg}")
+
+                    choices = res_json.get("choices", [])
+                    if not choices or "message" not in choices[0] or "content" not in choices[0]["message"]:
+                        raise LLMConfigurationError("OpenRouter returned an empty completion response.")
+
+                    content = choices[0]["message"]["content"]
+                    if not content or not content.strip():
+                        raise LLMConfigurationError("OpenRouter returned an empty response content.")
+
+                    logger.info(f"OPENROUTER_LLM_SUCCESS: model={model_name} response_len={len(content)}")
+                    return content
+            except httpx.HTTPStatusError as e:
+                err_detail = e.response.text
+                logger.error(f"OpenRouter API status error ({e.response.status_code}): {err_detail}")
+                raise LLMConfigurationError(f"OpenRouter request failed with status {e.response.status_code}.")
+            except httpx.RequestError as e:
+                logger.error(f"OpenRouter API connection error: {str(e)}")
+                raise LLMConfigurationError(f"OpenRouter connection failed or timed out: {str(e)}")
+
+        elif provider == "openai":
             url = "https://api.openai.com/v1/chat/completions"
             headers = {
                 "Authorization": f"Bearer {key}",
@@ -122,3 +222,4 @@ class LLMService:
                 raise LLMConfigurationError(f"Gemini LLM connection failed: {str(e)}")
         else:
             raise LLMConfigurationError("Unknown LLM provider setup.")
+

@@ -99,6 +99,14 @@ class Settings(BaseSettings):
     SENTRY_DSN: Optional[str] = None
     OTEL_EXPORTER_OTLP_ENDPOINT: Optional[str] = None
 
+    # LLM and OpenRouter configurations
+    OPENROUTER_API_KEY: Optional[str] = None
+    OPENROUTER_MODEL: str = "openai/gpt-4o-mini"
+    OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
+    LLM_PROVIDER: Optional[str] = None
+    GEMINI_API_KEY: Optional[str] = None
+    OPENAI_API_KEY: Optional[str] = None
+
     # Production security
     ALLOWED_ORIGINS: str = "*"
     RATE_LIMIT_PER_MINUTE: int = 100
@@ -106,3 +114,4 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+

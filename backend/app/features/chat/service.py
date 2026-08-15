@@ -42,10 +42,15 @@ class ChatService:
             thread_id=agent_res.thread_id,
             dataset_id=agent_res.dataset_id,
             dataset_name=agent_res.dataset_name,
+            dataset_ids=agent_res.dataset_ids,
+            dataset_names=agent_res.dataset_names,
             sql_query=agent_res.sql_query,
+            sql=agent_res.sql or agent_res.sql_query,
             data=agent_res.data,
             columns=agent_res.columns,
             row_count=agent_res.row_count,
+            execution_time_ms=agent_res.execution_time_ms,
             chart=agent_res.chart,
             table=agent_res.table
         )
+

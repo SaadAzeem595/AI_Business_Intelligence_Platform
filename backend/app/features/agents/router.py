@@ -122,6 +122,8 @@ def build_response_from_state(thread_id: str, graph_state: Any, execution_time_m
 
     dataset_id = state_values.get("dataset_id")
     dataset_name = state_values.get("dataset")
+    dataset_ids = [dataset_id] if dataset_id else []
+    dataset_names = [dataset_name] if dataset_name else []
     sql_q = state_values.get("sql_query")
 
     logger.info(
@@ -147,11 +149,14 @@ def build_response_from_state(thread_id: str, graph_state: Any, execution_time_m
         table=table,
         dataset_id=dataset_id,
         dataset_name=dataset_name,
+        dataset_ids=dataset_ids,
+        dataset_names=dataset_names,
         data=data_rows,
         columns=data_cols,
         row_count=data_count,
         execution_time_ms=execution_time_ms or state_values.get("execution_time_ms")
     )
+
 
 
 @router.post("/chat", response_model=AgentChatResponse)

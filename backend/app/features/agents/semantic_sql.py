@@ -491,6 +491,12 @@ def validate_semantic_sql(sql_query: Optional[str], user_query: str, catalog: Li
 
     sql_upper = sql_query.strip().upper()
 
+    # Rule 0: Read-only safety validation
+    forbidden_keywords = ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "TRUNCATE", "CREATE", "GRANT", "REVOKE", "COPY"]
+    for kw in forbidden_keywords:
+        if re.search(r'\b' + re.escape(kw) + r'\b', sql_upper):
+            return False, f"Forbidden SQL operation '{kw}' detected. Only read-only SELECT queries are allowed."
+
     # Rule 1: Never allow un-aggregated SELECT * LIMIT 5 without ORDER BY for analytical queries
     if is_analytical_query(user_query):
         if re.search(r'SELECT\s+\*\s+FROM', sql_upper) and "ORDER BY" not in sql_upper and "GROUP BY" not in sql_upper:
@@ -515,3 +521,4 @@ def validate_semantic_sql(sql_query: Optional[str], user_query: str, catalog: Li
         return False, concept_err
 
     return True, None
+

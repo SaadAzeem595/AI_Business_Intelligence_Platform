@@ -16,8 +16,19 @@ from app.features.agents.semantic_sql import (
     validate_semantic_sql,
     is_analytical_query
 )
+from app.features.agents.tools import (
+    list_project_datasets,
+    get_dataset_schema,
+    get_dataset_preview,
+    generate_sql,
+    validate_sql,
+    execute_duckdb_query,
+    analyze_query_result,
+    generate_chart
+)
 
 logger = logging.getLogger(__name__)
+
 
 class AgentState(TypedDict):
     query: str
@@ -657,6 +668,8 @@ def router_agent(state: AgentState) -> Dict[str, Any]:
 def sql_agent(state: AgentState) -> Dict[str, Any]:
     start_time = time.perf_counter()
     query = state.get("query", "")
+    active_proj = state.get("active_project")
+    available_datasets = state.get("available_datasets") or []
 
     # 0. Check conversational intent or pre-set final_response
     if state.get("intent") == "conversation" or (state.get("final_response") and not state.get("sql_query")):
@@ -666,14 +679,15 @@ def sql_agent(state: AgentState) -> Dict[str, Any]:
             "execution_logs": log_execution(state, "sql_agent", start_time, status="success", details="Skipped SQL execution for conversational/pre-set response")
         }
 
-    resolved = resolve_dataset(query, state.get("dataset"), available_datasets=state.get("available_datasets"))
-    catalog = build_catalog_from_datasets(state.get("available_datasets") or ([resolved] if resolved else []))
+    resolved = resolve_dataset(query, state.get("dataset"), available_datasets=available_datasets)
+    catalog = build_catalog_from_datasets(available_datasets or ([resolved] if resolved else []))
     
     if not resolved and not catalog:
-        err = "No active dataset resolved for SQL query execution."
+        err = "No datasets are available in the current project to execute SQL queries."
         completed = list(state.get("completed_steps", [])) + ["sql_agent"]
         reasoning = list(state.get("reasoning_path", [])) + ["sql_agent"]
         return {
+            "final_response": err,
             "sql_result": {"error": err},
             "completed_steps": completed,
             "execution_logs": log_execution(state, "sql_agent", start_time, status="failure", details=err),
@@ -692,174 +706,116 @@ def sql_agent(state: AgentState) -> Dict[str, Any]:
         }
 
     from app.core.llm import LLMService
-    
+
     sql_query = state.get("sql_query")
+    last_error = None
+    exec_result = None
+    max_retries = 3
+    retry_count = 0
+    llm_model = LLMService.get_configured_model() if LLMService.is_configured() else "semantic_builder"
+
     if not sql_query:
-        if LLMService.is_configured():
+        while retry_count < max_retries:
+            generated_q, gen_explanation = generate_sql(
+                user_query=query,
+                available_datasets=available_datasets,
+                target_dataset=resolved,
+                project_id=active_proj,
+                retry_count=retry_count,
+                last_error=last_error
+            )
+            
+            if not generated_q:
+                missing_msg = gen_explanation
+                completed = list(state.get("completed_steps", [])) + ["sql_agent"]
+                reasoning = list(state.get("reasoning_path", [])) + ["sql_agent"]
+                return {
+                    "final_response": missing_msg,
+                    "sql_result": {"error": missing_msg},
+                    "completed_steps": completed,
+                    "execution_logs": log_execution(state, "sql_agent", start_time, status="failure", details=missing_msg),
+                    "reasoning_path": reasoning,
+                    "errors": list(state.get("errors", [])) + [missing_msg]
+                }
+
+            is_valid, validation_err = validate_sql(generated_q, query, available_datasets, target_dataset=resolved)
+            
+            logger.info(
+                f"SQL_VALIDATION_CHECK: project_id={active_proj} retry={retry_count} "
+                f"is_valid={is_valid} validation_err='{validation_err}' sql='{generated_q}'"
+            )
+
+            if not is_valid:
+                last_error = validation_err
+                retry_count += 1
+                continue
+
             try:
-                all_tables_info = ""
-                for tbl in catalog:
-                    cols_str = ", ".join(f"\"{col_info['name']}\" ({col_info['type']})" for col_info in tbl["columns"].values())
-                    all_tables_info += f"- Table: \"{tbl['table_name']}\" (File: {tbl['filename']}) (Columns: {cols_str})\n"
-                        
-                system_prompt = (
-                    "You are an expert SQL Generator for DuckDB. Your job is to translate a user request into a valid, optimized DuckDB SQL query.\n"
-                    "RULES:\n"
-                    "1. Generate ONLY the raw SQL query. Do not wrap it in markdown code blocks, do not explain anything.\n"
-                    "2. The query must ONLY perform read operations (SELECT).\n"
-                    "3. For analytical questions (highest/most orders, top categories, monthly trends, revenue), NEVER generate un-aggregated 'SELECT * LIMIT 5'.\n"
-                    "4. For number of orders, use COUNT(DISTINCT order_id).\n"
-                    "5. For revenue, use SUM(price) or SUM(revenue).\n"
-                    "6. If the dimension (e.g. category) and metric (e.g. order_id, price) live in different tables, JOIN them using matching keys (e.g. product_id, order_id).\n"
-                    "7. Ensure table names are enclosed in double quotes, e.g. FROM \"olist_products_dataset\"."
-                )
+                exec_res_dict = execute_duckdb_query(generated_q, project_id=active_proj)
+                sql_query = generated_q
                 
-                user_prompt = (
-                    f"Here are the available tables in the database and their schemas:\n"
-                    f"{all_tables_info}\n"
-                    f"Primary table for this query: \"{resolved['view_name']}\"\n\n"
-                    f"User request: {query}\n\n"
-                    f"DuckDB SQL query:"
+                is_aligned, alignment_err = analyze_query_result(
+                    query, generated_q, exec_res_dict.get("columns", []), exec_res_dict.get("rows", []), target_dataset=resolved
                 )
-                
-                llm_response = LLMService.generate_response(system_prompt, user_prompt)
-                sql_query = llm_response.strip().replace("```sql", "").replace("```", "").strip()
+                if not is_aligned and retry_count < max_retries - 1:
+                    logger.warning(f"Semantic alignment check failed ({alignment_err}). Retrying SQL generation...")
+                    last_error = alignment_err
+                    retry_count += 1
+                    continue
 
-                # Perform semantic validation on LLM output
-                is_valid, rejection_reason = validate_semantic_sql(sql_query, query, catalog, target_dataset=resolved)
-                if not is_valid:
-                    logger.info(f"LLM SQL query failed validation ({rejection_reason}). Falling back to SemanticSQLPlanner.")
-                    sem_res = parse_and_generate_semantic_sql(query, catalog)
-                    if sem_res.get("success") and sem_res.get("sql"):
-                        sql_query = sem_res["sql"]
-                    elif sem_res.get("missing_dataset_msg"):
-                        sql_query = f"MISSING_DATASET:{sem_res['missing_dataset_msg']}"
-
+                exec_result = exec_res_dict
+                break
             except Exception as e:
-                logger.error(f"Failed to generate SQL via LLM, falling back to semantic query builder: {e}")
-                sql_query = generate_sql_query(query, resolved, project_id=state.get("active_project"), available_datasets=state.get("available_datasets"))
-        else:
-            sql_query = generate_sql_query(query, resolved, project_id=state.get("active_project"), available_datasets=state.get("available_datasets"))
+                err_msg = str(e)
+                logger.warning(f"DuckDB SQL execution error on attempt #{retry_count+1}: {err_msg}")
+                last_error = err_msg
+                retry_count += 1
 
-    # Check for missing dataset signal
-    if sql_query and sql_query.startswith("MISSING_DATASET:"):
-        missing_msg = sql_query.replace("MISSING_DATASET:", "").strip()
+    if not exec_result and sql_query:
+        try:
+            exec_result = execute_duckdb_query(sql_query, project_id=active_proj)
+        except Exception as e:
+            exec_result = {"error": str(e), "columns": [], "rows": [], "elapsed_ms": 0, "row_count": 0}
+
+    if not exec_result:
+        err_final = last_error or "Unable to generate a valid SQL query for this request."
         completed = list(state.get("completed_steps", [])) + ["sql_agent"]
         reasoning = list(state.get("reasoning_path", [])) + ["sql_agent"]
         return {
-            "final_response": missing_msg,
-            "sql_result": {"error": missing_msg},
+            "final_response": err_final,
+            "sql_result": {"error": err_final},
             "completed_steps": completed,
-            "execution_logs": log_execution(state, "sql_agent", start_time, status="failure", details=missing_msg),
+            "execution_logs": log_execution(state, "sql_agent", start_time, status="failure", details=err_final),
             "reasoning_path": reasoning,
-            "errors": list(state.get("errors", [])) + [missing_msg]
+            "errors": list(state.get("errors", [])) + [err_final]
         }
 
-    # Perform semantic validation on fallback/generated query
-    is_valid, rejection_reason = validate_semantic_sql(sql_query, query, catalog, target_dataset=resolved)
-    if not is_valid:
-        sem_res = parse_and_generate_semantic_sql(query, catalog)
-        if sem_res.get("success") and sem_res.get("sql"):
-            sql_query = sem_res["sql"]
-        elif sem_res.get("missing_dataset_msg"):
-            missing_msg = sem_res["missing_dataset_msg"]
-            completed = list(state.get("completed_steps", [])) + ["sql_agent"]
-            reasoning = list(state.get("reasoning_path", [])) + ["sql_agent"]
-            return {
-                "final_response": missing_msg,
-                "sql_result": {"error": missing_msg},
-                "completed_steps": completed,
-                "execution_logs": log_execution(state, "sql_agent", start_time, status="failure", details=missing_msg),
-                "reasoning_path": reasoning,
-                "errors": list(state.get("errors", [])) + [missing_msg]
-            }
-        else:
-            completed = list(state.get("completed_steps", [])) + ["sql_agent"]
-            reasoning = list(state.get("reasoning_path", [])) + ["sql_agent"]
-            return {
-                "final_response": rejection_reason,
-                "sql_result": {"error": rejection_reason},
-                "completed_steps": completed,
-                "execution_logs": log_execution(state, "sql_agent", start_time, status="failure", details=rejection_reason),
-                "reasoning_path": reasoning,
-                "errors": list(state.get("errors", [])) + [rejection_reason]
-            }
+    dataset_ids = [resolved["id"]] if resolved and "id" in resolved else []
+    dataset_names = [resolved["filename"]] if resolved and "filename" in resolved else []
+    selected_tables = [t["table_name"] for t in catalog] if catalog else []
+    row_count = exec_result.get("row_count", len(exec_result.get("rows", [])))
+    
+    logger.info(
+        f"AI_CHAT_SQL_EXECUTION_COMPLETE: project_id={active_proj} dataset_ids={dataset_ids} "
+        f"dataset_names={dataset_names} selected_tables={selected_tables} generated_sql='{sql_query}' "
+        f"sql_validation=True execution_time_ms={exec_result.get('elapsed_ms', 0)} row_count={row_count} "
+        f"llm_model='{llm_model}' llm_status=success"
+    )
 
-    # 4. Auto-Approval Layer
-    is_safe = False
-    if sql_query:
-        try:
-            clean_q = sql_query.strip().upper()
-            import re
-            forbidden_keywords = ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "TRUNCATE", "CREATE", "GRANT", "REVOKE", "COPY"]
-            has_forbidden = False
-            for kw in forbidden_keywords:
-                if re.search(r'\b' + re.escape(kw) + r'\b', clean_q):
-                    if kw == "CREATE" and ("VIEW" in clean_q or "TEMP" in clean_q or "TABLE" in clean_q):
-                        continue
-                    has_forbidden = True
-                    break
-            if not has_forbidden:
-                is_safe = True
-        except Exception:
-            pass
+    completed = list(state.get("completed_steps", [])) + ["sql_agent"]
+    reasoning = list(state.get("reasoning_path", [])) + ["sql_agent"]
+    logs = log_execution(state, "sql_agent", start_time, status="success", details=f"Executed SQL returning {row_count} rows.")
 
-    if not is_safe and not state.get("is_approved", False):
-        logger.info("SQL execution requires approval. Halting execution.")
-        logs = log_execution(state, "sql_agent", start_time, status="paused", details=f"Awaiting human approval for SQL query: {sql_query}")
-        return {
-            "sql_query": sql_query,
-            "generated_sql": sql_query,
-            "execution_logs": logs
-        }
-
-    logger.info(f"SQL Agent executing query: '{sql_query}'")
-    
-    result_dict = {}
-    status = "success"
-    details = ""
-    errors_list = list(state.get("errors", []))
-    
-    try:
-        from app.core.json_utils import make_json_serializable
-        analytics_svc = AnalyticsService()
-        result = analytics_svc.execute_duckdb_query(sql_query, project_id=state.get("active_project"))
-        clean_rows = make_json_serializable(result.rows)
-        result_dict = {
-            "columns": result.columns,
-            "rows": clean_rows,
-            "elapsed_ms": result.elapsedMs
-        }
-        details = f"Executed SQL: '{sql_query}' returning {len(clean_rows)} rows."
-        logger.info(
-            f"AI_CHAT_SQL_EXECUTED: project_id={state.get('active_project')} user_id={state.get('user_id')} "
-            f"dataset_id={resolved.get('id')} filename='{resolved.get('filename')}' duckdb_table='{resolved.get('view_name')}' "
-            f"generated_sql='{sql_query}' row_count={len(clean_rows)}"
-        )
-    except Exception as e:
-        err_msg = str(e)
-        result_dict = {"error": err_msg}
-        status = "failure"
-        details = f"SQL Failed: {err_msg}"
-        errors_list.append(err_msg)
-
-    completed = list(state.get("completed_steps", []))
-    completed.append("sql_agent")
-    
-    reasoning = list(state.get("reasoning_path", []))
-    reasoning.append("sql_agent")
-    
-    logs = log_execution(state, "sql_agent", start_time, status=status, details=details)
-    
     return {
         "sql_query": sql_query,
         "generated_sql": sql_query,
-        "sql_result": result_dict,
+        "sql_result": exec_result,
         "completed_steps": completed,
         "execution_logs": logs,
         "reasoning_path": reasoning,
-        "errors": errors_list
+        "errors": list(state.get("errors", []))
     }
+
 
 
 # 4. Analytics Agent

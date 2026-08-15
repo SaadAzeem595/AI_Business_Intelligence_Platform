@@ -41,7 +41,10 @@ class AgentChatResponse(BaseModel):
     table: Optional[Dict[str, Any]] = None
     dataset_id: Optional[str] = None
     dataset_name: Optional[str] = None
+    dataset_ids: List[str] = Field(default_factory=list)
+    dataset_names: List[str] = Field(default_factory=list)
     data: Optional[List[Dict[str, Any]]] = None
     columns: Optional[List[str]] = None
     row_count: Optional[int] = None
     execution_time_ms: Optional[float] = None
+
