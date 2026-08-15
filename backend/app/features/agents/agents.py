@@ -1412,12 +1412,12 @@ def response_synthesizer(state: AgentState) -> Dict[str, Any]:
             
     # Fallback to template if LLM is unconfigured or fails
     response = "### AI Assistant Execution Response\n\n"
-    if resolved:
-        response += f"**Active Dataset**: `{resolved['filename']}`\n\n"
-        
+    has_section = False
+
     if "analytics_agent" in completed and state.get("analytics_result"):
         ar = state["analytics_result"]
         if "error" not in ar:
+            has_section = True
             response += "#### Dataset Profiling Analysis:\n"
             response += f"- **Total Rows**: {ar['total_rows']:,}\n"
             response += f"- **Total Columns**: {ar['total_columns']}\n"
@@ -1436,6 +1436,7 @@ def response_synthesizer(state: AgentState) -> Dict[str, Any]:
     if "sql_agent" in completed and state.get("sql_result"):
         sr = state["sql_result"]
         if "error" not in sr and sr.get("rows"):
+            has_section = True
             rows = sr["rows"]
             cols = sr.get("columns", [])
             response += "Here are the query results:\n\n"
@@ -1456,10 +1457,16 @@ def response_synthesizer(state: AgentState) -> Dict[str, Any]:
                 
                 response += f"{idx}. **{label_val}** — {metric_str} {metric_name_clean}\n"
             response += "\n"
-            response += f"```sql\n{state.get('sql_query')}\n```\n"
-            response += f"- Executed query successfully in {sr['elapsed_ms']}ms.\n\n"
+            if state.get("sql_query"):
+                response += f"```sql\n{state.get('sql_query')}\n```\n"
+            response += f"- Executed query successfully in {sr.get('elapsed_ms', 0)}ms.\n\n"
         elif "error" in sr:
-            response += f"❌ **SQL Execution**: {sr['error']}\n\n"
+            has_section = True
+            response += f"❌ {sr['error']}\n\n"
+
+    if not has_section and resolved:
+        response += f"Analyzed active dataset `{resolved['filename']}`. To execute queries or generate charts, please ask a specific analytical question."
+
             
     if "forecast_agent" in completed and state.get("forecast_result"):
         fr = state["forecast_result"]

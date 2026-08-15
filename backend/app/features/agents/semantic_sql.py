@@ -138,6 +138,9 @@ def pick_table_matching_query(matches: List[Tuple[Dict[str, Any], str]], q_lower
     return matches[0]
 
 
+from app.features.agents.relationship_graph import build_project_relationship_graph
+
+
 def parse_and_generate_semantic_sql(query: str, catalog: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Analyzes user intent, checks dataset availability across the project, resolves join relationships,
@@ -160,53 +163,75 @@ def parse_and_generate_semantic_sql(query: str, catalog: List[Dict[str, Any]]) -
         }
 
     q_lower = query.lower()
+    rel_graph = build_project_relationship_graph(catalog)
+
+    # 0. Check if query explicitly specifies an unknown dataset filename
+    req_file_match = re.search(r'\b([\w\-]+\.(csv|xlsx|xls|json|pdf|parquet))\b', query, re.IGNORECASE)
+    if req_file_match:
+        req_file = req_file_match.group(1).lower()
+        if not any(t.get("filename", "").lower() == req_file for t in catalog):
+            return {
+                "success": False,
+                "sql": None,
+                "explanation": None,
+                "missing_dataset_msg": f"I couldn't analyze the requested dataset because '{req_file}' was not found in the active project.",
+                "tables_used": []
+            }
 
     # 1. Detect requested dimension & metrics
     wants_category = any(k in q_lower for k in ["category", "categories", "product category"])
-    wants_product = any(k in q_lower for k in ["product", "products", "item", "items"]) and not wants_category
+    wants_product = any(k in q_lower for k in ["product", "products", "item", "items"])
     wants_customer = any(k in q_lower for k in ["customer", "customers", "user", "users", "client"])
     wants_monthly = any(k in q_lower for k in ["monthly", "month", "trend", "trends", "by month", "over time"])
-    wants_revenue = any(k in q_lower for k in ["revenue", "sales", "price", "amount", "total sales", "total revenue", "highest revenue"])
-    wants_orders = any(k in q_lower for k in ["order", "orders", "most orders", "highest orders", "order count", "number of orders"])
-    wants_aov = any(k in q_lower for k in ["average order value", "aov", "avg order value", "average order"])
+    wants_revenue = any(k in q_lower for k in ["revenue", "sales", "price", "amount", "total sales", "total revenue", "highest revenue", "top selling", "top-selling", "selling"])
+    wants_orders = any(k in q_lower for k in ["order", "orders", "most orders", "highest orders", "order count", "number of orders", "delivered orders"])
+    wants_summary = any(k in q_lower for k in ["summary", "summarize", "overview", "describe", "details"])
+    wants_delivered = "delivered" in q_lower
 
-    # Determine limit N (default 10 for ranking queries)
+    # Determine limit N (default 10)
     limit_match = re.search(r'\b(?:top|limit|first)\s+(\d+)\b', q_lower)
     if not limit_match:
         limit_match = re.search(r'\b(\d+)\s+(?:orders|categories|products|items|customers|users|rows|records)\b', q_lower)
+    limit_n = int(limit_match.group(1)) if limit_match else 10
 
-    if limit_match:
-        limit_n = int(limit_match.group(1))
-    else:
-        limit_n = 10
-
-    # -------------------------------------------------------------
-    # Scenario 0: How many / Count queries (e.g. "How many orders are in the dataset?")
-    # -------------------------------------------------------------
-    if any(k in q_lower for k in ["how many", "total records", "total rows", "total count", "count of", "number of records", "how many rows"]):
-        target_table = catalog[0]
-        for t in catalog:
-            fn = t.get("filename", "").lower()
-            tb = t.get("table_name", "").lower()
-            fn_base = os.path.splitext(fn)[0] if fn else ""
-            if (fn and fn in q_lower) or (fn_base and len(fn_base) > 3 and fn_base in q_lower) or (tb and tb in q_lower):
-                target_table = t
-                break
-        sql = f'SELECT COUNT(*) AS total_count FROM "{target_table["table_name"]}"'
-        explanation = f"Counted total records in `{target_table['filename']}`."
-        return {"success": True, "sql": sql, "explanation": explanation, "missing_dataset_msg": None, "tables_used": [target_table["table_name"]]}
+    # Locate candidate tables
+    cat_matches = find_column_in_catalog(catalog, ["product_category_name", "category_name", "category", "cat_name"])
+    order_matches = find_column_in_catalog(catalog, ["order_id", "order_id_pkey"])
+    rev_matches = find_column_in_catalog(catalog, ["price", "revenue", "sales", "total_amount", "amount", "value"])
 
     # -------------------------------------------------------------
-    # Scenario A: Category + Orders / Revenue (e.g. "highest orders by category", "top categories by orders")
+    # Scenario A: Summary / Single-table Category Product Count (e.g. "How many products are in each category?", "Give me a summary of olist_products_dataset.csv")
     # -------------------------------------------------------------
-    if wants_category or ("category" in q_lower and (wants_orders or wants_revenue)):
-        cat_matches = find_column_in_catalog(catalog, ["product_category_name", "category_name", "category", "cat_name"])
-        order_matches = find_column_in_catalog(catalog, ["order_id", "order_id_pkey"])
-        rev_matches = find_column_in_catalog(catalog, ["price", "revenue", "sales", "total_amount", "amount", "value"])
+    if (wants_category or wants_summary) and not wants_orders and not wants_revenue and not wants_delivered:
+        if cat_matches:
+            cat_table, cat_col = cat_matches[0]
+            target_table = cat_table
+            if req_file_match:
+                for t in catalog:
+                    if t.get("filename", "").lower() == req_file_match.group(1).lower():
+                        target_table = t
+                        break
 
-        if not cat_matches:
-            cat_matches = find_column_in_catalog(catalog, ["product_name", "prod_cat"])
+            target_cat_col = None
+            for c_lower, c_info in target_table["columns"].items():
+                if "category" in c_lower or "type" in c_lower:
+                    target_cat_col = c_info["name"]
+                    break
 
+            if target_cat_col:
+                sql = (
+                    f'SELECT "{target_cat_col}" AS category, COUNT(*) AS product_count '
+                    f'FROM "{target_table["table_name"]}" '
+                    f'WHERE "{target_cat_col}" IS NOT NULL '
+                    f'GROUP BY 1 ORDER BY product_count DESC LIMIT {limit_n}'
+                )
+                explanation = f"Queried `{target_table['filename']}` grouping by `{target_cat_col}` and calculated product counts."
+                return {"success": True, "sql": sql, "explanation": explanation, "missing_dataset_msg": None, "tables_used": [target_table["table_name"]]}
+
+    # -------------------------------------------------------------
+    # Scenario B: Delivered Orders by Category (3-table JOIN: products + order_items + orders)
+    # -------------------------------------------------------------
+    if wants_category and wants_delivered:
         if not cat_matches:
             return {
                 "success": False,
@@ -215,11 +240,52 @@ def parse_and_generate_semantic_sql(query: str, catalog: List[Dict[str, Any]]) -
                 "missing_dataset_msg": "I need a dataset containing product category information (such as olist_products_dataset.csv) to analyze orders by category.",
                 "tables_used": []
             }
+        cat_table, cat_col = cat_matches[0]
+        item_table = None
+        orders_table = None
 
+        for t in catalog:
+            tb = t["table_name"].lower()
+            if "item" in tb or "order_items" in tb:
+                item_table = t
+            elif "orders" in tb and "item" not in tb:
+                orders_table = t
+
+        if cat_table and item_table and orders_table:
+            j1 = find_join_key(cat_table, item_table)
+            j2 = find_join_key(item_table, orders_table)
+            if j1 and j2:
+                order_col = orders_table["columns"]["order_id"]["name"] if "order_id" in orders_table["columns"] else "order_id"
+                status_col = "order_status" if "order_status" in orders_table["columns"] else None
+                where_clause = f'WHERE o."{status_col}" = \'delivered\' AND p."{cat_col}" IS NOT NULL' if status_col else f'WHERE p."{cat_col}" IS NOT NULL'
+
+                sql = (
+                    f'SELECT p."{cat_col}" AS category, COUNT(DISTINCT o."{order_col}") AS delivered_orders '
+                    f'FROM "{cat_table["table_name"]}" p '
+                    f'JOIN "{item_table["table_name"]}" oi ON p."{j1[0]}" = oi."{j1[1]}" '
+                    f'JOIN "{orders_table["table_name"]}" o ON oi."{j2[0]}" = o."{j2[1]}" '
+                    f'{where_clause} '
+                    f'GROUP BY p."{cat_col}" ORDER BY delivered_orders DESC LIMIT {limit_n}'
+                )
+                explanation = f"Joined `{cat_table['filename']}`, `{item_table['filename']}`, and `{orders_table['filename']}` to count delivered orders by category."
+                return {"success": True, "sql": sql, "explanation": explanation, "missing_dataset_msg": None, "tables_used": [cat_table["table_name"], item_table["table_name"], orders_table["table_name"]]}
+
+    # -------------------------------------------------------------
+    # Scenario C: Orders / Revenue / Top Selling by Category
+    # -------------------------------------------------------------
+    if wants_category or ("category" in q_lower and (wants_orders or wants_revenue)):
+        if not cat_matches:
+            return {
+                "success": False,
+                "sql": None,
+                "explanation": None,
+                "missing_dataset_msg": "I need a dataset containing product category information (such as olist_products_dataset.csv) to analyze orders by category.",
+                "tables_used": []
+            }
         cat_table, cat_col = cat_matches[0]
 
-        # Case A1: Orders requested by category
-        if wants_orders or not wants_revenue:
+        # Case C1: Orders by Category
+        if wants_orders:
             if not order_matches:
                 return {
                     "success": False,
@@ -229,55 +295,29 @@ def parse_and_generate_semantic_sql(query: str, catalog: List[Dict[str, Any]]) -
                     "tables_used": [cat_table["table_name"]]
                 }
             
-            # Check if category table itself contains order_id
-            if "order_id" in cat_table["columns"]:
+            order_table, order_id_col = order_matches[0]
+            if cat_table["table_name"] == order_table["table_name"]:
                 sql = (
-                    f'SELECT "{cat_col}" AS category, COUNT(DISTINCT "{cat_table["columns"]["order_id"]["name"]}") AS order_count '
-                    f'FROM "{cat_table["table_name"]}" '
+                    f'SELECT "{cat_col}" AS category, COUNT(DISTINCT "{order_id_col}") AS order_count '
+                    f'FROM "{cat_table["table_name"]}" WHERE "{cat_col}" IS NOT NULL '
                     f'GROUP BY 1 ORDER BY order_count DESC LIMIT {limit_n}'
                 )
-                explanation = f"Queried `{cat_table['filename']}` grouping by `{cat_col}` and counted distinct `order_id`."
-                return {"success": True, "sql": sql, "explanation": explanation, "missing_dataset_msg": None, "tables_used": [cat_table["table_name"]]}
+                return {"success": True, "sql": sql, "explanation": f"Queried `{cat_table['filename']}` by `{cat_col}` counting distinct orders.", "missing_dataset_msg": None, "tables_used": [cat_table["table_name"]]}
 
-            # Category table does not contain order_id -> JOIN with order_items or orders table!
-            order_table, order_id_col = order_matches[0]
             join_pair = find_join_key(cat_table, order_table)
+            if join_pair:
+                sql = (
+                    f'SELECT p."{cat_col}" AS category, COUNT(DISTINCT oi."{order_id_col}") AS order_count '
+                    f'FROM "{cat_table["table_name"]}" p '
+                    f'JOIN "{order_table["table_name"]}" oi ON p."{join_pair[0]}" = oi."{join_pair[1]}" '
+                    f'WHERE p."{cat_col}" IS NOT NULL '
+                    f'GROUP BY p."{cat_col}" ORDER BY order_count DESC LIMIT {limit_n}'
+                )
+                explanation = f"Joined `{cat_table['filename']}` and `{order_table['filename']}` on `{join_pair[0]}` to count orders by category."
+                return {"success": True, "sql": sql, "explanation": explanation, "missing_dataset_msg": None, "tables_used": [cat_table["table_name"], order_table["table_name"]]}
 
-            if not join_pair:
-                # Try finding an intermediate join table (e.g. products -> order_items -> orders)
-                for candidate_table in catalog:
-                    j1 = find_join_key(cat_table, candidate_table)
-                    j2 = find_join_key(candidate_table, order_table)
-                    if j1 and j2:
-                        sql = (
-                            f'SELECT p."{cat_col}" AS category, COUNT(DISTINCT o."{order_id_col}") AS order_count '
-                            f'FROM "{cat_table["table_name"]}" p '
-                            f'JOIN "{candidate_table["table_name"]}" i ON p."{j1[0]}" = i."{j1[1]}" '
-                            f'JOIN "{order_table["table_name"]}" o ON i."{j2[0]}" = o."{j2[1]}" '
-                            f'GROUP BY p."{cat_col}" ORDER BY order_count DESC LIMIT {limit_n}'
-                        )
-                        explanation = f"Joined `{cat_table['filename']}`, `{candidate_table['filename']}`, and `{order_table['filename']}` using `{j1[0]}` and `{j2[0]}`, and counted distinct `{order_id_col}`."
-                        return {"success": True, "sql": sql, "explanation": explanation, "missing_dataset_msg": None, "tables_used": [cat_table["table_name"], candidate_table["table_name"], order_table["table_name"]]}
-
-                return {
-                    "success": False,
-                    "sql": None,
-                    "explanation": None,
-                    "missing_dataset_msg": f"I need a dataset linking `{cat_table['filename']}` and `{order_table['filename']}` (such as olist_order_items_dataset.csv) to calculate orders by product category.",
-                    "tables_used": [cat_table["table_name"], order_table["table_name"]]
-                }
-
-            sql = (
-                f'SELECT p."{cat_col}" AS category, COUNT(DISTINCT oi."{order_id_col}") AS order_count '
-                f'FROM "{cat_table["table_name"]}" p '
-                f'JOIN "{order_table["table_name"]}" oi ON p."{join_pair[0]}" = oi."{join_pair[1]}" '
-                f'GROUP BY p."{cat_col}" ORDER BY order_count DESC LIMIT {limit_n}'
-            )
-            explanation = f"Joined `{cat_table['filename']}` and `{order_table['filename']}` using `{join_pair[0]}` and counted distinct `{order_id_col}`."
-            return {"success": True, "sql": sql, "explanation": explanation, "missing_dataset_msg": None, "tables_used": [cat_table["table_name"], order_table["table_name"]]}
-
-        # Case A2: Revenue requested by Category
-        if wants_revenue:
+        # Case C2: Revenue by Category
+        if wants_revenue or "selling" in q_lower:
             if not rev_matches:
                 return {
                     "success": False,
@@ -287,28 +327,31 @@ def parse_and_generate_semantic_sql(query: str, catalog: List[Dict[str, Any]]) -
                     "tables_used": [cat_table["table_name"]]
                 }
             rev_table, rev_col = rev_matches[0]
+
             if cat_table["table_name"] == rev_table["table_name"]:
                 sql = (
-                    f'SELECT "{cat_col}" AS category, SUM("{rev_col}") AS total_revenue '
-                    f'FROM "{cat_table["table_name"]}" '
+                    f'SELECT "{cat_col}" AS category, SUM("{rev_col}") AS total_revenue, COUNT(*) AS items_sold '
+                    f'FROM "{cat_table["table_name"]}" WHERE "{cat_col}" IS NOT NULL '
                     f'GROUP BY 1 ORDER BY total_revenue DESC LIMIT {limit_n}'
                 )
-                explanation = f"Queried `{cat_table['filename']}` grouping by `{cat_col}` and calculated total revenue from `{rev_col}`."
+                explanation = f"Queried `{cat_table['filename']}` grouping by `{cat_col}` and aggregated total revenue."
                 return {"success": True, "sql": sql, "explanation": explanation, "missing_dataset_msg": None, "tables_used": [cat_table["table_name"]]}
 
             join_pair = find_join_key(cat_table, rev_table)
             if join_pair:
                 sql = (
-                    f'SELECT p."{cat_col}" AS category, SUM(oi."{rev_col}") AS total_revenue '
+                    f'SELECT p."{cat_col}" AS category, SUM(oi."{rev_col}") AS total_revenue, COUNT(*) AS items_sold '
                     f'FROM "{cat_table["table_name"]}" p '
                     f'JOIN "{rev_table["table_name"]}" oi ON p."{join_pair[0]}" = oi."{join_pair[1]}" '
+                    f'WHERE p."{cat_col}" IS NOT NULL '
                     f'GROUP BY p."{cat_col}" ORDER BY total_revenue DESC LIMIT {limit_n}'
                 )
-                explanation = f"Joined `{cat_table['filename']}` and `{rev_table['filename']}` using `{join_pair[0]}` and summed `{rev_col}`."
+                explanation = f"Joined `{cat_table['filename']}` and `{rev_table['filename']}` on `{join_pair[0]}` to calculate sales and revenue by category."
                 return {"success": True, "sql": sql, "explanation": explanation, "missing_dataset_msg": None, "tables_used": [cat_table["table_name"], rev_table["table_name"]]}
 
+
     # -------------------------------------------------------------
-    # Scenario B: Monthly Order Trends (e.g. "show monthly order trends", "monthly sales")
+    # Scenario D: Monthly Sales Trends
     # -------------------------------------------------------------
     if wants_monthly:
         date_matches = find_column_in_catalog(catalog, ["purchase_timestamp", "order_date", "created_at", "date", "timestamp", "month"])
@@ -321,129 +364,51 @@ def parse_and_generate_semantic_sql(query: str, catalog: List[Dict[str, Any]]) -
                 "tables_used": []
             }
         date_table, date_col = date_matches[0]
-        rev_matches = find_column_in_catalog(catalog, ["price", "revenue", "sales", "total_amount", "amount", "value"])
-
-        if wants_revenue and rev_matches:
-            rev_table, rev_col = rev_matches[0]
-            if rev_table["table_name"] == date_table["table_name"]:
-                sql = (
-                    f'SELECT strftime("{date_col}", \'%Y-%m\') AS month, SUM("{rev_col}") AS total_revenue, COUNT(*) AS order_count '
-                    f'FROM "{date_table["table_name"]}" WHERE "{date_col}" IS NOT NULL '
-                    f'GROUP BY 1 ORDER BY month ASC'
-                )
-                explanation = f"Grouped `{date_table['filename']}` by month using `{date_col}` and aggregated total revenue and order count."
-                return {"success": True, "sql": sql, "explanation": explanation, "missing_dataset_msg": None, "tables_used": [date_table["table_name"]]}
-
-        order_col_name = date_table["columns"]["order_id"]["name"] if "order_id" in date_table["columns"] else list(date_table["columns"].keys())[0]
-        sql = (
-            f'SELECT strftime("{date_col}", \'%Y-%m\') AS month, COUNT(DISTINCT "{order_col_name}") AS total_orders '
-            f'FROM "{date_table["table_name"]}" WHERE "{date_col}" IS NOT NULL '
-            f'GROUP BY 1 ORDER BY month ASC'
-        )
-        explanation = f"Grouped `{date_table['filename']}` by month using `{date_col}` and counted distinct orders."
-        return {"success": True, "sql": sql, "explanation": explanation, "missing_dataset_msg": None, "tables_used": [date_table["table_name"]]}
-
-    # -------------------------------------------------------------
-    # Scenario C: Product Revenue / Highest Revenue Products
-    # -------------------------------------------------------------
-    if wants_revenue or (wants_product and "revenue" in q_lower):
-        rev_matches = find_column_in_catalog(catalog, ["price", "revenue", "sales", "total_amount", "amount"])
-
         if rev_matches:
             rev_table, rev_col = rev_matches[0]
-            prod_col = rev_table["columns"]["product_id"]["name"] if "product_id" in rev_table["columns"] else list(rev_table["columns"].keys())[0]
-            
-            cat_tables = find_column_in_catalog(catalog, ["product_category_name", "category"])
-            if cat_tables and cat_tables[0][0]["table_name"] != rev_table["table_name"]:
-                cat_table, cat_col = cat_tables[0]
-                join_pair = find_join_key(cat_table, rev_table)
-                if join_pair:
-                    sql = (
-                        f'SELECT p."{cat_col}" AS category, oi."{prod_col}" AS product_id, '
-                        f'SUM(oi."{rev_col}") AS total_revenue, COUNT(DISTINCT oi.order_id) AS order_count '
-                        f'FROM "{rev_table["table_name"]}" oi '
-                        f'JOIN "{cat_table["table_name"]}" p ON oi."{join_pair[1]}" = p."{join_pair[0]}" '
-                        f'GROUP BY 1, 2 ORDER BY total_revenue DESC LIMIT {limit_n}'
-                    )
-                    explanation = f"Joined `{rev_table['filename']}` and `{cat_table['filename']}` using `{join_pair[0]}`, calculated total revenue by product."
-                    return {"success": True, "sql": sql, "explanation": explanation, "missing_dataset_msg": None, "tables_used": [rev_table["table_name"], cat_table["table_name"]]}
+            join_pair = find_join_key(date_table, rev_table)
+            if join_pair and date_table["table_name"] != rev_table["table_name"]:
+                sql = (
+                    f'SELECT strftime(o."{date_col}", \'%Y-%m\') AS month, SUM(oi."{rev_col}") AS total_revenue, COUNT(DISTINCT o.order_id) AS order_count '
+                    f'FROM "{date_table["table_name"]}" o '
+                    f'JOIN "{rev_table["table_name"]}" oi ON o."{join_pair[0]}" = oi."{join_pair[1]}" '
+                    f'WHERE o."{date_col}" IS NOT NULL '
+                    f'GROUP BY 1 ORDER BY month ASC'
+                )
+                explanation = f"Joined `{date_table['filename']}` and `{rev_table['filename']}` to calculate monthly revenue trends."
+                return {"success": True, "sql": sql, "explanation": explanation, "missing_dataset_msg": None, "tables_used": [date_table["table_name"], rev_table["table_name"]]}
 
             sql = (
-                f'SELECT "{prod_col}" AS product_id, '
-                f'SUM("{rev_col}") AS total_revenue, COUNT(*) AS items_sold '
-                f'FROM "{rev_table["table_name"]}" '
-                f'GROUP BY 1 ORDER BY total_revenue DESC LIMIT {limit_n}'
+                f'SELECT strftime("{date_col}", \'%Y-%m\') AS month, COUNT(*) AS order_count '
+                f'FROM "{date_table["table_name"]}" WHERE "{date_col}" IS NOT NULL '
+                f'GROUP BY 1 ORDER BY month ASC'
             )
-            explanation = f"Queried `{rev_table['filename']}` grouping by `{prod_col}` and calculated total revenue from `{rev_col}`."
-            return {"success": True, "sql": sql, "explanation": explanation, "missing_dataset_msg": None, "tables_used": [rev_table["table_name"]]}
+            return {"success": True, "sql": sql, "explanation": f"Calculated monthly order trends from `{date_table['filename']}`.", "missing_dataset_msg": None, "tables_used": [date_table["table_name"]]}
 
     # -------------------------------------------------------------
-    # Scenario D: Top Customers by Number of Orders
+    # Scenario E: Dataset Summary / Record Count fallback
     # -------------------------------------------------------------
-    if wants_customer or "customer" in q_lower:
-        cust_matches = find_column_in_catalog(catalog, ["customer_id", "customer_unique_id", "user_id", "client_id"])
-        order_matches = find_column_in_catalog(catalog, ["order_id"])
+    target_table = catalog[0]
+    if req_file_match:
+        for t in catalog:
+            if t.get("filename", "").lower() == req_file_match.group(1).lower():
+                target_table = t
+                break
 
-        if cust_matches:
-            cust_table, cust_col = cust_matches[0]
-            if "order_id" in cust_table["columns"]:
-                sql = (
-                    f'SELECT "{cust_col}" AS customer_id, COUNT(DISTINCT "{cust_table["columns"]["order_id"]["name"]}") AS order_count '
-                    f'FROM "{cust_table["table_name"]}" '
-                    f'GROUP BY 1 ORDER BY order_count DESC LIMIT {limit_n}'
-                )
-                explanation = f"Queried `{cust_table['filename']}` grouping by `{cust_col}` and counted distinct `order_id`."
-                return {"success": True, "sql": sql, "explanation": explanation, "missing_dataset_msg": None, "tables_used": [cust_table["table_name"]]}
-
-            if order_matches:
-                order_table, order_col = order_matches[0]
-                join_pair = find_join_key(cust_table, order_table)
-                if join_pair:
-                    sql = (
-                        f'SELECT c."{cust_col}" AS customer_id, COUNT(DISTINCT o."{order_col}") AS order_count '
-                        f'FROM "{cust_table["table_name"]}" c '
-                        f'JOIN "{order_table["table_name"]}" o ON c."{join_pair[0]}" = o."{join_pair[1]}" '
-                        f'GROUP BY 1 ORDER BY order_count DESC LIMIT {limit_n}'
-                    )
-                    explanation = f"Joined `{cust_table['filename']}` and `{order_table['filename']}` using `{join_pair[0]}` and counted distinct `{order_col}`."
-                    return {"success": True, "sql": sql, "explanation": explanation, "missing_dataset_msg": None, "tables_used": [cust_table["table_name"], order_table["table_name"]]}
-
-    # -------------------------------------------------------------
-    # Scenario E: Top N individual records / orders (e.g. "top 5 orders")
-    # -------------------------------------------------------------
-    if wants_orders and not (wants_category or wants_customer or wants_monthly):
-        order_matches = find_column_in_catalog(catalog, ["order_id"])
-        if order_matches:
-            matched = pick_table_matching_query(order_matches, q_lower)
-            order_table, order_col = matched
-            rev_col = None
-            for c_lower, c_info in order_table["columns"].items():
-                if any(kw in c_lower for kw in ["price", "revenue", "amount", "total", "val"]):
-                    rev_col = c_info["name"]
-                    break
-            
-            if rev_col:
-                sql = f'SELECT * FROM "{order_table["table_name"]}" ORDER BY "{rev_col}" DESC LIMIT {limit_n}'
-            else:
-                sql = f'SELECT * FROM "{order_table["table_name"]}" LIMIT {limit_n}'
-                
-            explanation = f"Queried top {limit_n} orders from `{order_table['filename']}`."
-            return {"success": True, "sql": sql, "explanation": explanation, "missing_dataset_msg": None, "tables_used": [order_table["table_name"]]}
-
-    # Fallback to single table best guess if available
-    first_table = catalog[0]
-    str_cols = [c["name"] for c in first_table["columns"].values() if "cat" in c["name"].lower() or "type" in c["name"].lower() or "name" in c["name"].lower() or "status" in c["name"].lower()]
-    num_cols = [c["name"] for c in first_table["columns"].values() if "price" in c["name"].lower() or "amount" in c["name"].lower() or "sales" in c["name"].lower() or "val" in c["name"].lower()]
+    # Look for categorical column to summarize
+    str_cols = [c["name"] for c in target_table["columns"].values() if "cat" in c["name"].lower() or "type" in c["name"].lower() or "name" in c["name"].lower() or "status" in c["name"].lower()]
+    num_cols = [c["name"] for c in target_table["columns"].values() if "price" in c["name"].lower() or "amount" in c["name"].lower() or "sales" in c["name"].lower() or "val" in c["name"].lower()]
 
     if str_cols and num_cols:
-        sql = f'SELECT "{str_cols[0]}", SUM("{num_cols[0]}") AS total_val, COUNT(*) AS count FROM "{first_table["table_name"]}" GROUP BY 1 ORDER BY total_val DESC LIMIT {limit_n}'
-        return {"success": True, "sql": sql, "explanation": f"Grouped `{first_table['filename']}` by `{str_cols[0]}` and aggregated `{num_cols[0]}`.", "missing_dataset_msg": None, "tables_used": [first_table["table_name"]]}
+        sql = f'SELECT "{str_cols[0]}", SUM("{num_cols[0]}") AS total_val, COUNT(*) AS count FROM "{target_table["table_name"]}" GROUP BY 1 ORDER BY total_val DESC LIMIT {limit_n}'
+        return {"success": True, "sql": sql, "explanation": f"Summarized `{target_table['filename']}` grouping by `{str_cols[0]}`.", "missing_dataset_msg": None, "tables_used": [target_table["table_name"]]}
     elif str_cols:
-        sql = f'SELECT "{str_cols[0]}", COUNT(*) AS total_count FROM "{first_table["table_name"]}" GROUP BY 1 ORDER BY total_count DESC LIMIT {limit_n}'
-        return {"success": True, "sql": sql, "explanation": f"Grouped `{first_table['filename']}` by `{str_cols[0]}`.", "missing_dataset_msg": None, "tables_used": [first_table["table_name"]]}
+        sql = f'SELECT "{str_cols[0]}", COUNT(*) AS total_count FROM "{target_table["table_name"]}" WHERE "{str_cols[0]}" IS NOT NULL GROUP BY 1 ORDER BY total_count DESC LIMIT {limit_n}'
+        return {"success": True, "sql": sql, "explanation": f"Summarized `{target_table['filename']}` by `{str_cols[0]}`.", "missing_dataset_msg": None, "tables_used": [target_table["table_name"]]}
 
-    sql = f'SELECT COUNT(*) AS total_count FROM "{first_table["table_name"]}"'
-    return {"success": True, "sql": sql, "explanation": f"Counted total records in `{first_table['filename']}`.", "missing_dataset_msg": None, "tables_used": [first_table["table_name"]]}
+    sql = f'SELECT COUNT(*) AS total_count FROM "{target_table["table_name"]}"'
+    return {"success": True, "sql": sql, "explanation": f"Counted total records in `{target_table['filename']}`.", "missing_dataset_msg": None, "tables_used": [target_table["table_name"]]}
+
 
 
 def validate_semantic_concepts(user_query: str, sql_query: str, target_dataset: Optional[Dict[str, Any]] = None) -> Tuple[bool, Optional[str]]:

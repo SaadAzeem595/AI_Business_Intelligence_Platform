@@ -90,6 +90,9 @@ def get_dataset_preview(dataset_id: str, available_datasets: List[Dict[str, Any]
         return None
 
 
+from app.features.agents.relationship_graph import build_project_relationship_graph
+
+
 def generate_sql(
     user_query: str,
     available_datasets: List[Dict[str, Any]],
@@ -107,6 +110,9 @@ def generate_sql(
     if not catalog:
         return None, "No active datasets found for project."
 
+    rel_graph = build_project_relationship_graph(catalog)
+    rel_summary = rel_graph.get_summary()
+
     # If LLM is configured, construct prompt with actual schemas
     if LLMService.is_configured():
         try:
@@ -118,8 +124,11 @@ def generate_sql(
                 cols_str = ", ".join(f"\"{col_info['name']}\" ({col_info['type']})" for col_info in tbl["columns"].values())
                 all_tables_info += f"- Table: \"{tbl['table_name']}\" (File: {tbl['filename']}) (Columns: {cols_str})\n"
 
-            target_info = f"Preferred target table: \"{target_dataset['table_name']}\"\n" if target_dataset and "table_name" in target_dataset else ""
+            relationships_info = ""
+            for rel in rel_summary.get("relationships", []):
+                relationships_info += f"- Join key: \"{rel['table1']}\".\"{rel['table1_col']}\" = \"{rel['table2']}\".\"{rel['table2_col']}\"\n"
 
+            target_info = f"Preferred target table: \"{target_dataset['table_name']}\"\n" if target_dataset and "table_name" in target_dataset else ""
             error_feedback = f"\nPREVIOUS ATTEMPT ERROR (Retry #{retry_count}): {last_error}\nPlease fix the SQL query to resolve this error.\n" if last_error else ""
 
             system_prompt = (
@@ -129,18 +138,21 @@ def generate_sql(
                 "2. Perform ONLY read operations (SELECT).\n"
                 "3. Use double quotes around table and column names (e.g., SELECT \"col\" FROM \"table\").\n"
                 "4. Match requested dimensions and metrics strictly against the provided table schemas.\n"
-                "5. If a request requires multiple tables (e.g. products and sales/orders), automatically JOIN them using matching primary/foreign keys (such as product_id, order_id).\n"
-                "6. Never invent table or column names that do not exist in the provided database schema.\n"
-                "7. For analytical ranking/aggregation, use GROUP BY, SUM(), COUNT(DISTINCT order_id), and ORDER BY."
+                "5. If a request can be answered from a single table (e.g. product count by category), query ONLY that single table without forcing JOINs.\n"
+                "6. If a request requires multiple tables (e.g. sales/revenue by category or delivered orders), use the provided relationships to JOIN tables.\n"
+                "7. Never invent table or column names that do not exist in the provided database schema.\n"
+                "8. For analytical ranking/aggregation, use GROUP BY, SUM(), COUNT(DISTINCT order_id), and ORDER BY."
             )
 
             user_prompt = (
                 f"Project Database Schemas:\n{all_tables_info}\n"
+                f"Discovered Table Relationships:\n{relationships_info if relationships_info else 'None'}\n"
                 f"{target_info}"
                 f"User Question: {user_query}\n"
                 f"{error_feedback}\n"
                 f"DuckDB SQL query:"
             )
+
 
             logger.info(
                 f"GENERATING_SQL_VIA_LLM: provider={provider} model={model_name} "
