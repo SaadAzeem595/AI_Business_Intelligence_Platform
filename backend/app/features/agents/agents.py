@@ -1332,17 +1332,6 @@ def response_synthesizer(state: AgentState) -> Dict[str, Any]:
     query = state.get("query", "")
     completed = state.get("completed_steps", [])
     
-    # Check if LLM configuration error was already captured in state errors
-    errors = state.get("errors", [])
-    if errors and any("configuration is unavailable" in str(e) for e in errors):
-        completed_steps = list(completed) + ["response_synthesizer"]
-        return {
-            "final_response": "AI model configuration is unavailable.",
-            "completed_steps": completed_steps,
-            "execution_logs": log_execution(state, "response_synthesizer", start_time, status="failure", details="AI model configuration is unavailable."),
-            "reasoning_path": list(state.get("reasoning_path", [])) + ["response_synthesizer"]
-        }
-        
     # Check if a final response is already populated (conversational greeting, dataset error, missing dataset msg)
     if state.get("final_response") and (state.get("intent") in ["conversation", "clarification"] or not state.get("sql_result")):
         completed_steps = list(completed) + ["response_synthesizer"]
@@ -1358,7 +1347,9 @@ def response_synthesizer(state: AgentState) -> Dict[str, Any]:
     from app.core.llm import LLMService, LLMConfigurationError
     import json
     
-    # Try dynamic synthesis via LLM first
+    llm_error_reason = None
+
+    # Try dynamic synthesis via LLM first if configured
     if LLMService.is_configured():
         try:
             system_prompt = (
@@ -1384,7 +1375,6 @@ def response_synthesizer(state: AgentState) -> Dict[str, Any]:
                 user_prompt += f"- ML Churn Prediction Output: {safe_json_dumps(state['ml_result'])}\n"
             if "rag_agent" in completed and state.get("rag_result"):
                 user_prompt += f"- RAG Knowledge Context: {safe_json_dumps(state['rag_result'])}\n"
-
                 
             user_prompt += "\nPlease synthesize the final analysis response:"
             
@@ -1401,19 +1391,17 @@ def response_synthesizer(state: AgentState) -> Dict[str, Any]:
                 "reasoning_path": reasoning
             }
         except LLMConfigurationError as e:
-            completed_steps = list(completed) + ["response_synthesizer"]
-            return {
-                "final_response": "AI model configuration is unavailable.",
-                "completed_steps": completed_steps,
-                "execution_logs": log_execution(state, "response_synthesizer", start_time, status="failure", details=str(e)),
-                "reasoning_path": list(state.get("reasoning_path", [])) + ["response_synthesizer"],
-                "errors": list(state.get("errors", [])) + [str(e)]
-            }
+            llm_error_reason = str(e)
+            logger.warning(f"LLM synthesis unavailable: {llm_error_reason}. Falling back to template synthesis with query results.")
         except Exception as e:
-            logger.error(f"Failed to synthesize response via LLM, falling back to markdown template: {e}")
-            
-    # Fallback to template if LLM is unconfigured or fails
+            llm_error_reason = f"LLM provider call failed: {str(e)}"
+            logger.error(f"Failed to synthesize response via LLM, falling back to template synthesis: {e}")
+
+    # Fallback to template synthesis if LLM is unconfigured or fails
     response = "### AI Assistant Execution Response\n\n"
+    if llm_error_reason:
+        response += f"> ⚠️ **LLM Synthesis Notice**: {llm_error_reason}\n\n"
+
     has_section = False
 
     if "analytics_agent" in completed and state.get("analytics_result"):

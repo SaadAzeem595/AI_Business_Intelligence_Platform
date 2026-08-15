@@ -227,10 +227,12 @@ async def startup_event():
         startup_logger.warning("Development user: developer@datapilot.com")
         startup_logger.warning("This mode MUST NOT be used in production.")
         startup_logger.warning("!" * 80)
-
+    from app.core.llm import LLMService
+    llm_diag = LLMService.get_diagnostic_status()
     startup_logger.info("=" * 80)
     startup_logger.info("AI Business Intelligence Platform FastAPI backend started successfully!")
     startup_logger.info(f"Database engine in use: {'SQLite (resilient dev fallback)' if USE_SQLITE else 'PostgreSQL'}")
+    startup_logger.info(f"LLM Provider Diagnostic: provider={llm_diag['provider']} model={llm_diag['model']} api_key_configured={llm_diag['api_key_configured']} base_url={llm_diag['base_url']}")
     startup_logger.info(f"Local API gateway prefix: http://localhost:8000{settings.API_V1_STR}")
     startup_logger.info("API Server listening on host: 0.0.0.0, port: 8000")
     startup_logger.info("Interactive OpenAPI Swagger Documentation: http://localhost:8000/docs")
@@ -252,8 +254,9 @@ async def health_check() -> dict:
         "postgresql": "unhealthy",
         "duckdb": "unhealthy",
         "redis": "unhealthy",
-        "llm": "unconfigured"
+        "llm": LLMService.get_diagnostic_status()
     }
+
 
     # 1. Probe PostgreSQL/SQLite
     try:
@@ -283,10 +286,10 @@ async def health_check() -> dict:
         pass
 
     # 4. Probe LLM
-    if LLMService.is_configured():
-        status_info["llm"] = "configured"
+    status_info["llm"] = LLMService.get_diagnostic_status()
 
     return status_info
+
 
 
 @app.get("/live", tags=["Health & Status Checks"])

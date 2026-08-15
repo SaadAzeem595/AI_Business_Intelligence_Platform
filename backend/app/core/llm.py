@@ -78,14 +78,58 @@ class LLMService:
     def is_configured(cls) -> bool:
         """Indicates if a valid API key has been declared in the system environment."""
         key, provider = cls.get_api_key_and_provider()
-        return key is not None
+        return key is not None and len(key.strip()) > 0
+
+    @classmethod
+    def get_diagnostic_status(cls) -> dict:
+        """Returns safe configuration diagnostic metadata without exposing secrets."""
+        key, provider = cls.get_api_key_and_provider()
+        model = cls.get_configured_model()
+        base_url = cls.get_base_url()
+        return {
+            "provider": provider or "none",
+            "provider_configured": provider is not None,
+            "model": model,
+            "api_key_configured": key is not None and len(key.strip()) > 0,
+            "base_url": base_url,
+        }
+
+    @classmethod
+    def health_check(cls) -> dict:
+        """Makes a 1-token minimal test request to verify LLM connectivity."""
+        import time
+        key, provider = cls.get_api_key_and_provider()
+        if not key:
+            return {
+                "status": "unconfigured",
+                "error": "Missing OPENROUTER_API_KEY environment variable.",
+                "latency_ms": 0
+            }
+        start = time.perf_counter()
+        try:
+            res_text = cls.generate_response("Respond with 'OK'.", "Health check probe")
+            latency = round((time.perf_counter() - start) * 1000, 2)
+            return {
+                "status": "healthy",
+                "provider": provider,
+                "model": cls.get_configured_model(),
+                "latency_ms": latency
+            }
+        except Exception as e:
+            latency = round((time.perf_counter() - start) * 1000, 2)
+            return {
+                "status": "unhealthy",
+                "provider": provider or "unknown",
+                "error": str(e),
+                "latency_ms": latency
+            }
 
     @classmethod
     def generate_response(cls, system_prompt: str, user_prompt: str, model_override: str = None) -> str:
-        """Sends chat completion query to the configured LLM provider synchronously."""
+        """Sends chat completion query to the configured LLM provider synchronously with model fallbacks."""
         key, provider = cls.get_api_key_and_provider()
         if not key:
-            raise LLMConfigurationError("AI model configuration is unavailable.")
+            raise LLMConfigurationError("OPENROUTER_API_KEY is not configured in backend environment variables.")
 
         if provider == "openrouter":
             base_url = cls.get_base_url()
@@ -96,54 +140,79 @@ class LLMService:
                 "HTTP-Referer": "https://datapilot.ai",
                 "X-Title": "DataPilot AI"
             }
-            model_name = model_override or cls.get_configured_model()
-            payload = {
-                "model": model_name,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                "temperature": 0.1,
-            }
-            try:
-                with httpx.Client(timeout=30.0) as client:
-                    logger.info(f"OPENROUTER_LLM_REQUEST: model={model_name} url={url}")
-                    response = client.post(url, headers=headers, json=payload)
-                    
-                    if response.status_code == 401:
-                        raise LLMConfigurationError("Invalid API key configured for OpenRouter.")
-                    elif response.status_code == 429:
-                        raise LLMConfigurationError("OpenRouter API rate limit exceeded.")
-                    elif response.status_code in (404, 503):
-                        raise LLMConfigurationError(f"OpenRouter model '{model_name}' is currently unavailable or invalid.")
-                    elif response.status_code >= 500:
-                        raise LLMConfigurationError(f"OpenRouter upstream provider error (HTTP {response.status_code}).")
-                    
-                    response.raise_for_status()
-                    res_json = response.json()
+            
+            primary_model = model_override or cls.get_configured_model()
+            # Candidate models to try in sequence if primary is rate limited (429) or unavailable (404/503)
+            candidate_models = [primary_model]
+            fallback_defaults = [
+                "meta-llama/llama-3.3-70b-instruct:free",
+                "google/gemini-2.0-flash-lite-001",
+                "qwen/qwen-2.5-72b-instruct:free",
+                "openai/gpt-4o-mini"
+            ]
+            for fbm in fallback_defaults:
+                if fbm not in candidate_models:
+                    candidate_models.append(fbm)
 
-                    if "error" in res_json:
-                        err_obj = res_json["error"]
-                        err_msg = err_obj.get("message") if isinstance(err_obj, dict) else str(err_obj)
-                        raise LLMConfigurationError(f"OpenRouter provider returned an error: {err_msg}")
+            last_error = None
+            with httpx.Client(timeout=30.0) as client:
+                for model_name in candidate_models:
+                    payload = {
+                        "model": model_name,
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt}
+                        ],
+                        "temperature": 0.1,
+                    }
+                    try:
+                        logger.info(f"OPENROUTER_LLM_REQUEST: model={model_name} url={url}")
+                        response = client.post(url, headers=headers, json=payload)
+                        
+                        if response.status_code == 401:
+                            raise LLMConfigurationError("Invalid OPENROUTER_API_KEY configured for OpenRouter (HTTP 401).")
+                        elif response.status_code == 429:
+                            last_error = f"OpenRouter API rate limit exceeded for model '{model_name}' (HTTP 429)."
+                            logger.warning(f"{last_error} Trying fallback model...")
+                            continue
+                        elif response.status_code in (404, 503):
+                            last_error = f"OpenRouter model '{model_name}' is unavailable (HTTP {response.status_code})."
+                            logger.warning(f"{last_error} Trying fallback model...")
+                            continue
+                        elif response.status_code >= 500:
+                            last_error = f"OpenRouter upstream provider error (HTTP {response.status_code})."
+                            logger.warning(f"{last_error} Trying fallback model...")
+                            continue
+                        
+                        response.raise_for_status()
+                        res_json = response.json()
 
-                    choices = res_json.get("choices", [])
-                    if not choices or "message" not in choices[0] or "content" not in choices[0]["message"]:
-                        raise LLMConfigurationError("OpenRouter returned an empty completion response.")
+                        if "error" in res_json:
+                            err_obj = res_json["error"]
+                            err_msg = err_obj.get("message") if isinstance(err_obj, dict) else str(err_obj)
+                            last_error = f"OpenRouter provider error: {err_msg}"
+                            logger.warning(f"{last_error} Trying fallback model...")
+                            continue
 
-                    content = choices[0]["message"]["content"]
-                    if not content or not content.strip():
-                        raise LLMConfigurationError("OpenRouter returned an empty response content.")
+                        choices = res_json.get("choices", [])
+                        if not choices or "message" not in choices[0] or "content" not in choices[0]["message"]:
+                            last_error = "OpenRouter returned an empty completion response structure."
+                            continue
 
-                    logger.info(f"OPENROUTER_LLM_SUCCESS: model={model_name} response_len={len(content)}")
-                    return content
-            except httpx.HTTPStatusError as e:
-                err_detail = e.response.text
-                logger.error(f"OpenRouter API status error ({e.response.status_code}): {err_detail}")
-                raise LLMConfigurationError(f"OpenRouter request failed with status {e.response.status_code}.")
-            except httpx.RequestError as e:
-                logger.error(f"OpenRouter API connection error: {str(e)}")
-                raise LLMConfigurationError(f"OpenRouter connection failed or timed out: {str(e)}")
+                        content = choices[0]["message"]["content"]
+                        if not content or not content.strip():
+                            last_error = "OpenRouter returned empty content."
+                            continue
+
+                        logger.info(f"OPENROUTER_LLM_SUCCESS: model={model_name} response_len={len(content)}")
+                        return content
+                    except (httpx.HTTPStatusError, httpx.RequestError) as e:
+                        last_error = f"OpenRouter HTTP error with model '{model_name}': {str(e)}"
+                        logger.warning(last_error)
+                        continue
+
+            raise LLMConfigurationError(last_error or "OpenRouter LLM request failed across all candidate models.")
+
 
         elif provider == "openai":
             url = "https://api.openai.com/v1/chat/completions"
