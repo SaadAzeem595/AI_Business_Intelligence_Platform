@@ -177,30 +177,48 @@ async def chat_with_agents(
     config = {"configurable": {"thread_id": thread_id}}
     
     logger.info(
-        f"AI_CHAT_REQUEST_RECEIVED: user_id={current_user.id} project_id={active_proj} "
+        f"REQUEST_RECEIVED: user_id={current_user.id} project_id={active_proj} "
         f"dataset_id={payload.dataset_id or payload.dataset} thread_id={thread_id} "
         f"message='{payload.message}'"
     )
 
     try:
         import time
+        import traceback
         from app.core.telemetry import LANGGRAPH_LATENCY
-        from app.features.datasets.repository import dataset_repo
         from sqlalchemy import select
         from app.features.datasets.models import Dataset
         
-        # Load all datasets asynchronously (thread-safe, loop-safe)
+        # 1. PROJECT_RESOLVED / DATASETS_LOADED stage
         if active_proj:
-            from app.features.projects.router import get_project_and_verify_access
-            await get_project_and_verify_access(active_proj, current_user, db)
-            stmt = select(Dataset).where(Dataset.project_id == active_proj)
+            try:
+                from app.features.projects.router import get_project_and_verify_access
+                await get_project_and_verify_access(active_proj, current_user, db)
+                stmt = select(Dataset).where(Dataset.project_id == active_proj)
+                logger.info(f"PROJECT_RESOLVED: project_id={active_proj}")
+            except Exception as pe:
+                logger.warning(f"PROJECT_LOOKUP_FALLBACK: active_project={active_proj} not found, falling back to workspace: {pe}")
+                stmt = select(Dataset).where(
+                    (Dataset.workspace_id == current_user.workspace_id) | (Dataset.workspace_id == "default")
+                )
         else:
+            logger.info("PROJECT_RESOLVED: project_id=None (Workspace global mode)")
             stmt = select(Dataset).where(
                 (Dataset.project_id == None) & 
                 ((Dataset.workspace_id == current_user.workspace_id) | (Dataset.workspace_id == "default"))
             )
+
         result = await db.execute(stmt)
         db_items = list(result.scalars().all())
+
+        # If project datasets empty, fallback to workspace datasets
+        if not db_items and active_proj:
+            fallback_stmt = select(Dataset).where(
+                (Dataset.workspace_id == current_user.workspace_id) | (Dataset.workspace_id == "default")
+            )
+            fallback_res = await db.execute(fallback_stmt)
+            db_items = list(fallback_res.scalars().all())
+
         available_datasets = [
             {
                 "id": str(item.id),
@@ -217,11 +235,14 @@ async def chat_with_agents(
             for item in db_items
         ]
         
+        logger.info(f"DATASETS_LOADED: count={len(available_datasets)} datasets={[d['filename'] for d in available_datasets]}")
+        logger.info(f"SCHEMA_LOADED: tables={[d['duckdb_table'] for d in available_datasets]}")
+
         # Check if thread already exists
         current_state = agent_graph.get_state(config)
-        
         start_time = time.perf_counter()
-        # If thread has never run, run initial input query
+
+        # Run or update agent graph
         if not current_state or not current_state.values:
             initial_state = {
                 "query": payload.message,
@@ -244,11 +265,9 @@ async def chat_with_agents(
                 "recommendations": None,
                 "executive_summary": None,
                 "final_response": None,
-                "is_approved": True,  # Auto-approve read-only SELECT queries
+                "is_approved": True,
                 "execution_logs": [],
                 "reasoning_path": [],
-                
-                # Context keys
                 "workspace_id": current_user.workspace_id,
                 "dataset_id": payload.dataset_id or payload.dataset,
                 "dataset_context": None,
@@ -262,7 +281,6 @@ async def chat_with_agents(
             }
             agent_graph.invoke(initial_state, config)
         else:
-            # Override query to start a new loop under the same thread memory, wiping per-turn execution outputs
             agent_graph.update_state(config, {
                 "query": payload.message,
                 "dataset": payload.dataset_id or payload.dataset,
@@ -273,8 +291,6 @@ async def chat_with_agents(
                 "plan": [],
                 "completed_steps": [],
                 "next_agent": "",
-                
-                # Wipe execution outputs from previous turns
                 "sql_query": None,
                 "sql_result": None,
                 "analytics_result": None,
@@ -289,8 +305,6 @@ async def chat_with_agents(
                 "execution_logs": [],
                 "reasoning_path": [],
                 "errors": [],
-                
-                # Context keys
                 "workspace_id": current_user.workspace_id,
                 "dataset_id": payload.dataset_id or payload.dataset,
                 "user_message": payload.message,
@@ -303,22 +317,28 @@ async def chat_with_agents(
             
         duration = time.perf_counter() - start_time
         LANGGRAPH_LATENCY.labels(thread_id=thread_id).observe(duration)
-        
-        # Calculate execution_time_ms
         exec_ms = round(duration * 1000, 2)
         
-        # Get post-execution state
         final_state = agent_graph.get_state(config)
-        return build_response_from_state(thread_id, final_state, execution_time_ms=exec_ms)
+        resp = build_response_from_state(thread_id, final_state, execution_time_ms=exec_ms)
+        logger.info(f"REQUEST_COMPLETED: thread_id={thread_id} exec_ms={exec_ms}")
+        return resp
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Agent chat execution error: {e}", exc_info=True)
+        err_tb = traceback.format_exc()
+        logger.error(f"REQUEST_FAILED: stage=AGENT_GRAPH_EXECUTION error='{str(e)}'\n{err_tb}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Agent chat execution failed: {str(e)}"
+            detail={
+                "success": False,
+                "error": f"AI Chat execution error: {str(e)}",
+                "stage": "AGENT_GRAPH_EXECUTION",
+                "details": str(e)
+            }
         )
+
 
 
 @router.post("/approve", response_model=AgentChatResponse)

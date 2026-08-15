@@ -351,8 +351,40 @@ def parse_and_generate_semantic_sql(query: str, catalog: List[Dict[str, Any]]) -
 
 
     # -------------------------------------------------------------
-    # Scenario D: Monthly Sales Trends
+    # Scenario D: Product Revenue / Highest Revenue Products
     # -------------------------------------------------------------
+    if (wants_revenue or (wants_product and "revenue" in q_lower)) and not wants_monthly:
+
+        if rev_matches:
+            rev_table, rev_col = rev_matches[0]
+            prod_col = rev_table["columns"]["product_id"]["name"] if "product_id" in rev_table["columns"] else list(rev_table["columns"].keys())[0]
+
+            if cat_matches and cat_matches[0][0]["table_name"] != rev_table["table_name"]:
+                cat_table, cat_col = cat_matches[0]
+                join_pair = find_join_key(cat_table, rev_table)
+                if join_pair:
+                    sql = (
+                        f'SELECT p."{cat_col}" AS category, oi."{prod_col}" AS product_id, '
+                        f'SUM(oi."{rev_col}") AS total_revenue, COUNT(DISTINCT oi.order_id) AS order_count '
+                        f'FROM "{rev_table["table_name"]}" oi '
+                        f'JOIN "{cat_table["table_name"]}" p ON oi."{join_pair[1]}" = p."{join_pair[0]}" '
+                        f'GROUP BY 1, 2 ORDER BY total_revenue DESC LIMIT {limit_n}'
+                    )
+                    explanation = f"Joined `{rev_table['filename']}` and `{cat_table['filename']}` on `{join_pair[0]}`, calculated total revenue by product."
+                    return {"success": True, "sql": sql, "explanation": explanation, "missing_dataset_msg": None, "tables_used": [rev_table["table_name"], cat_table["table_name"]]}
+
+            sql = (
+                f'SELECT "{prod_col}" AS product_id, SUM("{rev_col}") AS total_revenue, COUNT(*) AS items_sold '
+                f'FROM "{rev_table["table_name"]}" '
+                f'GROUP BY 1 ORDER BY total_revenue DESC LIMIT {limit_n}'
+            )
+            explanation = f"Queried `{rev_table['filename']}` grouping by `{prod_col}` and calculated total revenue from `{rev_col}`."
+            return {"success": True, "sql": sql, "explanation": explanation, "missing_dataset_msg": None, "tables_used": [rev_table["table_name"]]}
+
+    # -------------------------------------------------------------
+    # Scenario E: Monthly Sales Trends
+    # -------------------------------------------------------------
+
     if wants_monthly:
         date_matches = find_column_in_catalog(catalog, ["purchase_timestamp", "order_date", "created_at", "date", "timestamp", "month"])
         if not date_matches:
@@ -422,14 +454,15 @@ def validate_semantic_concepts(user_query: str, sql_query: str, target_dataset: 
     q_lower = user_query.lower()
     sql_upper = sql_query.upper()
 
-    # Rule A: If explicit target dataset was requested, query MUST reference that table or join it
-    if target_dataset:
-        tbl = target_dataset.get("duckdb_table") or target_dataset.get("view_name") or target_dataset.get("filename")
-        if tbl:
-            tbl_clean = tbl.lower().split(".")[0]
-            fn_clean = target_dataset.get("filename", "").lower().split(".")[0]
-            if tbl_clean not in sql_query.lower() and fn_clean not in sql_query.lower():
-                return False, f"Query does not reference the target dataset '{target_dataset.get('filename')}'."
+    # Rule A: If explicit target dataset was named in user prompt, query MUST reference that table or join it
+    fn_target = target_dataset.get("filename", "") if target_dataset else ""
+    if fn_target and fn_target.lower() in q_lower:
+        tbl = target_dataset.get("duckdb_table") or target_dataset.get("view_name") or fn_target
+        tbl_clean = tbl.lower().split(".")[0]
+        fn_clean = fn_target.lower().split(".")[0]
+        if tbl_clean not in sql_query.lower() and fn_clean not in sql_query.lower():
+            return False, f"Query does not reference the target dataset '{fn_target}'."
+
 
     # Rule B: Sales by category check
     wants_category = any(k in q_lower for k in ["category", "categories"])

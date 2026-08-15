@@ -113,18 +113,20 @@ export default function AIChatPage() {
           table: response.table,
         },
       ]);
-    } catch {
+    } catch (err: any) {
+      const errMsg = err?.response?.data?.error || err?.response?.data?.detail || err?.message || "Sorry, I encountered an error analyzing your request.";
       setMessages((prev) => [
         ...prev,
         {
           role: "assistant",
-          content: "Sorry, I encountered an error analyzing your request. Check your connections.",
+          content: `❌ ${errMsg}`,
         },
       ]);
     } finally {
       setIsTyping(false);
     }
   };
+
 
   const handleClearChat = () => {
     setSessionId(undefined);

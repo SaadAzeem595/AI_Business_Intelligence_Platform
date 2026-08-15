@@ -95,12 +95,11 @@ export const ChatService = {
         console.error("[AI Chat API Error]", err);
       }
       
-      // If error detail from backend resolution
-      const errDetail = err?.response?.data?.detail;
-      if (errDetail && errDetail.startsWith("I couldn't analyze the requested dataset")) {
+      const backendErr = err?.response?.data?.error || err?.response?.data?.detail;
+      if (backendErr) {
         return {
           role: "assistant",
-          content: errDetail,
+          content: typeof backendErr === "string" ? backendErr : JSON.stringify(backendErr),
         };
       }
       
@@ -108,3 +107,4 @@ export const ChatService = {
     }
   },
 };
+

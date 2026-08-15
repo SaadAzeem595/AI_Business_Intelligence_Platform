@@ -1373,16 +1373,18 @@ def response_synthesizer(state: AgentState) -> Dict[str, Any]:
                 f"Resolved Dataset context: {state.get('dataset_context')}\n"
                 f"Operations performed and their structured outputs:\n"
             )
+            from app.core.json_utils import safe_json_dumps
             if "analytics_agent" in completed and state.get("analytics_result"):
-                user_prompt += f"- Dataset Profiling: {json.dumps(state['analytics_result'])}\n"
+                user_prompt += f"- Dataset Profiling: {safe_json_dumps(state['analytics_result'])}\n"
             if "sql_agent" in completed and state.get("sql_result"):
-                user_prompt += f"- SQL Query Run: {state.get('sql_query')}\n- SQL Output Rows: {json.dumps(state['sql_result'])}\n"
+                user_prompt += f"- SQL Query Run: {state.get('sql_query')}\n- SQL Output Rows: {safe_json_dumps(state['sql_result'])}\n"
             if "forecast_agent" in completed and state.get("forecast_result"):
-                user_prompt += f"- Forecast Output: {json.dumps(state['forecast_result'])}\n"
+                user_prompt += f"- Forecast Output: {safe_json_dumps(state['forecast_result'])}\n"
             if "ml_agent" in completed and state.get("ml_result"):
-                user_prompt += f"- ML Churn Prediction Output: {json.dumps(state['ml_result'])}\n"
+                user_prompt += f"- ML Churn Prediction Output: {safe_json_dumps(state['ml_result'])}\n"
             if "rag_agent" in completed and state.get("rag_result"):
-                user_prompt += f"- RAG Knowledge Context: {json.dumps(state['rag_result'])}\n"
+                user_prompt += f"- RAG Knowledge Context: {safe_json_dumps(state['rag_result'])}\n"
+
                 
             user_prompt += "\nPlease synthesize the final analysis response:"
             
