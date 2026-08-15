@@ -125,6 +125,19 @@ def is_analytical_query(query: str) -> bool:
     return any(kw in q for kw in analytical_keywords)
 
 
+def pick_table_matching_query(matches: List[Tuple[Dict[str, Any], str]], q_lower: str) -> Optional[Tuple[Dict[str, Any], str]]:
+    if not matches:
+        return None
+    for match in matches:
+        t = match[0]
+        fn = t.get("filename", "").lower()
+        tb = t.get("table_name", "").lower()
+        fn_base = os.path.splitext(fn)[0] if fn else ""
+        if (fn and fn in q_lower) or (fn_base and len(fn_base) > 3 and fn_base in q_lower) or (tb and tb in q_lower):
+            return match
+    return matches[0]
+
+
 def parse_and_generate_semantic_sql(query: str, catalog: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Analyzes user intent, checks dataset availability across the project, resolves join relationships,
@@ -401,7 +414,8 @@ def parse_and_generate_semantic_sql(query: str, catalog: List[Dict[str, Any]]) -
     if wants_orders and not (wants_category or wants_customer or wants_monthly):
         order_matches = find_column_in_catalog(catalog, ["order_id"])
         if order_matches:
-            order_table, order_col = order_matches[0]
+            matched = pick_table_matching_query(order_matches, q_lower)
+            order_table, order_col = matched
             rev_col = None
             for c_lower, c_info in order_table["columns"].items():
                 if any(kw in c_lower for kw in ["price", "revenue", "amount", "total", "val"]):
