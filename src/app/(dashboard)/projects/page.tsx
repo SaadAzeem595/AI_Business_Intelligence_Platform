@@ -68,7 +68,7 @@ export default function ProjectsPage() {
     
     try {
       setIsSubmitting(true);
-      await createProject({
+      const createdProject = await createProject({
         name: name.trim(),
         description: description.trim() || undefined
       });
@@ -81,7 +81,7 @@ export default function ProjectsPage() {
       
       // Trigger success toast
       setSuccessToast(`Project "${name.trim()}" created successfully.`);
-      setTimeout(() => setSuccessToast(null), 3000);
+      setTimeout(() => setSuccessToast(null), 4000);
     } catch (err: any) {
       console.error("Failed to create project:", err);
       const errMsg = err?.response?.data?.detail || err.message || "Failed to create project.";
@@ -272,7 +272,7 @@ export default function ProjectsPage() {
                 >
                   <Trash2 className="h-4 w-4" />
                 </Button>
-                <Link href={`/projects/${project.id}`} className="grow">
+                <Link href={`/projects/${encodeURIComponent(project.id)}`} className="grow">
                   <Button size="sm" variant="outline" className="w-full text-xs font-semibold hover:bg-brand-indigo hover:text-brand-indigo-foreground cursor-pointer transition-all">
                     Open Workspace <ArrowRight className="h-3.5 w-3.5 ml-1.5" />
                   </Button>

@@ -20,6 +20,7 @@ class AgentChatPayload(BaseModel):
     active_project: Optional[str] = None
     project_id: Optional[str] = None
     history: Optional[List[Dict[str, Any]]] = None
+    available_datasets: Optional[List[Dict[str, Any]]] = None
 
 class ApproveQueryPayload(BaseModel):
     thread_id: str

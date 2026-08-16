@@ -186,21 +186,73 @@ def parse_and_generate_semantic_sql(query: str, catalog: List[Dict[str, Any]]) -
     wants_revenue = any(k in q_lower for k in ["revenue", "sales", "price", "amount", "total sales", "total revenue", "highest revenue", "top selling", "top-selling", "selling"])
     wants_orders = any(k in q_lower for k in ["order", "orders", "most orders", "highest orders", "order count", "number of orders", "delivered orders"])
     wants_summary = any(k in q_lower for k in ["summary", "summarize", "overview", "describe", "details"])
+    wants_name_length = any(k in q_lower for k in ["name length", "name_length", "name_lenght", "product name length", "longest average product name", "average product name length"])
     wants_delivered = "delivered" in q_lower
 
-    # Determine limit N (default 10)
+    # Determine limit N (default 10 or 1 if asking for 'longest' or 'which product category')
     limit_match = re.search(r'\b(?:top|limit|first)\s+(\d+)\b', q_lower)
     if not limit_match:
         limit_match = re.search(r'\b(\d+)\s+(?:orders|categories|products|items|customers|users|rows|records)\b', q_lower)
-    limit_n = int(limit_match.group(1)) if limit_match else 10
+    
+    if limit_match:
+        limit_n = int(limit_match.group(1))
+    elif any(k in q_lower for k in ["which product category", "which category", "longest", "highest", "most", "best"]) and not wants_revenue:
+        limit_n = 1
+    else:
+        limit_n = 10
 
     # Locate candidate tables
     cat_matches = find_column_in_catalog(catalog, ["product_category_name", "category_name", "category", "cat_name"])
     order_matches = find_column_in_catalog(catalog, ["order_id", "order_id_pkey"])
     rev_matches = find_column_in_catalog(catalog, ["price", "revenue", "sales", "total_amount", "amount", "value"])
+    length_matches = find_column_in_catalog(catalog, ["product_name_lenght", "product_name_length", "name_lenght", "name_length"])
 
     # -------------------------------------------------------------
-    # Scenario A: Summary / Single-table Category Product Count (e.g. "How many products are in each category?", "Give me a summary of olist_products_dataset.csv")
+    # Scenario 0: Average Product Name Length by Category
+    # -------------------------------------------------------------
+    if wants_name_length or ("product name" in q_lower and "length" in q_lower):
+        if not cat_matches:
+            return {
+                "success": False,
+                "sql": None,
+                "explanation": None,
+                "missing_dataset_msg": "Product category name length cannot be calculated from the currently connected datasets because category information is unavailable.",
+                "tables_used": []
+            }
+        
+        target_table = None
+        length_col = None
+        cat_col = None
+
+        if length_matches:
+            target_table, length_col = length_matches[0]
+            for c_lower, c_info in target_table["columns"].items():
+                if "category" in c_lower:
+                    cat_col = c_info["name"]
+                    break
+
+        if not target_table or not length_col or not cat_col:
+            return {
+                "success": False,
+                "sql": None,
+                "explanation": None,
+                "missing_dataset_msg": "Average product name length cannot be calculated from the currently connected datasets because product_name_lenght column is unavailable.",
+                "tables_used": [t["table_name"] for t in catalog]
+            }
+
+        sql = (
+            f'SELECT "{cat_col}", AVG("{length_col}") AS avg_product_name_length '
+            f'FROM "{target_table["table_name"]}" '
+            f'WHERE "{cat_col}" IS NOT NULL '
+            f'GROUP BY "{cat_col}" '
+            f'ORDER BY avg_product_name_length DESC '
+            f'LIMIT {limit_n}'
+        )
+        explanation = f"Calculated average product name length by `{cat_col}` using `{target_table['filename']}`."
+        return {"success": True, "sql": sql, "explanation": explanation, "missing_dataset_msg": None, "tables_used": [target_table["table_name"]]}
+
+    # -------------------------------------------------------------
+    # Scenario A: Summary / Single-table Category Product Count (e.g. "How many products are in each category in olist_products_dataset.csv?")
     # -------------------------------------------------------------
     if (wants_category or wants_summary) and not wants_orders and not wants_revenue and not wants_delivered:
         if cat_matches:
@@ -237,7 +289,7 @@ def parse_and_generate_semantic_sql(query: str, catalog: List[Dict[str, Any]]) -
                 "success": False,
                 "sql": None,
                 "explanation": None,
-                "missing_dataset_msg": "I need a dataset containing product category information (such as olist_products_dataset.csv) to analyze orders by category.",
+                "missing_dataset_msg": "Orders by category cannot be calculated from the currently connected datasets because category information is unavailable.",
                 "tables_used": []
             }
         cat_table, cat_col = cat_matches[0]
@@ -279,7 +331,7 @@ def parse_and_generate_semantic_sql(query: str, catalog: List[Dict[str, Any]]) -
                 "success": False,
                 "sql": None,
                 "explanation": None,
-                "missing_dataset_msg": "I need a dataset containing product category information (such as olist_products_dataset.csv) to analyze orders by category.",
+                "missing_dataset_msg": "Category analysis cannot be calculated from the currently connected datasets because category column is unavailable.",
                 "tables_used": []
             }
         cat_table, cat_col = cat_matches[0]
@@ -291,7 +343,7 @@ def parse_and_generate_semantic_sql(query: str, catalog: List[Dict[str, Any]]) -
                     "success": False,
                     "sql": None,
                     "explanation": None,
-                    "missing_dataset_msg": "I need olist_order_items_dataset.csv (or a dataset containing order_id) to calculate orders by product category.",
+                    "missing_dataset_msg": "Order counts cannot be calculated from the currently connected datasets because order_id column is unavailable.",
                     "tables_used": [cat_table["table_name"]]
                 }
             
@@ -323,7 +375,7 @@ def parse_and_generate_semantic_sql(query: str, catalog: List[Dict[str, Any]]) -
                     "success": False,
                     "sql": None,
                     "explanation": None,
-                    "missing_dataset_msg": "I need olist_order_items_dataset.csv (or a dataset containing price/revenue) to calculate revenue by product category.",
+                    "missing_dataset_msg": "Revenue cannot be calculated from the currently connected datasets because price/sales column is unavailable.",
                     "tables_used": [cat_table["table_name"]]
                 }
             rev_table, rev_col = rev_matches[0]
@@ -354,7 +406,6 @@ def parse_and_generate_semantic_sql(query: str, catalog: List[Dict[str, Any]]) -
     # Scenario D: Product Revenue / Highest Revenue Products
     # -------------------------------------------------------------
     if (wants_revenue or (wants_product and "revenue" in q_lower)) and not wants_monthly:
-
         if rev_matches:
             rev_table, rev_col = rev_matches[0]
             prod_col = rev_table["columns"]["product_id"]["name"] if "product_id" in rev_table["columns"] else list(rev_table["columns"].keys())[0]
@@ -384,7 +435,6 @@ def parse_and_generate_semantic_sql(query: str, catalog: List[Dict[str, Any]]) -
     # -------------------------------------------------------------
     # Scenario E: Monthly Sales Trends
     # -------------------------------------------------------------
-
     if wants_monthly:
         date_matches = find_column_in_catalog(catalog, ["purchase_timestamp", "order_date", "created_at", "date", "timestamp", "month"])
         if not date_matches:
@@ -392,7 +442,7 @@ def parse_and_generate_semantic_sql(query: str, catalog: List[Dict[str, Any]]) -
                 "success": False,
                 "sql": None,
                 "explanation": None,
-                "missing_dataset_msg": "I need a dataset containing order timestamps or dates (such as olist_orders_dataset.csv) to calculate monthly trends.",
+                "missing_dataset_msg": "Monthly trends cannot be calculated from the currently connected datasets because date/timestamp column is unavailable.",
                 "tables_used": []
             }
         date_table, date_col = date_matches[0]
@@ -418,7 +468,7 @@ def parse_and_generate_semantic_sql(query: str, catalog: List[Dict[str, Any]]) -
             return {"success": True, "sql": sql, "explanation": f"Calculated monthly order trends from `{date_table['filename']}`.", "missing_dataset_msg": None, "tables_used": [date_table["table_name"]]}
 
     # -------------------------------------------------------------
-    # Scenario E: Dataset Summary / Record Count fallback
+    # Scenario F: Dataset Summary / Record Count fallback
     # -------------------------------------------------------------
     target_table = catalog[0]
     if req_file_match:
@@ -427,7 +477,6 @@ def parse_and_generate_semantic_sql(query: str, catalog: List[Dict[str, Any]]) -
                 target_table = t
                 break
 
-    # Look for categorical column to summarize
     str_cols = [c["name"] for c in target_table["columns"].values() if "cat" in c["name"].lower() or "type" in c["name"].lower() or "name" in c["name"].lower() or "status" in c["name"].lower()]
     num_cols = [c["name"] for c in target_table["columns"].values() if "price" in c["name"].lower() or "amount" in c["name"].lower() or "sales" in c["name"].lower() or "val" in c["name"].lower()]
 
@@ -440,7 +489,6 @@ def parse_and_generate_semantic_sql(query: str, catalog: List[Dict[str, Any]]) -
 
     sql = f'SELECT COUNT(*) AS total_count FROM "{target_table["table_name"]}"'
     return {"success": True, "sql": sql, "explanation": f"Counted total records in `{target_table['filename']}`.", "missing_dataset_msg": None, "tables_used": [target_table["table_name"]]}
-
 
 
 def validate_semantic_concepts(user_query: str, sql_query: str, target_dataset: Optional[Dict[str, Any]] = None) -> Tuple[bool, Optional[str]]:
@@ -463,7 +511,6 @@ def validate_semantic_concepts(user_query: str, sql_query: str, target_dataset: 
         if tbl_clean not in sql_query.lower() and fn_clean not in sql_query.lower():
             return False, f"Query does not reference the target dataset '{fn_target}'."
 
-
     # Rule B: Sales by category check
     wants_category = any(k in q_lower for k in ["category", "categories"])
     wants_sales = any(k in q_lower for k in ["sales", "revenue", "price", "amount", "total sales"])
@@ -481,7 +528,7 @@ def validate_semantic_concepts(user_query: str, sql_query: str, target_dataset: 
 
 def validate_semantic_sql(sql_query: Optional[str], user_query: str, catalog: List[Dict[str, Any]], target_dataset: Optional[Dict[str, Any]] = None) -> Tuple[bool, Optional[str]]:
     """
-    Performs pre-execution semantic validation on a generated DuckDB SQL query.
+    Performs pre-execution semantic & schema validation on a generated DuckDB SQL query.
     Returns (is_valid, rejection_reason).
     """
     if not sql_query or not sql_query.strip():
@@ -495,23 +542,40 @@ def validate_semantic_sql(sql_query: Optional[str], user_query: str, catalog: Li
         if re.search(r'\b' + re.escape(kw) + r'\b', sql_upper):
             return False, f"Forbidden SQL operation '{kw}' detected. Only read-only SELECT queries are allowed."
 
-    # Rule 1: Never allow un-aggregated SELECT * LIMIT 5 without ORDER BY for analytical queries
+    # Rule 1: Never allow un-aggregated SELECT * FROM table without ORDER BY, GROUP BY, or LIMIT for analytical queries
     if is_analytical_query(user_query):
-        if re.search(r'SELECT\s+\*\s+FROM', sql_upper) and "ORDER BY" not in sql_upper and "GROUP BY" not in sql_upper:
-            return False, "Query uses un-aggregated 'SELECT *' without ordering for an analytical request."
-        if re.search(r'LIMIT\s+5\b', sql_upper) and "GROUP BY" not in sql_upper and "ORDER BY" not in sql_upper and "COUNT" not in sql_upper and "SUM" not in sql_upper:
-            return False, "Query uses raw un-aggregated 'LIMIT 5' preview for an analytical question."
-        if "GROUP BY" not in sql_upper and "ORDER BY" not in sql_upper and "COUNT" not in sql_upper and "SUM" not in sql_upper and "AVG" not in sql_upper:
-            return False, "Query lacks required aggregation or ordering for an analytical request."
+        has_agg_or_ordering = any(k in sql_upper for k in ["GROUP BY", "ORDER BY", "COUNT", "SUM", "AVG", "MAX", "MIN", "LIMIT"])
+        if re.search(r'SELECT\s+\*\s+FROM', sql_upper) and "ORDER BY" not in sql_upper and "GROUP BY" not in sql_upper and "LIMIT" not in sql_upper:
+            return False, "Query uses un-aggregated 'SELECT *' without ordering or limit for an analytical request."
+        if not has_agg_or_ordering:
+            return False, "Query lacks required aggregation, ordering, or limit clause for an analytical request."
 
-    # Rule 2: Verify table names exist in catalog
+    # Rule 2: Verify table names and column names exist in catalog
     if catalog:
-        valid_tables = {t["table_name"].lower() for t in catalog}
+        valid_tables = set()
+        table_column_map = {}
+        for t in catalog:
+            t_name = t["table_name"].lower()
+            valid_tables.add(t_name)
+            if t.get("filename"):
+                valid_tables.add(t["filename"].lower())
+                valid_tables.add(os.path.splitext(t["filename"])[0].lower())
+            table_column_map[t_name] = {c.lower() for c in t["columns"].keys()}
+
         table_matches = re.findall(r'(?:FROM|JOIN)\s+["\']?([\w_]+)["\']?', sql_query, re.IGNORECASE)
         for tbl in table_matches:
             tbl_clean = tbl.strip('"\'').lower()
-            if tbl_clean not in valid_tables and not tbl_clean.startswith("read_csv"):
-                return False, f"Query references non-existent table '{tbl}'."
+            if tbl_clean not in valid_tables and not tbl_clean.startswith("read_csv") and not tbl_clean.startswith("project_"):
+                avail = ", ".join(sorted(list(valid_tables)))
+                return False, f"Table '{tbl}' does not exist in the current project catalog. Available tables: {avail}."
+
+        dot_matches = re.findall(r'["\']?([\w_]+)["\']?\s*\.\s*["\']?([\w_]+)["\']?', sql_query, re.IGNORECASE)
+        for tbl_ref, col_ref in dot_matches:
+            t_lower = tbl_ref.lower()
+            c_lower = col_ref.lower()
+            if t_lower in table_column_map and c_lower not in table_column_map[t_lower]:
+                avail_cols = ", ".join(sorted(list(table_column_map[t_lower])))
+                return False, f"Column '{col_ref}' does not exist in table '{tbl_ref}'. Available columns: {avail_cols}."
 
     # Rule 3: Validate semantic concepts against user query
     is_concept_valid, concept_err = validate_semantic_concepts(user_query, sql_query, target_dataset)

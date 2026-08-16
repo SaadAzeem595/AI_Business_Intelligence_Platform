@@ -51,7 +51,9 @@ interface Message {
 export default function ProjectWorkspacePage() {
   const params = useParams();
   const router = useRouter();
-  const projectId = params.id as string;
+  const rawId = params?.projectId || params?.id;
+  const projectId = typeof rawId === "string" ? decodeURIComponent(rawId) : "";
+
   const [activeTab, setActiveTab] = useState<"database" | "chat" | "sql" | "analytics">("database");
 
   const { project, isLoading: isLoadingProject } = useProjects(projectId);
@@ -211,7 +213,6 @@ export default function ProjectWorkspacePage() {
 
   const handleRunSQL = async () => {
     try {
-      // Modify execution payload to pass active project_id from context
       const res = await executeSQL(sqlQuery);
       if (res) {
         setRunStats({ elapsed: res.elapsedMs, rows: res.rows.length });
@@ -282,10 +283,12 @@ export default function ProjectWorkspacePage() {
 
   if (!project) {
     return (
-      <div className="space-y-4 py-10 max-w-md mx-auto text-center">
-        <h2 className="text-lg font-bold">Project Not Found</h2>
-        <p className="text-xs text-muted-foreground">This project doesn't exist or you don't have access permissions.</p>
-        <Button onClick={() => router.push("/projects")} size="sm">
+      <div className="space-y-4 py-16 max-w-md mx-auto text-center">
+        <h2 className="text-lg font-bold text-foreground">Project Not Found</h2>
+        <p className="text-xs text-muted-foreground leading-relaxed">
+          The requested project ID <span className="font-mono font-semibold text-foreground">"{projectId || "unknown"}"</span> does not exist or has been deleted.
+        </p>
+        <Button onClick={() => router.push("/projects")} size="sm" className="cursor-pointer">
           <ArrowLeft className="h-4 w-4 mr-1.5" /> Back to Projects
         </Button>
       </div>

@@ -78,7 +78,15 @@ def test_agent_api_endpoints():
     # Trigger agent query
     chat_payload = {
         "message": "Execute custom SQL on revenue logs, generate charts, and summarize reports.",
-        "workspace": "sales"
+        "workspace": "sales",
+        "available_datasets": [
+            {
+                "id": "ds1",
+                "filename": "revenue_logs.csv",
+                "duckdb_table": "revenue_logs",
+                "schema_json": '{"revenue": {"type": "DOUBLE"}}'
+            }
+        ]
     }
     
     response = client.post("/api/v1/agents/chat", json=chat_payload)

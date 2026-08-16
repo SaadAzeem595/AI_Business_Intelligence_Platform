@@ -28,7 +28,7 @@ const getBaseURL = () => {
 
 export const apiClient = axios.create({
   baseURL: getBaseURL(),
-  timeout: 15000,
+  timeout: 60000,
   headers: {
     "Content-Type": "application/json",
   },
@@ -151,7 +151,12 @@ apiClient.interceptors.response.use(
     let descriptiveMessage = "An unexpected network error occurred.";
 
     if (error.code === "ECONNABORTED") {
-      descriptiveMessage = "Project creation timed out. Please check that the backend and database are running.";
+      const isProjectCreation = config.url?.includes("/projects") && config.method?.toUpperCase() === "POST";
+      if (isProjectCreation) {
+        descriptiveMessage = "Project creation timed out. Please check that the backend and database are running.";
+      } else {
+        descriptiveMessage = "Request timed out. Please verify that the backend server is responding.";
+      }
     } else if (!error.response) {
       // No response was received (Connection refused or CORS error)
       if (error.message && error.message.toLowerCase().includes("network error")) {
@@ -162,7 +167,7 @@ apiClient.interceptors.response.use(
     } else {
       // Response was received with a non-2xx status code
       if (status === 404) {
-        descriptiveMessage = `Endpoint Not Found (404): The requested path '${config.url}' does not exist on the server.`;
+        descriptiveMessage = responseData?.detail || responseData?.message || `Endpoint Not Found (404): The requested path '${config.url}' does not exist on the server.`;
       } else if (status === 500) {
         descriptiveMessage = `Internal Server Error (500): The server encountered an error while processing the request. Details: ${JSON.stringify(responseData)}`;
       } else if (status === 403) {

@@ -18,6 +18,7 @@ export function useProjects(id?: string) {
     queryFn: () => ProjectService.get(id!),
     enabled: !!id,
     staleTime: 5 * 60 * 1000,
+    retry: false,
   });
 
   const createMutation = useMutation({

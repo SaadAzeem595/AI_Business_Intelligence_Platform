@@ -94,7 +94,7 @@ def test_missing_dataset_detection():
 
     assert res["success"] is False
     assert res["missing_dataset_msg"] is not None
-    assert "I need" in res["missing_dataset_msg"]
+    assert ("cannot be calculated" in res["missing_dataset_msg"] or "unavailable" in res["missing_dataset_msg"] or "I need" in res["missing_dataset_msg"])
 
 
 

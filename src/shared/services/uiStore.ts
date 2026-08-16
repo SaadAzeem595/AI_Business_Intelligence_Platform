@@ -16,6 +16,6 @@ export const useUIStore = create<UIState>((set) => ({
   setSidebarCollapsed: (val) => set({ isSidebarCollapsed: val }),
   activeOrg: "Acme Corp",
   setActiveOrg: (org) => set({ activeOrg: org }),
-  activeProject: "Q3 Sales Analytics",
+  activeProject: "",
   setActiveProject: (proj) => set({ activeProject: proj }),
 }));

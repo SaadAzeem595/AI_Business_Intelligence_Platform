@@ -140,8 +140,8 @@ def generate_sql(
                 "4. Match requested dimensions and metrics strictly against the provided table schemas.\n"
                 "5. If a request can be answered from a single table (e.g. product count by category), query ONLY that single table without forcing JOINs.\n"
                 "6. If a request requires multiple tables (e.g. sales/revenue by category or delivered orders), use the provided relationships to JOIN tables.\n"
-                "7. Never invent table or column names that do not exist in the provided database schema.\n"
-                "8. For analytical ranking/aggregation, use GROUP BY, SUM(), COUNT(DISTINCT order_id), and ORDER BY."
+                "7. Never invent table or column names (such as e2e_sales_data, sales_data, etc.) that do not exist in the provided project database schema.\n"
+                "8. Every generated SELECT query MUST include an aggregation function, GROUP BY, ORDER BY, or LIMIT clause (e.g., LIMIT 5)."
             )
 
             user_prompt = (

@@ -7,6 +7,9 @@ export interface Dataset {
   qualityScore: number;
   status: "Active" | "Processing" | "Failed";
   date: string;
+  duckdb_table?: string;
+  owner_id?: string;
+  project_id?: string;
 }
 
 export interface SchemaColumn {

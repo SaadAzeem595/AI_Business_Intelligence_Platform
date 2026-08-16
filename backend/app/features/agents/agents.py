@@ -95,46 +95,46 @@ def log_execution(state: AgentState, name: str, start_time: float, status: str =
 # DATASET RESOLUTION & FUZZY MATCHING HELPERS
 # ==========================================
 
-def get_available_dataset_names() -> List[str]:
-    """Retrieves all active uploaded datasets and sample data files."""
-    from app.features.datasets.router import UPLOADED_PATHS_CACHE
-    names = [item["filename"] for item in UPLOADED_PATHS_CACHE.values()]
-    
-    # Find sample CSV files
-    root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
-    sample_dir = os.path.join(root_dir, "sample_data")
-    if os.path.exists(sample_dir):
-        for f in os.listdir(sample_dir):
-            if f.endswith(('.csv', '.xlsx', '.xls', '.json', '.parquet')):
-                names.append(f)
-    return list(set(names))
+def get_available_dataset_names(available_datasets: Optional[List[Dict[str, Any]]] = None) -> List[str]:
+    """Retrieves active uploaded dataset filenames belonging to the current project context."""
+    if available_datasets:
+        names = []
+        for item in available_datasets:
+            is_dict = isinstance(item, dict)
+            fn = item.get("filename") if is_dict else getattr(item, "filename", None)
+            if fn:
+                names.append(fn)
+        return list(set(names))
+    return []
 
 
-def resolve_dataset(query: str, selected_dataset_id: Optional[str] = None, available_datasets: Optional[List[Dict[str, Any]]] = None) -> Optional[Dict[str, Any]]:
+def resolve_dataset(query: str, selected_dataset_id: Optional[str] = None, available_datasets: Optional[List[Dict[str, Any]]] = None, project_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
-    Fuzzy resolves a dataset from the user query or selection.
+    Resolves a dataset strictly from the current project's available datasets or user selection.
     Returns metadata dict: {'id', 'path', 'filename', 'view_name', 'type', 'display_name', 'schema'}
     """
-    from app.features.datasets.router import UPLOADED_PATHS_CACHE
     from app.core.database import AsyncSessionLocal
-    from app.features.datasets.repository import dataset_repo
+    from sqlalchemy import select
+    from app.features.datasets.models import Dataset
     from app.core.cache import run_async_as_sync
     import json
     
     db_items = []
     if available_datasets is not None:
         db_items = available_datasets
-    else:
-        async def fetch_all_datasets_async():
+    elif project_id:
+        async def fetch_project_datasets_async():
             async with AsyncSessionLocal() as db:
-                return await dataset_repo.get_multi(db, limit=1000)
+                stmt = select(Dataset).where(Dataset.project_id == project_id)
+                res = await db.execute(stmt)
+                return list(res.scalars().all())
         try:
-            db_items = run_async_as_sync(fetch_all_datasets_async())
+            db_items = run_async_as_sync(fetch_project_datasets_async())
         except Exception as e:
-            logger.error(f"Failed to fetch datasets from DB for resolution: {e}")
+            logger.error(f"Failed to fetch project datasets from DB for resolution: {e}")
             db_items = []
 
-    # Build unique catalog of available datasets in active workspace
+    # Build unique catalog of available datasets in active project
     catalog = []
     seen_ids = set()
 
@@ -173,49 +173,18 @@ def resolve_dataset(query: str, selected_dataset_id: Optional[str] = None, avail
             "filename": filename,
             "view_name": duckdb_table or os.path.splitext(filename)[0].lower().replace(" ", "_").replace("-", "_").replace(".", "_"),
             "type": item_type,
-            "display_name": display_name,
-            "schema": schema_val
+            "display_name": display_name or os.path.splitext(filename)[0],
+            "schema": schema_val,
+            "rows": item.get("rows", 0) if is_dict else getattr(item, "rows", 0)
         })
 
-    # Sync from cache for any uploaded item not in database
-    for d_id, cached in UPLOADED_PATHS_CACHE.items():
-        if d_id in seen_ids:
-            continue
-        seen_ids.add(d_id)
-        filename = cached["filename"]
-        catalog.append({
-            "id": d_id,
-            "path": cached["path"],
-            "filename": filename,
-            "view_name": cached.get("duckdb_table") or os.path.splitext(filename)[0].lower().replace(" ", "_").replace("-", "_").replace(".", "_"),
-            "type": cached.get("type", "CSV"),
-            "display_name": os.path.splitext(filename)[0],
-            "schema": cached.get("schema", {})
-        })
-
-    # Add sample datasets as fallback only if they don't overlap with uploaded files and available_datasets is None or empty
-    if not available_datasets:
-        root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
-        sample_dir = os.path.join(root_dir, "sample_data")
-        if os.path.exists(sample_dir):
-            for f in os.listdir(sample_dir):
-                if f.endswith(('.csv', '.xlsx', '.xls', '.json', '.parquet')):
-                    if any(c["filename"].lower() == f.lower() for c in catalog):
-                        continue
-                    catalog.append({
-                        "id": f,
-                        "path": os.path.join(sample_dir, f),
-                        "filename": f,
-                        "view_name": os.path.splitext(f)[0].lower(),
-                        "type": f.split(".")[-1].upper(),
-                        "display_name": os.path.splitext(f)[0].replace("_", " ").title(),
-                        "schema": {}
-                    })
+    if not catalog:
+        return None
 
     # 1. Resolve via explicit selection
     if selected_dataset_id:
         for dataset in catalog:
-            if dataset["id"].lower() == selected_dataset_id.lower() or dataset["filename"].lower() == selected_dataset_id.lower():
+            if dataset["id"].lower() == selected_dataset_id.lower() or dataset["filename"].lower() == selected_dataset_id.lower() or dataset["view_name"].lower() == selected_dataset_id.lower():
                 return dataset
 
     # 2. Check if query contains explicit filename or dataset ID
@@ -227,6 +196,7 @@ def resolve_dataset(query: str, selected_dataset_id: Optional[str] = None, avail
         if fn and fn in query_lower:
             return dataset
 
+    # 2.1 Base filename or ID match
     fn_matches = []
     for dataset in catalog:
         fn = dataset["filename"].lower()
@@ -237,7 +207,7 @@ def resolve_dataset(query: str, selected_dataset_id: Optional[str] = None, avail
     if len(fn_matches) == 1:
         return fn_matches[0]
 
-    # 2.1 Check if query contains display name or view name
+    # 2.2 Check if query contains display name or view name
     matches = []
     for dataset in catalog:
         if ((dataset["display_name"] and dataset["display_name"].lower() in query_lower) or
@@ -253,45 +223,8 @@ def resolve_dataset(query: str, selected_dataset_id: Optional[str] = None, avail
             
     if len(dedup_matches) == 1:
         return dedup_matches[0]
-    elif len(dedup_matches) > 1:
-        return None
 
-    # 2.5 Check aliases/synonyms
-    aliases = {
-        "products": "product_inventory_data.csv",
-        "product": "product_inventory_data.csv",
-        "inventory": "product_inventory_data.csv",
-        "product_inventory": "product_inventory_data.csv",
-        
-        "sales": "sales_data.csv",
-        "revenue": "sales_data.csv",
-        "revenue logs": "sales_data.csv",
-        "revenue_logs": "sales_data.csv",
-        
-        "financial": "financial_kpis.csv",
-        "financials": "financial_kpis.csv",
-        "kpis": "financial_kpis.csv",
-        "q3_financials": "financial_kpis.csv",
-        "q3_financials.xlsx": "financial_kpis.csv",
-        
-        "churn": "customer_churn_data.csv",
-        "customer": "customer_churn_data.csv",
-        "customer_churn": "customer_churn_data.csv",
-        "cohort": "customer_churn_data.csv",
-        "cohorts": "customer_churn_data.csv",
-        
-        "marketing": "marketing_campaigns_data.csv",
-        "marketing_campaigns": "marketing_campaigns_data.csv",
-        "campaigns": "marketing_campaigns_data.csv"
-    }
-    
-    for alias, target in aliases.items():
-        if re.search(r'\b' + re.escape(alias) + r'\b', query_lower):
-            for dataset in catalog:
-                if dataset["filename"].lower() == target.lower() or os.path.splitext(dataset["filename"].lower())[0] == os.path.splitext(target.lower())[0]:
-                    return dataset
-
-    # 3. Fuzzy matching using set intersection of words
+    # 3. Fuzzy matching using word intersection
     def stem_word(w: str) -> str:
         w = w.lower()
         if len(w) > 3:
@@ -322,13 +255,10 @@ def resolve_dataset(query: str, selected_dataset_id: Optional[str] = None, avail
             
     if fuzzy_matches:
         fuzzy_matches.sort(key=lambda x: x[0], reverse=True)
-        # Return only if unambiguous and strong match
         if len(fuzzy_matches) == 1 or fuzzy_matches[0][0] > fuzzy_matches[1][0] * 1.5:
             return fuzzy_matches[0][1]
-        else:
-            return None
 
-    # 4. If exactly one dataset is active in the workspace, resolve to it
+    # 4. If exactly one dataset is active in the current project, resolve to it
     if len(catalog) == 1:
         return catalog[0]
 

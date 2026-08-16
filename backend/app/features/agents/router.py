@@ -197,10 +197,8 @@ async def chat_with_agents(
                 stmt = select(Dataset).where(Dataset.project_id == active_proj)
                 logger.info(f"PROJECT_RESOLVED: project_id={active_proj}")
             except Exception as pe:
-                logger.warning(f"PROJECT_LOOKUP_FALLBACK: active_project={active_proj} not found, falling back to workspace: {pe}")
-                stmt = select(Dataset).where(
-                    (Dataset.workspace_id == current_user.workspace_id) | (Dataset.workspace_id == "default")
-                )
+                logger.warning(f"PROJECT_LOOKUP_FAILED: active_project={active_proj} access error: {pe}")
+                stmt = select(Dataset).where(Dataset.project_id == active_proj)
         else:
             logger.info("PROJECT_RESOLVED: project_id=None (Workspace global mode)")
             stmt = select(Dataset).where(
@@ -208,34 +206,30 @@ async def chat_with_agents(
                 ((Dataset.workspace_id == current_user.workspace_id) | (Dataset.workspace_id == "default"))
             )
 
-        result = await db.execute(stmt)
-        db_items = list(result.scalars().all())
+        if getattr(payload, "available_datasets", None):
+            available_datasets = payload.available_datasets
+        else:
+            result = await db.execute(stmt)
+            db_items = list(result.scalars().all())
 
-        # If project datasets empty, fallback to workspace datasets
-        if not db_items and active_proj:
-            fallback_stmt = select(Dataset).where(
-                (Dataset.workspace_id == current_user.workspace_id) | (Dataset.workspace_id == "default")
-            )
-            fallback_res = await db.execute(fallback_stmt)
-            db_items = list(fallback_res.scalars().all())
-
-        available_datasets = [
-            {
-                "id": str(item.id),
-                "filename": item.filename,
-                "display_name": item.display_name,
-                "storage_path": item.storage_path,
-                "duckdb_table": item.duckdb_table,
-                "type": item.type,
-                "columns_json": item.columns_json,
-                "schema_json": item.schema_json,
-                "rows": item.rows,
-                "status": item.status,
-            }
-            for item in db_items
-        ]
+            available_datasets = [
+                {
+                    "id": str(item.id),
+                    "filename": item.filename,
+                    "display_name": item.display_name,
+                    "storage_path": item.storage_path,
+                    "duckdb_table": item.duckdb_table,
+                    "type": item.type,
+                    "columns_json": item.columns_json,
+                    "schema_json": item.schema_json,
+                    "rows": item.rows,
+                    "status": item.status,
+                    "project_id": item.project_id,
+                }
+                for item in db_items
+            ]
         
-        logger.info(f"DATASETS_LOADED: count={len(available_datasets)} datasets={[d['filename'] for d in available_datasets]}")
+        logger.info(f"DATASETS_LOADED: project_id={active_proj} count={len(available_datasets)} datasets={[d['filename'] for d in available_datasets]}")
         logger.info(f"SCHEMA_LOADED: tables={[d['duckdb_table'] for d in available_datasets]}")
 
         # Check if thread already exists

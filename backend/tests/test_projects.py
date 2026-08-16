@@ -196,3 +196,37 @@ def test_datetime_dataset_ingestion_and_project_delete():
     # Clean up dependency override
     app.dependency_overrides.clear()
 
+
+def test_nonexistent_project_detail_and_multi_project():
+    """Tests 404 response on non-existent project IDs and verifies multi-project workspace creation."""
+    client = TestClient(app)
+    set_active_user("user_multi_test")
+
+    # 1. Fetch non-existent project ID -> 404 with detail message
+    response = client.get("/api/v1/projects/proj-invalid-id-999999")
+    assert response.status_code == 404
+    assert "Project does not exist" in response.json()["detail"]
+
+    # 2. Create Project 1 & Project 2
+    res1 = client.post("/api/v1/projects", json={"name": "Multi Workspace 1", "description": "Desc 1"})
+    assert res1.status_code == 201
+    proj1_id = res1.json()["id"]
+
+    res2 = client.post("/api/v1/projects", json={"name": "Multi Workspace 2", "description": "Desc 2"})
+    assert res2.status_code == 201
+    proj2_id = res2.json()["id"]
+
+    assert proj1_id != proj2_id
+
+    # 3. Direct GET for each project
+    get1 = client.get(f"/api/v1/projects/{proj1_id}")
+    assert get1.status_code == 200
+    assert get1.json()["name"] == "Multi Workspace 1"
+
+    get2 = client.get(f"/api/v1/projects/{proj2_id}")
+    assert get2.status_code == 200
+    assert get2.json()["name"] == "Multi Workspace 2"
+
+    app.dependency_overrides.clear()
+
+
