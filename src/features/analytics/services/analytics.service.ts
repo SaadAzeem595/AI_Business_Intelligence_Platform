@@ -1,38 +1,33 @@
 import { apiClient } from "@/shared/api/client";
 import { API_ENDPOINTS } from "@/shared/api/endpoints";
-import { ForecastResult, SegmentationResult, AnomaliesResult, SQLResult } from "@/shared/types/analytics";
+import { 
+  ForecastResult, 
+  SegmentationResult, 
+  AnomaliesResult, 
+  SQLResult,
+  ProjectForecastRequest,
+  ProjectForecastResponse,
+  ProjectSchemaInfoResponse
+} from "@/shared/types/analytics";
 
 export const AnalyticsService = {
+  async getProjectForecastSchemaInfo(projectId: string): Promise<ProjectSchemaInfoResponse> {
+    const response = await apiClient.get<ProjectSchemaInfoResponse>(`/projects/${projectId}/forecast/schema-info`);
+    return response.data;
+  },
+
+  async runProjectForecast(projectId: string, payload: ProjectForecastRequest): Promise<ProjectForecastResponse> {
+    const response = await apiClient.post<ProjectForecastResponse>(`/projects/${projectId}/forecast`, payload);
+    return response.data;
+  },
+
   async getForecast(model: string, confidence: number, periods: number): Promise<ForecastResult> {
-    try {
-      const response = await apiClient.post<ForecastResult>(API_ENDPOINTS.ANALYTICS.FORECAST, {
-        model,
-        confidence,
-        periods,
-      });
-      return response.data;
-    } catch {
-      return {
-        data: [
-          { date: "Feb 26", actual: 12000, forecast: null },
-          { date: "Mar 26", actual: 13500, forecast: null },
-          { date: "Apr 26", actual: 14200, forecast: null },
-          { date: "May 26", actual: 13900, forecast: null },
-          { date: "Jun 26", actual: 15400, forecast: null },
-          { date: "Jul 26", actual: 16800, forecast: null },
-          { date: "Aug 26 (P)", actual: null, forecast: 17200 },
-          { date: "Sep 26 (P)", actual: null, forecast: 17900 },
-          { date: "Oct 26 (P)", actual: null, forecast: 18500 },
-          { date: "Nov 26 (P)", actual: null, forecast: 19100 },
-          { date: "Dec 26 (P)", actual: null, forecast: 19800 },
-        ],
-        metrics: [
-          { metric: "R-Squared (Precision)", arimaValue: "0.89", prophetValue: "0.94" },
-          { metric: "Mean Absolute Error (MAE)", arimaValue: "$1,420", prophetValue: "$890" },
-          { metric: "Root Mean Square Error (RMSE)", arimaValue: "$1,980", prophetValue: "$1,120" },
-        ],
-      };
-    }
+    const response = await apiClient.post<ForecastResult>(API_ENDPOINTS.ANALYTICS.FORECAST, {
+      model,
+      confidence,
+      periods,
+    });
+    return response.data;
   },
 
   async getSegmentation(clusters: number, features: string): Promise<SegmentationResult> {

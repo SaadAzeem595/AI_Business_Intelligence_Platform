@@ -876,68 +876,61 @@ def ml_agent(state: AgentState) -> Dict[str, Any]:
 def forecast_agent(state: AgentState) -> Dict[str, Any]:
     start_time = time.perf_counter()
     query = state.get("query", "")
+    active_proj = state.get("active_project")
     resolved = resolve_dataset(query, state.get("dataset"), available_datasets=state.get("available_datasets"))
     
-    if not resolved:
-        fallback_name = "sales_data.csv" if ("sales" in query.lower() or "revenue" in query.lower()) else "customer_churn_data.csv"
-        resolved = resolve_dataset(fallback_name, available_datasets=state.get("available_datasets"))
-        
-    if not resolved:
-        err = "No resolved dataset found for forecasting."
-        return {
-            "forecast_result": {"error": err},
-            "completed_steps": list(state.get("completed_steps", [])) + ["forecast_agent"],
-            "execution_logs": log_execution(state, "forecast_agent", start_time, status="failure", details=err),
-            "reasoning_path": list(state.get("reasoning_path", [])) + ["forecast_agent"]
-        }
-        
-    logger.info(f"Forecast Agent starting projection on dataset path: {resolved['path']}")
+    logger.info(f"Forecast Agent starting projection on query: '{query}' for active project: '{active_proj}'")
     
     try:
+        from app.features.analytics.engine.discovery import DatasetDiscoveryService
+        from app.features.analytics.engine.forecasting import ProductionForecastingEngine
         import pandas as pd
-        from app.features.analytics.engine.utils import load_dataset
-        df = load_dataset(resolved["path"])
-        
-        # Detect date column
-        date_col = None
-        for col in df.columns:
-            if df[col].dtype == 'object' or pd.api.types.is_datetime64_any_dtype(df[col]):
-                try:
-                    pd.to_datetime(df[col].dropna().head(5))
-                    date_col = col
-                    break
-                except Exception:
-                    pass
-        if not date_col:
-            date_col = next((col for col in df.columns if any(x in col.lower() for x in ['date', 'time', 'year', 'month', 'dt'])), df.columns[0])
-            
-        # Detect numeric target column
-        value_col = None
-        for col in df.columns:
-            if col != date_col and pd.api.types.is_numeric_dtype(df[col]):
-                if any(x in col.lower() for x in ['revenue', 'sales', 'profit', 'amount', 'charges', 'value', 'spend']):
-                    value_col = col
-                    break
-        if not value_col:
-            value_col = next((col for col in df.columns if col != date_col and pd.api.types.is_numeric_dtype(df[col])), None)
-            
-        if not value_col:
-            raise ValueError("No numeric target column found for forecasting.")
-            
-        from app.features.analytics.engine.forecasting import ForecastingService
-        forecaster = ForecastingService()
-        
-        result = forecaster.forecast(
-            dataset_ref=resolved["path"],
-            model_name="arima",
+
+        # 1. Build time-series SQL query
+        ds_id = resolved["id"] if resolved else None
+        sql, meta = DatasetDiscoveryService.build_time_series_query(
+            project_id=active_proj,
+            dataset_id=ds_id,
+            date_column=None,
+            target_column=None,
+            aggregation="monthly",
+            group_by=None
+        )
+
+        # 2. Execute DuckDB query
+        exec_res = AnalyticsService.execute_duckdb_query(sql, active_proj)
+        rows = exec_res.rows if hasattr(exec_res, "rows") else (exec_res.get("rows", []) if isinstance(exec_res, dict) else [])
+        if not rows:
+            raise ValueError(f"No time-series data found in project datasets for query '{query}'.")
+
+        df = pd.DataFrame(rows)
+        date_col = "date_bucket" if "date_bucket" in df.columns else df.columns[0]
+        target_col = "metric_value" if "metric_value" in df.columns else df.columns[1]
+
+        # 3. Execute Production Forecasting Engine
+        forecast_response = ProductionForecastingEngine.execute_project_forecast(
+            df=df,
+            project_id=active_proj or "default",
+            dataset_id=ds_id,
+            dataset_name=meta.get("dataset_name", "Dataset"),
             date_col=date_col,
-            value_col=value_col,
-            periods=6,
+            target_col=target_col,
+            aggregation="monthly",
+            horizon=6,
+            requested_model="auto",
             confidence=0.95
         )
-        status = "success"
-        details = f"Generated 6-period forecast using ARIMA on columns (Date: '{date_col}', Value: '{value_col}')."
+
+        if forecast_response.status == "error":
+            result = {"error": forecast_response.message}
+            status = "failure"
+            details = f"Forecasting pipeline error: {forecast_response.message}"
+        else:
+            result = forecast_response.model_dump()
+            status = "success"
+            details = f"Generated dataset-aware forecast using best model '{forecast_response.selected_model}' on '{meta.get('dataset_name')}'."
     except Exception as e:
+        logger.error(f"Forecast Agent execution error: {e}")
         result = {"error": str(e)}
         status = "failure"
         details = f"Forecasting failed: {str(e)}"

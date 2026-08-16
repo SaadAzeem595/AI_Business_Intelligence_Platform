@@ -22,6 +22,9 @@ from app.features.analytics.schemas import (
     AnomalyLog,
     SQLPayload,
     SQLResponse,
+    ProjectForecastRequest,
+    ProjectForecastResponse,
+    ProjectSchemaInfoResponse,
 )
 from app.features.analytics.service import AnalyticsService
 from app.features.analytics.engine.utils import load_dataset
@@ -170,6 +173,79 @@ async def forecast_trend(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         )
+
+
+@router.get("/projects/{project_id}/forecast/schema-info", response_model=ProjectSchemaInfoResponse)
+async def get_project_forecast_schema_info(
+    project_id: str,
+    current_user: MockUser = Depends(require_role(["Analyst", "Admin"])),
+    db: AsyncSession = Depends(get_db_session),
+) -> ProjectSchemaInfoResponse:
+    """Inspects all project datasets and returns time-series candidates and suggested controls."""
+    from app.features.projects.router import get_project_and_verify_access
+    from app.features.analytics.engine.discovery import DatasetDiscoveryService
+    await get_project_and_verify_access(project_id, current_user, db)
+
+    return await DatasetDiscoveryService.discover_project_candidates(project_id, db)
+
+
+@router.post("/projects/{project_id}/forecast", response_model=ProjectForecastResponse)
+async def run_project_forecast(
+    project_id: str,
+    payload: ProjectForecastRequest,
+    current_user: MockUser = Depends(require_role(["Analyst", "Admin"])),
+    db: AsyncSession = Depends(get_db_session),
+) -> ProjectForecastResponse:
+    """Executes dataset-aware time-series forecasting pipeline on project datasets via DuckDB."""
+    from app.features.projects.router import get_project_and_verify_access
+    from app.features.analytics.engine.discovery import DatasetDiscoveryService
+    from app.features.analytics.engine.forecasting import ProductionForecastingEngine
+
+    await get_project_and_verify_access(project_id, current_user, db)
+
+    # 1. Build time-series SQL query
+    sql, meta = DatasetDiscoveryService.build_time_series_query(
+        project_id=project_id,
+        dataset_id=payload.dataset_id,
+        date_column=payload.date_column,
+        target_column=payload.target_column,
+        aggregation=payload.aggregation,
+        group_by=payload.group_by
+    )
+
+    # 2. Execute DuckDB query
+    query_res = AnalyticsService.execute_duckdb_query(sql, project_id)
+    rows = query_res.rows if hasattr(query_res, "rows") else (query_res.get("rows", []) if isinstance(query_res, dict) else [])
+    if not rows:
+        return ProjectForecastResponse(
+            status="error",
+            project_id=project_id,
+            dataset_id=payload.dataset_id,
+            dataset_name=meta.get("dataset_name"),
+            message="No time-series rows returned from dataset query. Check that date and metric columns contain data."
+        )
+
+    df = pd.DataFrame(rows)
+
+    date_col = "date_bucket" if "date_bucket" in df.columns else (payload.date_column or meta["date_column"])
+    target_col = "metric_value" if "metric_value" in df.columns else (payload.target_column or meta["target_column"])
+
+    # 3. Run Production Forecast Engine
+    forecast_res = ProductionForecastingEngine.execute_project_forecast(
+        df=df,
+        project_id=project_id,
+        dataset_id=payload.dataset_id,
+        dataset_name=meta.get("dataset_name", "Dataset"),
+        date_col=date_col,
+        target_col=target_col,
+        aggregation=payload.aggregation,
+        horizon=payload.horizon,
+        requested_model=payload.model,
+        confidence=payload.confidence,
+        group_by=payload.group_by
+    )
+
+    return forecast_res
 
 
 @router.post("/analytics/segment", response_model=SegmentResponse)

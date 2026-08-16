@@ -2,6 +2,43 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnalyticsService } from "../services/analytics.service";
+import { ProjectForecastRequest } from "@/shared/types/analytics";
+
+export function useForecastSchemaInfo(projectId?: string) {
+  const query = useQuery({
+    queryKey: ["analytics", "forecast-schema-info", projectId],
+    queryFn: () => AnalyticsService.getProjectForecastSchemaInfo(projectId!),
+    enabled: !!projectId,
+    staleTime: 30 * 1000,
+  });
+
+  return {
+    hasTimeSeries: query.data?.has_time_series || false,
+    candidates: query.data?.candidates || [],
+    message: query.data?.message || null,
+    isLoading: query.isLoading,
+    isError: query.isError,
+    refetch: query.refetch,
+  };
+}
+
+export function useProjectForecast(projectId?: string, config?: ProjectForecastRequest) {
+  const query = useQuery({
+    queryKey: ["analytics", "project-forecast", projectId, config],
+    queryFn: () => AnalyticsService.runProjectForecast(projectId!, config || {}),
+    enabled: !!projectId && !!config,
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  });
+
+  return {
+    forecastResult: query.data || null,
+    isLoading: query.isLoading,
+    isError: query.isError,
+    error: query.error as any,
+    refetch: query.refetch,
+  };
+}
 
 export function useForecast(model?: string, confidence?: number, periods?: number) {
   const query = useQuery({
