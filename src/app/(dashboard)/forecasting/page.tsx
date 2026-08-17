@@ -113,6 +113,18 @@ export default function ForecastingPage() {
   } = useProjectForecast(activeProject, activeConfig);
 
   const handleRunForecast = () => {
+    if (process.env.NODE_ENV === "development") {
+      console.log("[Forecast request]", {
+        project_id: activeProject,
+        dataset_id: selectedCandidateId,
+        date_column: dateColumn,
+        target_column: targetMetric,
+        aggregation,
+        horizon,
+        model: modelChoice,
+        confidence: confidence / 100.0,
+      });
+    }
     setActiveConfig({
       dataset_id: selectedCandidateId,
       date_column: dateColumn,
@@ -240,9 +252,16 @@ export default function ForecastingPage() {
             <CardContent className="space-y-4 pt-4">
               {/* Dataset Candidate Picker */}
               <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-muted-foreground flex items-center gap-1">
-                  <Layers className="h-3.5 w-3.5 text-brand-indigo" /> Dataset Target
-                </label>
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-semibold text-muted-foreground flex items-center gap-1">
+                    <Layers className="h-3.5 w-3.5 text-brand-indigo" /> Dataset Target
+                  </label>
+                  {selectedCandidate?.dataset_type && (
+                    <Badge variant={selectedCandidate.is_time_series_capable ? "outline" : "warning"} className="text-[10px] px-1.5 py-0">
+                      {selectedCandidate.dataset_type}
+                    </Badge>
+                  )}
+                </div>
                 <select
                   value={selectedCandidateId}
                   onChange={(e) => handleCandidateChange(e.target.value)}
@@ -259,6 +278,29 @@ export default function ForecastingPage() {
                     ⚡ Auto-joined DuckDB relational schema (Orders + Items)
                   </p>
                 )}
+                {selectedCandidate && !selectedCandidate.is_time_series_capable && (
+                  <div className="mt-2 p-2.5 rounded-md border border-amber-500/30 bg-amber-500/10 space-y-1.5 text-[11px] text-amber-600 dark:text-amber-400">
+                    <p className="font-semibold flex items-center gap-1">
+                      <AlertCircle className="h-3.5 w-3.5 shrink-0" /> Dimension / Master Data
+                    </p>
+                    <p className="text-[10px] leading-relaxed text-muted-foreground">
+                      This dataset contains product attributes but no suitable time-series date column for sales forecasting.
+                    </p>
+                    {candidates.some(c => c.is_derived_olist) && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="w-full text-[10px] h-7 mt-1 border-amber-500/40 text-amber-600 dark:text-amber-400 font-semibold cursor-pointer"
+                        onClick={() => {
+                          const olistCand = candidates.find(c => c.is_derived_olist);
+                          if (olistCand) handleCandidateChange(olistCand.dataset_id);
+                        }}
+                      >
+                        Switch to Olist Joined Time-Series
+                      </Button>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Date Column */}
@@ -269,11 +311,16 @@ export default function ForecastingPage() {
                 <select
                   value={dateColumn}
                   onChange={(e) => setDateColumn(e.target.value)}
-                  className="text-xs p-2 rounded-md border border-border/80 bg-background w-full text-foreground cursor-pointer"
+                  disabled={!selectedCandidate?.is_time_series_capable || selectedCandidate?.date_columns.length === 0}
+                  className="text-xs p-2 rounded-md border border-border/80 bg-background w-full text-foreground cursor-pointer disabled:opacity-50"
                 >
-                  {selectedCandidate?.date_columns.map(col => (
-                    <option key={col} value={col}>{col}</option>
-                  ))}
+                  {selectedCandidate?.date_columns.length ? (
+                    selectedCandidate.date_columns.map(col => (
+                      <option key={col} value={col}>{col}</option>
+                    ))
+                  ) : (
+                    <option value="">No date column found</option>
+                  )}
                 </select>
               </div>
 
@@ -285,7 +332,8 @@ export default function ForecastingPage() {
                 <select
                   value={targetMetric}
                   onChange={(e) => setTargetMetric(e.target.value)}
-                  className="text-xs p-2 rounded-md border border-border/80 bg-background w-full text-foreground cursor-pointer"
+                  disabled={!selectedCandidate?.metric_columns.length}
+                  className="text-xs p-2 rounded-md border border-border/80 bg-background w-full text-foreground cursor-pointer disabled:opacity-50"
                 >
                   {selectedCandidate?.metric_columns.map(m => (
                     <option key={m} value={m}>{m}</option>
@@ -362,7 +410,7 @@ export default function ForecastingPage() {
               {/* Action Button */}
               <Button 
                 onClick={handleRunForecast} 
-                disabled={isExecutingForecast} 
+                disabled={isExecutingForecast || !selectedCandidate?.is_time_series_capable || !dateColumn} 
                 className="w-full mt-2 cursor-pointer font-semibold" 
                 variant="brand" 
                 size="sm"

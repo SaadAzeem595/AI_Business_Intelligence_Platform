@@ -121,9 +121,11 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: Optional[str] = None
 
     # Production security
-    ALLOWED_ORIGINS: str = "*"
+    ALLOWED_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001,http://localhost:8000,http://127.0.0.1:8000"
+    FRONTEND_ORIGINS: Optional[str] = None
     RATE_LIMIT_PER_MINUTE: int = 100
     API_KEYS: str = "admin-secret-api-key-12345,analyst-key-54321"
+
 
 
 settings = Settings()

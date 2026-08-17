@@ -160,22 +160,29 @@ apiClient.interceptors.response.use(
     } else if (!error.response) {
       // No response was received (Connection refused or CORS error)
       if (error.message && error.message.toLowerCase().includes("network error")) {
-        descriptiveMessage = `CORS or Network Connection Error: Unable to connect to the backend server at '${apiClient.defaults.baseURL}'. Please verify that the FastAPI backend is running and that CORS allows requests from this origin.`;
+        descriptiveMessage = `CORS or Network Connection Error: Unable to connect to the DataPilot API at '${apiClient.defaults.baseURL}'. Verify that the FastAPI backend is running and CORS allows requests from this origin.`;
       } else {
-        descriptiveMessage = `Connection Refused: Backend server is unreachable at '${apiClient.defaults.baseURL}'.`;
+        descriptiveMessage = `Unable to connect to the DataPilot API at '${apiClient.defaults.baseURL}'. Verify that the FastAPI backend is running.`;
       }
     } else {
       // Response was received with a non-2xx status code
-      if (status === 404) {
-        descriptiveMessage = responseData?.detail || responseData?.message || `Endpoint Not Found (404): The requested path '${config.url}' does not exist on the server.`;
+      const detailMsg = responseData?.detail || responseData?.message || responseData?.error;
+      const parsedDetail = typeof detailMsg === "string" ? detailMsg : (detailMsg ? JSON.stringify(detailMsg) : null);
+
+      if (status === 422) {
+        descriptiveMessage = parsedDetail || `Validation Error (422): Invalid request parameters passed to '${config.url}'.`;
+      } else if (status === 400) {
+        descriptiveMessage = parsedDetail || `Bad Request (400): ${JSON.stringify(responseData)}`;
+      } else if (status === 404) {
+        descriptiveMessage = parsedDetail || `Endpoint Not Found (404): The requested path '${config.url}' does not exist on the server.`;
       } else if (status === 500) {
-        descriptiveMessage = `Internal Server Error (500): The server encountered an error while processing the request. Details: ${JSON.stringify(responseData)}`;
+        descriptiveMessage = parsedDetail || `Internal Server Error (500): The server encountered an error while processing the request.`;
       } else if (status === 403) {
-        descriptiveMessage = "Forbidden (403): You do not have permission to access this resource.";
+        descriptiveMessage = parsedDetail || "Forbidden (403): You do not have permission to access this resource.";
       } else if (status === 401) {
-        descriptiveMessage = "Unauthorized (401): Please log in to complete this action.";
+        descriptiveMessage = parsedDetail || "Unauthorized (401): Please log in to complete this action.";
       } else {
-        descriptiveMessage = `Server Error (${status}): ${responseData?.detail || responseData?.message || JSON.stringify(responseData)}`;
+        descriptiveMessage = `Server Error (${status}): ${parsedDetail || JSON.stringify(responseData)}`;
       }
     }
 

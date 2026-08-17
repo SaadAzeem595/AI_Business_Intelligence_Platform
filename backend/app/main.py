@@ -44,20 +44,22 @@ app = FastAPI(
 )
 
 # Setup CORS policies middleware for Next.js queries
-raw_origins = [o.strip() for o in settings.ALLOWED_ORIGINS.split(",") if o.strip()] if settings.ALLOWED_ORIGINS else []
+cors_source = settings.FRONTEND_ORIGINS or settings.ALLOWED_ORIGINS
+raw_origins = [o.strip() for o in cors_source.split(",") if o.strip()] if cors_source else []
 origins = [o for o in raw_origins if o != "*"]
 
-# If "*" is in ALLOWED_ORIGINS or no origins are found, set explicit local development origins
-# to support allow_credentials=True since wildcards are disallowed when sending credentials.
-if "*" in raw_origins or not origins:
-    origins = [
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:3001",
-        "http://127.0.0.1:3001",
-        "http://localhost:8000",
-        "http://127.0.0.1:8000",
-    ]
+# Explicit local development origins for credentialed CORS
+dev_origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3001",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+]
+for d_origin in dev_origins:
+    if d_origin not in origins:
+        origins.append(d_origin)
 
 app.add_middleware(
     CORSMiddleware,
@@ -285,12 +287,18 @@ async def health_check() -> dict:
 
     # 3. Probe DuckDB
     try:
-        conn = next(get_duckdb_conn())
-        conn.execute("SELECT 1")
-        conn.close()
-        status_info["duckdb"] = "healthy"
-    except Exception:
-        pass
+        gen = get_duckdb_conn()
+        conn = next(gen)
+        try:
+            conn.execute("SELECT 1")
+            status_info["duckdb"] = "healthy"
+        finally:
+            try:
+                gen.close()
+            except Exception:
+                pass
+    except Exception as e:
+        status_info["duckdb"] = f"unhealthy: {str(e)}"
 
     # 4. Probe LLM
     status_info["llm"] = LLMService.get_diagnostic_status()
@@ -351,10 +359,16 @@ async def ready_check() -> dict:
 
     # 3. Probe DuckDB view execution
     try:
-        conn = next(get_duckdb_conn())
-        conn.execute("SELECT 1")
-        conn.close()
-        status_info["duckdb"] = "healthy"
+        gen = get_duckdb_conn()
+        conn = next(gen)
+        try:
+            conn.execute("SELECT 1")
+            status_info["duckdb"] = "healthy"
+        finally:
+            try:
+                gen.close()
+            except Exception:
+                pass
     except Exception as e:
         status_info["duckdb"] = f"unhealthy: {str(e)}"
         status_info["status"] = "unready"

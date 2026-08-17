@@ -198,10 +198,19 @@ async def run_project_forecast(
 ) -> ProjectForecastResponse:
     """Executes dataset-aware time-series forecasting pipeline on project datasets via DuckDB."""
     from app.features.projects.router import get_project_and_verify_access
-    from app.features.analytics.engine.discovery import DatasetDiscoveryService
+    from app.features.analytics.engine.discovery import DatasetDiscoveryService, is_valid_date_column, EXPLICIT_NON_DATE_KEYWORDS
     from app.features.analytics.engine.forecasting import ProductionForecastingEngine
 
     await get_project_and_verify_access(project_id, current_user, db)
+
+    # 0. Request Validation for date_column and target_column
+    if payload.date_column:
+        date_col_lower = payload.date_column.lower()
+        if any(kw in date_col_lower for kw in EXPLICIT_NON_DATE_KEYWORDS):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Column '{payload.date_column}' is a non-temporal attribute and cannot be used as a date column for time series forecasting."
+            )
 
     # 1. Build time-series SQL query
     sql, meta = DatasetDiscoveryService.build_time_series_query(

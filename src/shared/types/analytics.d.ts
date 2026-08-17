@@ -22,6 +22,8 @@ export interface TimeSeriesCandidate {
   is_derived_olist: boolean;
   suggested_date?: string;
   suggested_metric?: string;
+  dataset_type?: string;
+  is_time_series_capable?: boolean;
 }
 
 export interface ProjectSchemaInfoResponse {

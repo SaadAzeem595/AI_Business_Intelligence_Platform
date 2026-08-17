@@ -14,9 +14,84 @@ from app.features.analytics.schemas import TimeSeriesCandidate, ProjectSchemaInf
 
 logger = logging.getLogger(__name__)
 
-DATE_KEYWORDS = ["date", "time", "created_at", "timestamp", "purchase", "month", "year", "dt"]
+EXPLICIT_NON_DATE_KEYWORDS = [
+    "width", "height", "length", "lenght", "weight", "qty", "quantity",
+    "price", "cost", "value", "amount", "score", "count", "id", "zip",
+    "code", "index", "phone", "lat", "lng", "geo", "cpf", "cnpj", "freight",
+    "cm", "mm", "kg", "g", "meter", "size", "dimension", "description", "category"
+]
+
 METRIC_KEYWORDS = ["revenue", "sales", "price", "amount", "cost", "total", "spend", "freight_value", "quantity", "order_count", "units", "profit"]
 ID_EXCLUDE_KEYWORDS = ["id", "zip", "code", "index", "phone", "lat", "lng", "geo", "cpf", "cnpj"]
+STRICT_DATE_REGEX = re.compile(r'\b(date|time|timestamp|datetime|created_at|updated_at|order_date|purchase_timestamp|approved_at|delivered_date)\b', re.IGNORECASE)
+
+
+def is_valid_date_column(df: pd.DataFrame, col_name: str) -> bool:
+    """
+    Strictly validates if a column is temporal.
+    - Rejects numeric columns (float, int, DOUBLE, DECIMAL) immediately.
+    - Rejects columns matching explicit non-date attribute keywords (width, height, price, cm, etc.).
+    - Rejects string columns whose non-null samples are numeric values (e.g. "25", "25.0").
+    - Validates datetime parse rate >= 80% on non-null samples with >= 3 distinct dates in reasonable year bounds (1970 - 2100).
+    """
+    col_str = str(col_name)
+    col_lower = col_str.lower()
+    series = df[col_str]
+
+    # Rule 1: Numeric columns MUST NEVER automatically become date columns!
+    if pd.api.types.is_numeric_dtype(series):
+        return False
+
+    # Rule 2: Reject explicit non-date attribute keywords (e.g. product_width_cm, price, quantity, size)
+    if any(kw in col_lower for kw in EXPLICIT_NON_DATE_KEYWORDS):
+        return False
+
+    # Rule 3: Datetime dtype is inherently date
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return True
+
+    # Rule 4: String / object validation
+    if series.dtype == 'object' or isinstance(series.dtype, pd.StringDtype):
+        non_null_samples = series.dropna()
+        if len(non_null_samples) == 0:
+            return False
+
+        sample = non_null_samples.head(30)
+
+        # Check if sample strings are purely numeric (e.g. "25", "25.0", "100")
+        is_all_numeric_strings = True
+        for val in sample:
+            s_val = str(val).strip()
+            if not re.match(r'^-?\d+(\.\d+)?$', s_val):
+                is_all_numeric_strings = False
+                break
+        if is_all_numeric_strings:
+            return False
+
+        try:
+            parsed = pd.to_datetime(sample, errors='coerce')
+            valid_parsed = parsed.dropna()
+            
+            # Require at least 80% of sample to parse cleanly as datetime
+            if len(valid_parsed) / len(sample) < 0.8:
+                return False
+
+            # Require at least 3 distinct dates
+            if valid_parsed.nunique() < 3:
+                return False
+
+            # Validate reasonable year bounds (1970 - 2100)
+            years = valid_parsed.dt.year
+            if (years < 1970).any() or (years > 2100).any():
+                return False
+
+            # Additional check: Column name should match date indicator or pass 100% sample parse
+            if STRICT_DATE_REGEX.search(col_lower) or len(valid_parsed) == len(sample):
+                return True
+        except Exception:
+            return False
+
+    return False
 
 
 class DatasetDiscoveryService:
@@ -79,7 +154,9 @@ class DatasetDiscoveryService:
                     categorical_columns=["product_category_name", "order_status", "customer_state"],
                     is_derived_olist=True,
                     suggested_date="order_purchase_timestamp",
-                    suggested_metric="total_order_value (price + freight_value)"
+                    suggested_metric="total_order_value (price + freight_value)",
+                    dataset_type="Transactional / Time Series",
+                    is_time_series_capable=True
                 )
             )
 
@@ -102,19 +179,8 @@ class DatasetDiscoveryService:
                     col_str = str(col)
                     col_lower = col_str.lower()
 
-                    # 1. Check Date Column
-                    is_date = False
-                    if any(k in col_lower for k in DATE_KEYWORDS):
-                        is_date = True
-                    elif df[col_str].dtype == 'object' or pd.api.types.is_datetime64_any_dtype(df[col_str]):
-                        try:
-                            sample = df[col_str].dropna().head(10)
-                            if len(sample) > 0 and pd.to_datetime(sample, errors='coerce').notna().all():
-                                is_date = True
-                        except Exception:
-                            pass
-
-                    if is_date:
+                    # 1. Check Date Column using strict validation
+                    if is_valid_date_column(df, col_str):
                         date_cols.append(col_str)
                         continue
 
@@ -128,41 +194,42 @@ class DatasetDiscoveryService:
                         if 1 < unique_cnt < 100:
                             cat_cols.append(col_str)
 
-                if date_cols or metric_cols:
-                    suggested_date = date_cols[0] if date_cols else None
-                    
-                    # Prefer revenue/sales/amount for suggested metric
-                    suggested_metric = None
-                    for m in metric_cols:
-                        if any(k in m.lower() for k in METRIC_KEYWORDS):
-                            suggested_metric = m
-                            break
-                    if not suggested_metric and metric_cols:
-                        suggested_metric = metric_cols[0]
+                is_ts_capable = len(date_cols) > 0 and len(metric_cols) > 0
+                dataset_type = "Transactional / Time Series" if is_ts_capable else "Dimension / Master Data"
 
-                    candidates.append(
-                        TimeSeriesCandidate(
-                            dataset_id=ds["id"],
-                            dataset_name=ds["filename"],
-                            date_columns=date_cols,
-                            metric_columns=metric_cols,
-                            categorical_columns=cat_cols,
-                            is_derived_olist=False,
-                            suggested_date=suggested_date,
-                            suggested_metric=suggested_metric
-                        )
+                suggested_date = date_cols[0] if date_cols else None
+                suggested_metric = None
+                for m in metric_cols:
+                    if any(k in m.lower() for k in METRIC_KEYWORDS):
+                        suggested_metric = m
+                        break
+                if not suggested_metric and metric_cols:
+                    suggested_metric = metric_cols[0]
+
+                candidates.append(
+                    TimeSeriesCandidate(
+                        dataset_id=ds["id"],
+                        dataset_name=ds["filename"],
+                        date_columns=date_cols,
+                        metric_columns=metric_cols,
+                        categorical_columns=cat_cols,
+                        is_derived_olist=False,
+                        suggested_date=suggested_date,
+                        suggested_metric=suggested_metric,
+                        dataset_type=dataset_type,
+                        is_time_series_capable=is_ts_capable
                     )
+                )
             except Exception as e:
                 logger.error(f"Error inspecting dataset {ds['filename']}: {e}")
 
-        has_valid_ts = len(candidates) > 0
+        has_valid_ts = any(c.is_time_series_capable for c in candidates)
 
         message = None
         if not has_valid_ts:
             message = (
-                "No suitable time-series data was found in this project. "
-                "To run forecasting, your project requires at least one dataset with a date/time column, "
-                "a numeric metric, and sufficient historical observations."
+                "Selected datasets (e.g. product attribute data) do not contain temporal timestamp columns. "
+                "For sales forecasting, please select a transactional dataset or use the auto-joined Olist dataset."
             )
 
         return ProjectSchemaInfoResponse(

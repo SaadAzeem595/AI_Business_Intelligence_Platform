@@ -166,6 +166,8 @@ class TimeSeriesCandidate(BaseModel):
     is_derived_olist: bool = False
     suggested_date: Optional[str] = None
     suggested_metric: Optional[str] = None
+    dataset_type: str = Field("Transactional / Time Series", description="Classification of dataset: 'Transactional / Time Series', 'Dimension / Master Data', 'Reference Data', 'Other'")
+    is_time_series_capable: bool = True
 
 
 class ProjectSchemaInfoResponse(BaseModel):
