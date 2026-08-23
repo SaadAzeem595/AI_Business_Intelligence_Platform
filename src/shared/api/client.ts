@@ -167,7 +167,11 @@ apiClient.interceptors.response.use(
     } else {
       // Response was received with a non-2xx status code
       const detailMsg = responseData?.detail || responseData?.message || responseData?.error;
-      const parsedDetail = typeof detailMsg === "string" ? detailMsg : (detailMsg ? JSON.stringify(detailMsg) : null);
+      const parsedDetail = typeof detailMsg === "string" 
+        ? detailMsg 
+        : (Array.isArray(detailMsg) 
+            ? detailMsg.map((e: any) => e.msg || JSON.stringify(e)).join("; ") 
+            : (detailMsg ? JSON.stringify(detailMsg) : null));
 
       if (status === 422) {
         descriptiveMessage = parsedDetail || `Validation Error (422): Invalid request parameters passed to '${config.url}'.`;

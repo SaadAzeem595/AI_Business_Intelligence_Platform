@@ -5,6 +5,11 @@ import duckdb
 from app.core.database import get_duckdb_conn
 from app.features.analytics.schemas import SQLResponse
 
+# Ensure SQLAlchemy models are loaded in order (User & Project before Dataset)
+from app.features.auth.models import User
+from app.features.projects.models import Project
+from app.features.datasets.models import Dataset
+
 # Import new analytical services
 from app.features.analytics.engine.profiler import DataProfilerService
 from app.features.analytics.engine.quality import DataQualityService
@@ -25,6 +30,8 @@ def register_all_datasets_in_duckdb(conn: duckdb.DuckDBPyConnection, project_id:
     import os
     import logging
     from sqlalchemy import select
+    from app.features.auth.models import User
+    from app.features.projects.models import Project
     from app.features.datasets.models import Dataset
     from app.core.database import AsyncSessionLocal
     from app.features.datasets.router import UPLOADED_PATHS_CACHE

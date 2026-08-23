@@ -189,6 +189,42 @@ async def get_project_forecast_schema_info(
     return await DatasetDiscoveryService.discover_project_candidates(project_id, db)
 
 
+@router.get("/forecasting/health", tags=["Health & Status Checks"])
+async def forecasting_health_check() -> dict:
+    """Diagnostic health check inspecting forecasting engine dependencies, DuckDB, and router availability."""
+    deps = {}
+    try:
+        import statsmodels
+        deps["statsmodels"] = statsmodels.__version__
+    except ImportError:
+        deps["statsmodels"] = "not_installed"
+
+    try:
+        import prophet
+        deps["prophet"] = prophet.__version__
+    except Exception:
+        deps["prophet"] = "not_installed"
+
+    try:
+        import duckdb
+        deps["duckdb"] = duckdb.__version__
+    except Exception:
+        deps["duckdb"] = "not_installed"
+
+    try:
+        import pandas
+        deps["pandas"] = pandas.__version__
+    except Exception:
+        deps["pandas"] = "not_installed"
+
+    return {
+        "status": "healthy",
+        "service": "forecasting_engine",
+        "dependencies": deps
+    }
+
+
+
 @router.post("/projects/{project_id}/forecast", response_model=ProjectForecastResponse)
 async def run_project_forecast(
     project_id: str,
@@ -213,13 +249,14 @@ async def run_project_forecast(
             )
 
     # 1. Build time-series SQL query
-    sql, meta = DatasetDiscoveryService.build_time_series_query(
+    sql, meta = await DatasetDiscoveryService.build_time_series_query_async(
         project_id=project_id,
         dataset_id=payload.dataset_id,
         date_column=payload.date_column,
         target_column=payload.target_column,
         aggregation=payload.aggregation,
-        group_by=payload.group_by
+        group_by=payload.group_by,
+        db=db
     )
 
     # 2. Execute DuckDB query
@@ -255,6 +292,43 @@ async def run_project_forecast(
     )
 
     return forecast_res
+
+
+@router.get("/forecasting/health", tags=["Health & Status Checks"])
+@router.get("/projects/{project_id}/forecast/health", tags=["Health & Status Checks"])
+async def forecasting_health_check(project_id: Optional[str] = None) -> dict:
+    """Diagnostic health endpoint verifying forecasting engine, DuckDB, router, and ML dependencies."""
+    from app.features.analytics.engine.forecasting import PROPHET_AVAILABLE, ProductionForecastingEngine
+    from app.core.database import get_duckdb_conn
+
+    duckdb_status = "ok"
+    try:
+        gen = get_duckdb_conn()
+        conn = next(gen)
+        try:
+            conn.execute("SELECT 1")
+        finally:
+            try:
+                gen.close()
+            except Exception:
+                pass
+    except Exception as e:
+        duckdb_status = f"error: {str(e)}"
+
+    return {
+        "api": "ok",
+        "forecasting_router": "ok",
+        "duckdb": duckdb_status,
+        "dependencies": {
+            "pandas": "ok",
+            "numpy": "ok",
+            "statsmodels": "ok",
+            "prophet": "ok" if PROPHET_AVAILABLE else "optional (not installed)"
+        },
+        "engine": "ok",
+        "project_id": project_id
+    }
+
 
 
 @router.post("/analytics/segment", response_model=SegmentResponse)

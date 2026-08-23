@@ -239,17 +239,19 @@ class DatasetDiscoveryService:
         )
 
     @staticmethod
-    def build_time_series_query(
+    async def build_time_series_query_async(
         project_id: str,
         dataset_id: Optional[str],
         date_column: Optional[str],
         target_column: Optional[str],
         aggregation: str = "monthly",
-        group_by: Optional[str] = None
+        group_by: Optional[str] = None,
+        db: Optional[AsyncSession] = None
     ) -> Tuple[str, Dict[str, Any]]:
         """
         Constructs schema-aware DuckDB SQL query to aggregate project datasets into clean time-series.
         Supports single datasets as well as relational joins (e.g. Olist dataset).
+        Resolves table name dynamically from DB metadata or uploaded cache.
         """
         agg_fmt = "month"
         if aggregation.lower() == "daily":
@@ -278,32 +280,94 @@ class DatasetDiscoveryService:
 
         # Single table query resolution
         from app.features.datasets.router import UPLOADED_PATHS_CACHE
+        from app.features.auth.models import User
+        from app.features.projects.models import Project
+        from app.features.datasets.models import Dataset
+
         table_name = None
         ds_name = "Dataset"
 
-        for d_id, cached in UPLOADED_PATHS_CACHE.items():
-            if str(d_id) == str(dataset_id) or dataset_id is None:
-                table_name = cached.get("duckdb_table") or cached.get("filename", "").split(".")[0]
-                ds_name = cached.get("filename", "Dataset")
-                break
+        if db and dataset_id:
+            stmt = select(Dataset).where(Dataset.id == dataset_id)
+            res = await db.execute(stmt)
+            d_obj = res.scalar_one_or_none()
+            if d_obj:
+                table_name = d_obj.duckdb_table or (d_obj.display_name and d_obj.display_name.split(".")[0]) or (d_obj.filename and d_obj.filename.split(".")[0])
+                ds_name = d_obj.filename
+
+        if db and not table_name:
+            stmt = select(Dataset).where(Dataset.project_id == project_id)
+            res = await db.execute(stmt)
+            d_items = res.scalars().all()
+            if d_items:
+                target_d = next((d for d in d_items if str(d.id) == str(dataset_id)), d_items[0])
+                table_name = target_d.duckdb_table or (target_d.display_name and target_d.display_name.split(".")[0]) or (target_d.filename and target_d.filename.split(".")[0])
+                ds_name = target_d.filename
 
         if not table_name:
-            table_name = "active_dataset"
+            for d_id, cached in UPLOADED_PATHS_CACHE.items():
+                if str(d_id) == str(dataset_id) or (dataset_id is None and cached.get("project_id") == project_id):
+                    table_name = cached.get("duckdb_table") or cached.get("filename", "").split(".")[0]
+                    ds_name = cached.get("filename", "Dataset")
+                    break
+
+        if not table_name and dataset_id:
+            table_name = dataset_id.replace("-", "_").lower()
+
+        if not table_name:
+            table_name = "dataset"
 
         date_col = date_column or "date"
         target_col = target_column or "revenue"
         group_sql = f', "{group_by}"' if group_by else ""
         select_group = f', "{group_by}" AS group_key' if group_by else ""
 
+        clean_table = table_name.strip().lower().replace(" ", "_").replace("-", "_")
+        clean_table = "".join(c for c in clean_table if c.isalnum() or c == "_")
+        if not clean_table:
+            clean_table = "dataset"
+
+        date_expr = f'COALESCE(TRY_CAST("{date_col}" AS TIMESTAMP), TRY_CAST(strptime(CAST("{date_col}" AS VARCHAR), \'%m/%d/%Y\') AS TIMESTAMP), TRY_CAST(strptime(CAST("{date_col}" AS VARCHAR), \'%d/%m/%Y\') AS TIMESTAMP))'
+
         sql = f"""
         SELECT 
-          date_trunc('{agg_fmt}', CAST("{date_col}" AS TIMESTAMP)) AS date_bucket,
+          date_trunc('{agg_fmt}', {date_expr}) AS date_bucket,
           SUM("{target_col}") AS metric_value
           {select_group}
-        FROM "{table_name}"
-        WHERE "{date_col}" IS NOT NULL AND "{target_col}" IS NOT NULL
+        FROM "{clean_table}"
+        WHERE "{date_col}" IS NOT NULL AND "{target_col}" IS NOT NULL AND {date_expr} IS NOT NULL
         GROUP BY 1 {group_sql}
         ORDER BY 1 ASC
         """
 
         return sql, {"dataset_name": ds_name, "date_column": date_col, "target_column": target_col}
+
+    @staticmethod
+    def build_time_series_query(
+        project_id: str,
+        dataset_id: Optional[str],
+        date_column: Optional[str],
+        target_column: Optional[str],
+        aggregation: str = "monthly",
+        group_by: Optional[str] = None
+    ) -> Tuple[str, Dict[str, Any]]:
+        from app.core.cache import run_async_as_sync
+        try:
+            return run_async_as_sync(
+                DatasetDiscoveryService.build_time_series_query_async(
+                    project_id=project_id,
+                    dataset_id=dataset_id,
+                    date_column=date_column,
+                    target_column=target_column,
+                    aggregation=aggregation,
+                    group_by=group_by
+                )
+            )
+        except Exception:
+            agg_fmt = "month" if aggregation.lower() == "monthly" else ("day" if aggregation.lower() == "daily" else "week")
+            tbl = (dataset_id or "dataset").replace("-", "_").lower()
+            date_col = date_column or "date"
+            target_col = target_column or "revenue"
+            sql = f'SELECT date_trunc(\'{agg_fmt}\', CAST("{date_col}" AS TIMESTAMP)) AS date_bucket, SUM("{target_col}") AS metric_value FROM "{tbl}" WHERE "{date_col}" IS NOT NULL GROUP BY 1 ORDER BY 1 ASC'
+            return sql, {"dataset_name": "Dataset", "date_column": date_col, "target_column": target_col}
+

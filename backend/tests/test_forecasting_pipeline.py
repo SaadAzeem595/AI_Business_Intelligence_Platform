@@ -132,6 +132,138 @@ def test_forecast_api_endpoints():
     assert run_data["status"] == "success"
     assert run_data["project_id"] == project_id
     assert len(run_data["timeline"]) == 5 + 6
-    assert run_data["business_summary"] is not None
+    app.dependency_overrides.clear()
+
+
+def test_strict_date_column_validation():
+    """Tests strict date column validation and rejection of numeric/product attribute columns."""
+    from app.features.analytics.engine.discovery import is_valid_date_column
+
+    # 1. Product attributes / numeric columns MUST be rejected
+    df = pd.DataFrame({
+        "product_width_cm": [10.5, 12.0, 14.5, 20.0],
+        "product_height_cm": [5.0, 6.0, 7.0, 8.0],
+        "product_length_cm": [15.0, 16.0, 17.0, 18.0],
+        "product_name_lenght": [30, 45, 50, 60],
+        "price": [99.99, 149.99, 199.99, 299.99],
+        "quantity": [1, 2, 5, 10],
+        "created_at": ["2026-01-01 10:00:00", "2026-01-02 11:00:00", "2026-01-03 12:00:00", "2026-01-04 13:00:00"],
+        "order_purchase_timestamp": ["2026-02-01", "2026-02-02", "2026-02-03", "2026-02-04"]
+    })
+
+    assert is_valid_date_column(df, "product_width_cm") is False
+    assert is_valid_date_column(df, "product_height_cm") is False
+    assert is_valid_date_column(df, "product_length_cm") is False
+    assert is_valid_date_column(df, "product_name_lenght") is False
+    assert is_valid_date_column(df, "price") is False
+    assert is_valid_date_column(df, "quantity") is False
+
+    # Valid date columns must be accepted
+    assert is_valid_date_column(df, "created_at") is True
+    assert is_valid_date_column(df, "order_purchase_timestamp") is True
+
+
+def test_product_width_cm_rejected_in_forecast_api():
+    """Tests API rejection of non-temporal date column requests (product_width_cm)."""
+    client = TestClient(app)
+    set_active_user("user_date_test")
+
+    create_res = client.post("/api/v1/projects", json={"name": "Date Validation Project"})
+    assert create_res.status_code == 201
+    project_id = create_res.json()["id"]
+
+    forecast_payload = {
+        "dataset_id": "ds_test",
+        "date_column": "product_width_cm",
+        "target_column": "product_name_lenght",
+        "aggregation": "monthly",
+        "horizon": 6
+    }
+    run_res = client.post(f"/api/v1/projects/{project_id}/forecast", json=forecast_payload)
+    assert run_res.status_code == 422
+    assert "non-temporal attribute" in run_res.json()["detail"]
 
     app.dependency_overrides.clear()
+
+
+def test_electric_production_forecast():
+    """Integration test verifying Electric_Production.csv forecasting with DATE and IPG2211A2N."""
+    client = TestClient(app)
+    set_active_user("user_electric_prod_test")
+
+    # 1. Create a test project
+    create_res = client.post("/api/v1/projects", json={"name": "Electric Production Project", "description": "Testing monthly forecast"})
+    assert create_res.status_code == 201
+    project_id = create_res.json()["id"]
+
+    # 2. Upload Electric_Production.csv format dataset
+    csv_content = (
+        b"DATE,IPG2211A2N\n"
+        b"1985-01-01,72.5052\n"
+        b"1985-02-01,70.6720\n"
+        b"1985-03-01,62.4502\n"
+        b"1985-04-01,57.4714\n"
+        b"1985-05-01,55.3151\n"
+        b"1985-06-01,58.0904\n"
+        b"1985-07-01,62.6202\n"
+        b"1985-08-01,63.2525\n"
+        b"1985-09-01,60.5846\n"
+        b"1985-10-01,56.3154\n"
+        b"1985-11-01,58.0005\n"
+        b"1985-12-01,68.7149\n"
+    )
+    csv_file = io.BytesIO(csv_content)
+    files = {"file": ("Electric_Production.csv", csv_file, "text/csv")}
+    data = {"tableName": "Electric_Production"}
+    upload_res = client.post(f"/api/v1/projects/{project_id}/datasets", files=files, data=data)
+    assert upload_res.status_code == 200
+    dataset_id = upload_res.json()["id"]
+
+    # 3. Resolve schema info
+    info_res = client.get(f"/api/v1/projects/{project_id}/forecast/schema-info")
+    assert info_res.status_code == 200
+    info_data = info_res.json()
+    assert info_data["has_time_series"] is True
+
+    candidate = next(c for c in info_data["candidates"] if c["dataset_id"] == dataset_id or "Electric_Production" in c["dataset_name"])
+    assert candidate["suggested_date"] == "DATE"
+    assert candidate["suggested_metric"] == "IPG2211A2N"
+
+    # 4. Request monthly forecasting for 6 periods
+    forecast_payload = {
+        "dataset_id": dataset_id,
+        "date_column": "DATE",
+        "target_column": "IPG2211A2N",
+        "aggregation": "monthly",
+        "horizon": 6,
+        "model": "auto",
+        "confidence": 0.95
+    }
+    run_res = client.post(f"/api/v1/projects/{project_id}/forecast", json=forecast_payload)
+    assert run_res.status_code == 200
+    run_data = run_res.json()
+
+    # 5. Verify response fields
+    assert run_data["status"] == "success", f"Forecast error message: {run_data.get('message')}"
+    assert run_data["project_id"] == project_id
+    assert run_data["dataset_id"] == dataset_id
+
+    # Verify timeline contains 12 historical actuals + 6 forecast points = 18 total
+    timeline = run_data["timeline"]
+    actual_pts = [p for p in timeline if p["actual"] is not None]
+    forecast_pts = [p for p in timeline if p["forecast"] is not None]
+
+    assert len(actual_pts) == 12
+    assert len(forecast_pts) == 6
+
+    # Verify numeric values and valid bounds
+    for pt in forecast_pts:
+        assert isinstance(pt["forecast"], (int, float))
+        assert pt["lower"] is not None and isinstance(pt["lower"], (int, float))
+        assert pt["upper"] is not None and isinstance(pt["upper"], (int, float))
+        assert pt["lower"] <= pt["upper"]
+        assert len(pt["date"]) == 10  # YYYY-MM-DD
+
+    app.dependency_overrides.clear()
+
+

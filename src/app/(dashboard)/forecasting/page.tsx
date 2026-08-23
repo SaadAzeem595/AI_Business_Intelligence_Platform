@@ -63,9 +63,22 @@ export default function ForecastingPage() {
   const [groupBy, setGroupBy] = useState<string>("");
   const [modelChoice, setModelChoice] = useState<string>("auto");
   const [confidence, setConfidence] = useState<number>(95);
+  const [loadingStep, setLoadingStep] = useState<string>("Preparing time series...");
 
   // Active forecast query configuration
   const [activeConfig, setActiveConfig] = useState<ProjectForecastRequest | undefined>(undefined);
+
+  useEffect(() => {
+    if (activeConfig) {
+      setLoadingStep("Preparing time series...");
+      const t1 = setTimeout(() => setLoadingStep("Training forecasting model..."), 600);
+      const t2 = setTimeout(() => setLoadingStep("Generating predictions..."), 1400);
+      return () => {
+        clearTimeout(t1);
+        clearTimeout(t2);
+      };
+    }
+  }, [activeConfig]);
 
   // Sync auto-detected candidates into form state
   useEffect(() => {
@@ -173,13 +186,15 @@ export default function ForecastingPage() {
   ];
 
   // Chart data formatting
-  const chartData = forecastResult?.timeline.map(pt => ({
-    date: pt.date,
-    Actual: pt.actual,
-    Forecast: pt.forecast,
-    LowerBound: pt.lower,
-    UpperBound: pt.upper
-  })) || [];
+  const chartData = (forecastResult?.status === "success" && forecastResult?.timeline)
+    ? forecastResult.timeline.map(pt => ({
+        date: pt.date,
+        Actual: pt.actual,
+        Forecast: pt.forecast,
+        LowerBound: pt.lower,
+        UpperBound: pt.upper
+      }))
+    : [];
 
   return (
     <div className="space-y-6">
@@ -410,12 +425,12 @@ export default function ForecastingPage() {
               {/* Action Button */}
               <Button 
                 onClick={handleRunForecast} 
-                disabled={isExecutingForecast || !selectedCandidate?.is_time_series_capable || !dateColumn} 
+                disabled={isExecutingForecast || (selectedCandidate !== undefined && !selectedCandidate.is_time_series_capable) || !dateColumn} 
                 className="w-full mt-2 cursor-pointer font-semibold" 
                 variant="brand" 
                 size="sm"
               >
-                {isExecutingForecast ? "Computing Time-Series..." : "Run Forecast Pipeline"}
+                {isExecutingForecast ? loadingStep : "Run Forecast Pipeline"}
               </Button>
             </CardContent>
           </Card>
