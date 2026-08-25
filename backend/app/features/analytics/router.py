@@ -71,17 +71,97 @@ def get_fallback_dataset_path() -> str:
     return fallback_path
 
 
-def resolve_dataset_path(dataset_id: Optional[str] = None) -> str:
+async def resolve_dataset_path_async(
+    dataset_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+    db: Optional[AsyncSession] = None
+) -> str:
+    """
+    Resolves exact file path for a dataset belonging strictly to project_id or dataset_id.
+    Prevents reading hidden or fallback datasets from another project.
+    """
     from app.features.datasets.router import UPLOADED_PATHS_CACHE
+    from app.features.datasets.models import Dataset
+    from sqlalchemy import select
+
+    # 1. Check UPLOADED_PATHS_CACHE for matching dataset_id & project_id
     if dataset_id and dataset_id in UPLOADED_PATHS_CACHE:
-        return UPLOADED_PATHS_CACHE[dataset_id]["path"]
-    if UPLOADED_PATHS_CACHE:
-        first_id = list(UPLOADED_PATHS_CACHE.keys())[0]
-        return UPLOADED_PATHS_CACHE[first_id]["path"]
+        cached = UPLOADED_PATHS_CACHE[dataset_id]
+        if not project_id or cached.get("project_id") == project_id:
+            path = cached.get("path")
+            if path and os.path.exists(path):
+                return path
+
+    # 2. Check Database for Dataset model matching dataset_id & project_id
+    if dataset_id and db:
+        stmt = select(Dataset).where(Dataset.id == dataset_id)
+        if project_id:
+            stmt = stmt.where(Dataset.project_id == project_id)
+        res = await db.execute(stmt)
+        d_obj = res.scalar_one_or_none()
+        if d_obj and d_obj.storage_path and os.path.exists(d_obj.storage_path):
+            return d_obj.storage_path
+
+    # 3. Check DB by filename or display_name
+    if dataset_id and db:
+        stmt = select(Dataset).where((Dataset.filename == dataset_id) | (Dataset.display_name == dataset_id))
+        if project_id:
+            stmt = stmt.where(Dataset.project_id == project_id)
+        res = await db.execute(stmt)
+        d_obj = res.scalar_one_or_none()
+        if d_obj and d_obj.storage_path and os.path.exists(d_obj.storage_path):
+            return d_obj.storage_path
+
+    # 4. If dataset_id is missing but project_id is provided, search first dataset belonging to project_id
+    if project_id:
+        if db:
+            stmt = select(Dataset).where(Dataset.project_id == project_id)
+            res = await db.execute(stmt)
+            d_objs = res.scalars().all()
+            for d in d_objs:
+                if d.storage_path and os.path.exists(d.storage_path):
+                    return d.storage_path
+
+        for d_id, cached in UPLOADED_PATHS_CACHE.items():
+            if cached.get("project_id") == project_id:
+                path = cached.get("path")
+                if path and os.path.exists(path):
+                    return path
+
+    # 5. Check cache fallback for dataset_id without project constraint
+    if dataset_id and not project_id:
+        for d_id, cached in UPLOADED_PATHS_CACHE.items():
+            if str(d_id) == str(dataset_id) or cached.get("filename") == dataset_id:
+                path = cached.get("path")
+                if path and os.path.exists(path):
+                    return path
+
     raise HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST,
-        detail="No active dataset found. Please upload a dataset to run analytics."
+        detail=f"No dataset found for dataset_id='{dataset_id or ''}' in active project '{project_id or ''}'. Please select or upload a dataset for this project."
     )
+
+
+def resolve_dataset_path(dataset_id: Optional[str] = None) -> str:
+    from app.core.cache import run_async_as_sync
+    try:
+        from app.core.database import AsyncSessionLocal
+        async def _run():
+            async with AsyncSessionLocal() as db:
+                return await resolve_dataset_path_async(dataset_id, db=db)
+        return run_async_as_sync(_run())
+    except Exception:
+        from app.features.datasets.router import UPLOADED_PATHS_CACHE
+        if dataset_id and dataset_id in UPLOADED_PATHS_CACHE:
+            return UPLOADED_PATHS_CACHE[dataset_id]["path"]
+        if UPLOADED_PATHS_CACHE:
+            first_id = list(UPLOADED_PATHS_CACHE.keys())[0]
+            return UPLOADED_PATHS_CACHE[first_id]["path"]
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No active dataset found. Please upload a dataset to run analytics."
+        )
+
 
 
 @router.post("/analytics/forecast", response_model=ForecastResponse)
@@ -304,11 +384,12 @@ async def segment_cohorts(
     payload: SegmentPayload,
     dataset_id: Optional[str] = None,
     current_user: MockUser = Depends(require_role(["Analyst", "Admin"])),
+    db: AsyncSession = Depends(get_db_session),
 ) -> SegmentResponse:
     """Executes dynamic customer (RFM) or generic numerical dataset segmentation."""
     try:
         ds_id = payload.dataset_id or dataset_id
-        dataset_path = resolve_dataset_path(ds_id)
+        dataset_path = await resolve_dataset_path_async(dataset_id=ds_id, project_id=payload.project_id, db=db)
 
         segment_svc = SegmentationService()
         feats = [f.strip() for f in payload.features.split(",")] if (payload.features and isinstance(payload.features, str)) else None
@@ -371,10 +452,12 @@ async def get_project_segment_schema_info(
     current_user: MockUser = Depends(require_role(["Analyst", "Admin"])),
     db: AsyncSession = Depends(get_db_session),
 ) -> Dict[str, Any]:
-    """Inspects project datasets to return available segmentation dataset candidates."""
+    """Inspects project datasets to return available segmentation dataset candidates with auto-detected features and key columns."""
     from app.features.projects.router import get_project_and_verify_access
     from app.features.datasets.models import Dataset
     from app.features.datasets.router import UPLOADED_PATHS_CACHE
+    from app.features.analytics.engine.segmentation import SegmentationService
+    from app.features.analytics.engine.utils import load_dataset
     from sqlalchemy import select
 
     await get_project_and_verify_access(project_id, current_user, db)
@@ -383,20 +466,87 @@ async def get_project_segment_schema_info(
     res = await db.execute(stmt)
     db_datasets = res.scalars().all()
 
-    available = []
+    datasets_info = []
     for d in db_datasets:
-        available.append({"id": str(d.id), "filename": d.filename, "duckdb_table": d.duckdb_table})
+        datasets_info.append({
+            "id": str(d.id),
+            "filename": d.filename,
+            "display_name": d.display_name or d.filename,
+            "duckdb_table": d.duckdb_table,
+            "storage_path": d.storage_path
+        })
 
     for d_id, cached in UPLOADED_PATHS_CACHE.items():
         if cached.get("project_id") == project_id:
-            if not any(x["filename"] == cached.get("filename") for x in available):
-                available.append({"id": str(d_id), "filename": cached.get("filename", "dataset.csv"), "duckdb_table": cached.get("duckdb_table")})
+            if not any(x["id"] == str(d_id) for x in datasets_info):
+                datasets_info.append({
+                    "id": str(d_id),
+                    "filename": cached.get("filename", "dataset.csv"),
+                    "display_name": cached.get("filename", "dataset.csv"),
+                    "duckdb_table": cached.get("duckdb_table"),
+                    "storage_path": cached.get("path")
+                })
+
+    candidates = []
+    seg_svc = SegmentationService()
+
+    for ds in datasets_info:
+        path = ds.get("storage_path")
+        if not path or not os.path.exists(path):
+            continue
+        try:
+            df = load_dataset(path)
+            if df.empty:
+                continue
+
+            entity_key = seg_svc.detect_entity_key(df)
+            trans_info = seg_svc.detect_transactional_columns(df)
+
+            entity_key_options = []
+            if entity_key:
+                entity_key_options.append(entity_key)
+            for col in df.columns:
+                c_lower = str(col).lower()
+                if (c_lower.endswith("_id") or c_lower.endswith("_key") or "user" in c_lower or "customer" in c_lower or "client" in c_lower) and col not in entity_key_options:
+                    entity_key_options.append(str(col))
+
+            numeric_cols = [str(c) for c in df.select_dtypes(include=[np.number]).columns]
+            suggested_features = [
+                c for c in numeric_cols
+                if not any(x in str(c).lower() for x in ["id", "key", "index", "zip", "code", "phone"])
+                and df[c].nunique() > 1
+            ]
+            if not suggested_features:
+                suggested_features = numeric_cols
+
+            cat_cols = [str(c) for c in df.select_dtypes(include=['object', 'category']).columns if df[c].nunique() < 100]
+
+            is_rfm = bool(entity_key and trans_info.get("date_col") and trans_info.get("monetary_col"))
+            suggested_mode = "rfm" if is_rfm else "numerical"
+
+            candidates.append({
+                "dataset_id": ds["id"],
+                "dataset_name": ds["display_name"],
+                "filename": ds["filename"],
+                "entity_key": entity_key,
+                "available_entity_keys": entity_key_options,
+                "numerical_features": numeric_cols,
+                "categorical_features": cat_cols,
+                "suggested_features": suggested_features,
+                "suggested_mode": suggested_mode,
+                "is_rfm_capable": is_rfm
+            })
+        except Exception as e:
+            pass
+
+    has_candidates = len(candidates) > 0
+    message = None if has_candidates else "No valid datasets found in this project for segmentation. Upload a CSV or Excel dataset to begin."
 
     return {
         "project_id": project_id,
-        "dataset_count": len(available),
-        "datasets": available,
-        "suggested_mode": "auto"
+        "dataset_count": len(candidates),
+        "candidates": candidates,
+        "message": message
     }
 
 
@@ -413,12 +563,13 @@ async def run_project_segmentation(
         await get_project_and_verify_access(project_id, current_user, db)
 
         payload.project_id = project_id
-        return await segment_cohorts(payload=payload, dataset_id=payload.dataset_id, current_user=current_user)
+        return await segment_cohorts(payload=payload, dataset_id=payload.dataset_id, current_user=current_user, db=db)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         )
+
 
 
 @router.post("/analytics/anomalies", response_model=AnomalyResponse)

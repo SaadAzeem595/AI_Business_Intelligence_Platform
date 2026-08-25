@@ -74,6 +74,24 @@ export function useForecast(model?: string, confidence?: number, periods?: numbe
   };
 }
 
+export function useSegmentSchemaInfo(projectId?: string) {
+  const query = useQuery({
+    queryKey: ["analytics", "segment-schema-info", projectId],
+    queryFn: () => AnalyticsService.getProjectSegmentSchemaInfo(projectId!),
+    enabled: !!projectId,
+    staleTime: 30 * 1000,
+  });
+
+  return {
+    candidates: query.data?.candidates || [],
+    datasetCount: query.data?.dataset_count || 0,
+    message: query.data?.message || null,
+    isLoading: query.isLoading,
+    isError: query.isError,
+    refetch: query.refetch,
+  };
+}
+
 export function useSegmentation(
   clusters?: number,
   features?: string,
@@ -85,10 +103,11 @@ export function useSegmentation(
   const query = useQuery({
     queryKey: ["analytics", "segmentation", clusters, features, datasetId, projectId, mode, entityKey],
     queryFn: () => AnalyticsService.getSegmentation(clusters, features, datasetId, projectId, mode, entityKey),
-    enabled: clusters !== undefined,
+    enabled: clusters !== undefined && (projectId ? !!datasetId : true),
     staleTime: 5 * 60 * 1000,
     retry: 1,
   });
+
 
   return {
     segmentResult: query.data || null,

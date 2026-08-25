@@ -561,36 +561,77 @@ class SegmentationService:
         means: Dict[str, float],
         global_means: Dict[str, float]
     ) -> Tuple[str, str, str, str, str, str]:
-        """Generates dynamic business names and recommendations for generic numerical feature clusters."""
+        """Generates dynamic, business-readable names and recommendations for numerical feature clusters."""
         if cid == -1:
-            return "Noise / Outliers", "Data points differing significantly from main clusters.", "Inspect individual data entries.", "High", "N/A", "0/100"
+            return "Outlier & Noise Cohort", "Entities with irregular or extreme data points differing significantly from primary clusters.", "Inspect individual row anomalies and audit data quality.", "High", "N/A", "0/100"
 
-        desc_parts = []
-        if high_feats:
-            desc_parts.append(f"High {', '.join(high_feats[:2])}")
-        if low_feats:
-            desc_parts.append(f"Low {', '.join(low_feats[:2])}")
+        # Friendly column label mapping dictionary
+        COLUMN_BUSINESS_NAMES = {
+            "price": "Unit Price & Spend",
+            "payment_value": "Order Payment Value",
+            "revenue": "Revenue Volume",
+            "spend": "Total Spend",
+            "monetary": "Monetary Value",
+            "amount": "Transaction Amount",
+            "total": "Total Financial Value",
+            "cost": "Operating Cost",
+            "freight_value": "Logistics & Freight Cost",
+            "product_weight_g": "Product Basket Weight",
+            "weight": "Item Mass / Weight",
+            "frequency": "Purchase Frequency",
+            "order_count": "Transaction Count",
+            "conversions": "Conversions",
+            "visitors": "Traffic Visitors",
+            "recency": "Days Since Last Active",
+            "profit": "Net Profit Margin",
+            "sales_volume": "Sales Volume",
+            "feature_x": "Primary Trait Index",
+            "feature_y": "Secondary Trait Index",
+        }
 
-        if desc_parts:
-            name = " & ".join(desc_parts) + f" Cohort"
-            desc = f"Segment characterized by " + " and ".join(desc_parts) + "."
+        def clean_label(feat: str) -> str:
+            f_lower = str(feat).lower().strip()
+            if f_lower in COLUMN_BUSINESS_NAMES:
+                return COLUMN_BUSINESS_NAMES[f_lower]
+            return feat.replace("_", " ").title()
+
+        high_labels = [clean_label(f) for f in high_feats]
+        low_labels = [clean_label(f) for f in low_feats]
+
+        if high_labels and not low_labels:
+            if any(k in " ".join(high_labels).lower() for k in ["price", "revenue", "spend", "value", "amount", "monetary"]):
+                name = f"High-Value VIP Performers ({high_labels[0]})"
+            elif any(k in " ".join(high_labels).lower() for k in ["frequency", "volume", "count", "conversions"]):
+                name = f"High-Volume Active Segment"
+            else:
+                name = f"Top Performing Cohort ({high_labels[0]})"
+            desc = f"Demonstrates significantly elevated metrics in {', '.join(high_labels[:2])}, outperforming global dataset averages."
+            rec = "Capitalize on strong feature performance by offering premium incentives, targeted expansion, and high-tier perks."
+            risk = "Low"
+        elif low_labels and not high_labels:
+            if any(k in " ".join(low_labels).lower() for k in ["price", "revenue", "spend", "value"]):
+                name = f"Budget / Low-Spend Tier"
+            elif any(k in " ".join(low_labels).lower() for k in ["frequency", "volume", "visitors"]):
+                name = f"Low-Activity / Idle Cohort"
+            else:
+                name = f"Low-Yield Segment ({low_labels[0]})"
+            desc = f"Exhibits lower-than-average performance in {', '.join(low_labels[:2])}, indicating underutilized capacity."
+            rec = "Implement targeted re-engagement campaigns, promotional bundling, or address underlying operational bottlenecks."
+            risk = "High"
+        elif high_labels and low_labels:
+            name = f"High {high_labels[0]} & Low {low_labels[0]} Cohort"
+            desc = f"Characterized by strong {high_labels[0]} coupled with lower {low_labels[0]} levels."
+            rec = "Optimize feature balance by boosting underperforming dimensions while maintaining core operational strengths."
+            risk = "Medium"
         else:
-            name = f"Average Performer Cohort {cid}"
-            desc = f"Cohort {cid} with metrics near global dataset average."
+            name = f"Core Standard Cohort (Cluster {cid + 1})"
+            desc = f"Exhibits steady operational metrics aligning closely with baseline dataset averages."
+            rec = "Maintain standard automated workflows and monitor for performance migration over time."
+            risk = "Medium"
 
-        # Compute spend string from first monetary-like feature if available
         first_feat_val = list(means.values())[0] if means else 0.0
         avg_spend_str = f"${first_feat_val:,.0f}" if first_feat_val > 10 else f"{first_feat_val:.1f}"
         freq_score_str = f"{min(100, int(pct))}/100"
 
-        if high_feats and not low_feats:
-            rec = "Capitalize on high feature performance with scaling investments."
-            risk = "Low"
-        elif low_feats and not high_feats:
-            rec = "Address underlying operational bottlenecks causing low metric values."
-            risk = "High"
-        else:
-            rec = "Monitor cohort performance stability and optimize key metric ratios."
-            risk = "Medium"
-
         return name, desc, rec, risk, avg_spend_str, freq_score_str
+

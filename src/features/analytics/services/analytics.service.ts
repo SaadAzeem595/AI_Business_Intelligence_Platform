@@ -36,6 +36,11 @@ export const AnalyticsService = {
     return response.data;
   },
 
+  async getProjectSegmentSchemaInfo(projectId: string): Promise<any> {
+    const response = await apiClient.get<any>(`/projects/${projectId}/segment/schema-info`);
+    return response.data;
+  },
+
   async getSegmentation(
     clusters?: number,
     features?: string,
@@ -55,6 +60,7 @@ export const AnalyticsService = {
     });
     return response.data;
   },
+
 
   async getAnomalies(sensitivity: number): Promise<AnomaliesResult> {
     try {
