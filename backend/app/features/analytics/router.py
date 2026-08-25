@@ -408,11 +408,12 @@ async def run_project_segmentation(
     db: AsyncSession = Depends(get_db_session),
 ) -> SegmentResponse:
     """Executes dataset-aware segmentation on project datasets."""
-    from app.features.projects.router import get_project_and_verify_access
-    await get_project_and_verify_access(project_id, current_user, db)
+    try:
+        from app.features.projects.router import get_project_and_verify_access
+        await get_project_and_verify_access(project_id, current_user, db)
 
-    payload.project_id = project_id
-    return await segment_cohorts(payload=payload, dataset_id=payload.dataset_id, current_user=current_user)
+        payload.project_id = project_id
+        return await segment_cohorts(payload=payload, dataset_id=payload.dataset_id, current_user=current_user)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
