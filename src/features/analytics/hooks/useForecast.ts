@@ -4,6 +4,23 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnalyticsService } from "../services/analytics.service";
 import { ProjectForecastRequest } from "@/shared/types/analytics";
 
+export function useForecastingHealth(projectId?: string) {
+  const query = useQuery({
+    queryKey: ["analytics", "forecasting-health", projectId],
+    queryFn: () => AnalyticsService.checkForecastingHealth(projectId),
+    staleTime: 60 * 1000,
+    retry: 1,
+  });
+
+  return {
+    isHealthy: query.isSuccess && query.data?.api === "ok",
+    healthData: query.data || null,
+    isLoading: query.isLoading,
+    isError: query.isError,
+    error: query.error as any,
+  };
+}
+
 export function useForecastSchemaInfo(projectId?: string) {
   const query = useQuery({
     queryKey: ["analytics", "forecast-schema-info", projectId],
@@ -26,7 +43,7 @@ export function useProjectForecast(projectId?: string, config?: ProjectForecastR
   const query = useQuery({
     queryKey: ["analytics", "project-forecast", projectId, config],
     queryFn: () => AnalyticsService.runProjectForecast(projectId!, config || {}),
-    enabled: !!projectId && !!config,
+    enabled: !!projectId && !!config && !!config.dataset_id && !!config.date_column && !!config.target_column,
     staleTime: 5 * 60 * 1000,
     retry: false,
   });
@@ -57,18 +74,35 @@ export function useForecast(model?: string, confidence?: number, periods?: numbe
   };
 }
 
-export function useSegmentation(clusters?: number, features?: string) {
+export function useSegmentation(
+  clusters?: number,
+  features?: string,
+  datasetId?: string,
+  projectId?: string,
+  mode?: string,
+  entityKey?: string
+) {
   const query = useQuery({
-    queryKey: ["analytics", "segmentation", clusters, features],
-    queryFn: () => AnalyticsService.getSegmentation(clusters!, features!),
-    enabled: clusters !== undefined && !!features,
+    queryKey: ["analytics", "segmentation", clusters, features, datasetId, projectId, mode, entityKey],
+    queryFn: () => AnalyticsService.getSegmentation(clusters, features, datasetId, projectId, mode, entityKey),
+    enabled: clusters !== undefined,
     staleTime: 5 * 60 * 1000,
+    retry: 1,
   });
 
   return {
+    segmentResult: query.data || null,
     scatterData: query.data?.scatter || [],
     cohorts: query.data?.cohorts || [],
+    evaluation: query.data?.evaluation || null,
+    profiles: query.data?.profiles || [],
+    featuresUsed: query.data?.features_used || [],
+    datasetType: query.data?.dataset_type || null,
+    entityKey: query.data?.entity_key || null,
+    message: query.data?.message || null,
     isLoading: query.isLoading,
+    isError: query.isError,
+    error: query.error as any,
     refetch: query.refetch,
   };
 }

@@ -29,26 +29,33 @@ STRICT_DATE_REGEX = re.compile(r'\b(date|time|timestamp|datetime|created_at|upda
 def is_valid_date_column(df: pd.DataFrame, col_name: str) -> bool:
     """
     Strictly validates if a column is temporal.
-    - Rejects numeric columns (float, int, DOUBLE, DECIMAL) immediately.
+    - Rejects numeric columns (float, int, DOUBLE, DECIMAL) unless column name explicitly indicates date/time and values fall into Excel serial or Unix timestamp range.
     - Rejects columns matching explicit non-date attribute keywords (width, height, price, cm, etc.).
     - Rejects string columns whose non-null samples are numeric values (e.g. "25", "25.0").
-    - Validates datetime parse rate >= 80% on non-null samples with >= 3 distinct dates in reasonable year bounds (1970 - 2100).
+    - Validates datetime parse rate >= 80% on non-null samples with >= 3 distinct dates in reasonable year bounds (1900 - 2100).
     """
     col_str = str(col_name)
     col_lower = col_str.lower()
     series = df[col_str]
 
-    # Rule 1: Numeric columns MUST NEVER automatically become date columns!
-    if pd.api.types.is_numeric_dtype(series):
-        return False
-
-    # Rule 2: Reject explicit non-date attribute keywords (e.g. product_width_cm, price, quantity, size)
+    # Rule 1: Reject explicit non-date attribute keywords (e.g. product_width_cm, price, quantity, size)
     if any(kw in col_lower for kw in EXPLICIT_NON_DATE_KEYWORDS):
         return False
 
-    # Rule 3: Datetime dtype is inherently date
+    # Rule 2: Datetime dtype is inherently date
     if pd.api.types.is_datetime64_any_dtype(series):
         return True
+
+    # Rule 3: Numeric columns check
+    if pd.api.types.is_numeric_dtype(series):
+        # Allow numeric only if column name strongly suggests date/timestamp AND values fall in Excel date serial (30000..60000) or Unix timestamp (1e9..2e9)
+        if STRICT_DATE_REGEX.search(col_lower):
+            non_null = series.dropna()
+            if len(non_null) > 0:
+                vals = non_null.head(30)
+                if ((vals >= 30000) & (vals <= 60000)).all() or ((vals >= 1e9) & (vals <= 2e9)).all():
+                    return True
+        return False
 
     # Rule 4: String / object validation
     if series.dtype == 'object' or isinstance(series.dtype, pd.StringDtype):
@@ -68,28 +75,27 @@ def is_valid_date_column(df: pd.DataFrame, col_name: str) -> bool:
         if is_all_numeric_strings:
             return False
 
+        # Attempt datetime parsing with multiple strategies (standard, format='mixed', dayfirst)
+        parsed = None
         try:
-            parsed = pd.to_datetime(sample, errors='coerce')
-            valid_parsed = parsed.dropna()
-            
-            # Require at least 80% of sample to parse cleanly as datetime
-            if len(valid_parsed) / len(sample) < 0.8:
-                return False
-
-            # Require at least 3 distinct dates
-            if valid_parsed.nunique() < 3:
-                return False
-
-            # Validate reasonable year bounds (1970 - 2100)
-            years = valid_parsed.dt.year
-            if (years < 1970).any() or (years > 2100).any():
-                return False
-
-            # Additional check: Column name should match date indicator or pass 100% sample parse
-            if STRICT_DATE_REGEX.search(col_lower) or len(valid_parsed) == len(sample):
-                return True
+            parsed = pd.to_datetime(sample, errors='coerce', format='mixed')
         except Exception:
-            return False
+            try:
+                parsed = pd.to_datetime(sample, errors='coerce')
+            except Exception:
+                try:
+                    parsed = pd.to_datetime(sample, errors='coerce', dayfirst=True)
+                except Exception:
+                    pass
+
+        if parsed is not None:
+            valid_parsed = parsed.dropna()
+            if len(valid_parsed) / len(sample) >= 0.8:
+                if valid_parsed.nunique() >= 3:
+                    years = valid_parsed.dt.year
+                    if not ((years < 1900).any() or (years > 2100).any()):
+                        if STRICT_DATE_REGEX.search(col_lower) or len(valid_parsed) == len(sample):
+                            return True
 
     return False
 
@@ -327,7 +333,17 @@ class DatasetDiscoveryService:
         if not clean_table:
             clean_table = "dataset"
 
-        date_expr = f'COALESCE(TRY_CAST("{date_col}" AS TIMESTAMP), TRY_CAST(strptime(CAST("{date_col}" AS VARCHAR), \'%m/%d/%Y\') AS TIMESTAMP), TRY_CAST(strptime(CAST("{date_col}" AS VARCHAR), \'%d/%m/%Y\') AS TIMESTAMP))'
+        date_expr = (
+            f'COALESCE('
+            f'TRY_CAST("{date_col}" AS TIMESTAMP), '
+            f'TRY_CAST(strptime(CAST("{date_col}" AS VARCHAR), \'%Y-%m-%d\') AS TIMESTAMP), '
+            f'TRY_CAST(strptime(CAST("{date_col}" AS VARCHAR), \'%m/%d/%Y\') AS TIMESTAMP), '
+            f'TRY_CAST(strptime(CAST("{date_col}" AS VARCHAR), \'%d/%m/%Y\') AS TIMESTAMP), '
+            f'TRY_CAST(strptime(CAST("{date_col}" AS VARCHAR), \'%Y/%m/%d\') AS TIMESTAMP), '
+            f'TRY_CAST(to_timestamp((TRY_CAST("{date_col}" AS DOUBLE) - 25569) * 86400) AS TIMESTAMP), '
+            f'TRY_CAST(to_timestamp(TRY_CAST("{date_col}" AS DOUBLE)) AS TIMESTAMP)'
+            f')'
+        )
 
         sql = f"""
         SELECT 

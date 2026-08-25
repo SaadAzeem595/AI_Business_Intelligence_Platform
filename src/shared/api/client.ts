@@ -173,20 +173,22 @@ apiClient.interceptors.response.use(
             ? detailMsg.map((e: any) => e.msg || JSON.stringify(e)).join("; ") 
             : (detailMsg ? JSON.stringify(detailMsg) : null));
 
-      if (status === 422) {
-        descriptiveMessage = parsedDetail || `Validation Error (422): Invalid request parameters passed to '${config.url}'.`;
+      if (parsedDetail) {
+        descriptiveMessage = parsedDetail;
+      } else if (status === 422) {
+        descriptiveMessage = `Validation Error (422): Invalid request parameters passed to '${config.url}'.`;
       } else if (status === 400) {
-        descriptiveMessage = parsedDetail || `Bad Request (400): ${JSON.stringify(responseData)}`;
+        descriptiveMessage = `Bad Request (400): ${JSON.stringify(responseData)}`;
       } else if (status === 404) {
-        descriptiveMessage = parsedDetail || `Endpoint Not Found (404): The requested path '${config.url}' does not exist on the server.`;
+        descriptiveMessage = `Endpoint Not Found (404): The requested path '${config.url}' does not exist on the server.`;
       } else if (status === 500) {
-        descriptiveMessage = parsedDetail || `Internal Server Error (500): The server encountered an error while processing the request.`;
+        descriptiveMessage = `Internal Server Error (500): The server encountered an error while processing the request.`;
       } else if (status === 403) {
-        descriptiveMessage = parsedDetail || "Forbidden (403): You do not have permission to access this resource.";
+        descriptiveMessage = "Forbidden (403): You do not have permission to access this resource.";
       } else if (status === 401) {
-        descriptiveMessage = parsedDetail || "Unauthorized (401): Please log in to complete this action.";
+        descriptiveMessage = "Unauthorized (401): Please log in to complete this action.";
       } else {
-        descriptiveMessage = `Server Error (${status}): ${parsedDetail || JSON.stringify(responseData)}`;
+        descriptiveMessage = `Server Error (${status}): ${JSON.stringify(responseData)}`;
       }
     }
 

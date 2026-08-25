@@ -81,17 +81,22 @@ export function BaseChart({
               }}
             />
             <Legend verticalAlign="top" height={36} iconType="circle" iconSize={8} />
-            {yKeys.map((key, index) => (
-              <Line
-                key={key}
-                type="monotone"
-                dataKey={key}
-                stroke={colors[index % colors.length]}
-                strokeWidth={2.5}
-                dot={{ r: 4, strokeWidth: 1.5 }}
-                activeDot={{ r: 6, strokeWidth: 0 }}
-              />
-            ))}
+            {yKeys.map((key, index) => {
+              const isBound = key.toLowerCase().includes("bound") || key.toLowerCase().includes("lower") || key.toLowerCase().includes("upper");
+              return (
+                <Line
+                  key={key}
+                  type="monotone"
+                  dataKey={key}
+                  connectNulls={true}
+                  stroke={colors[index % colors.length]}
+                  strokeWidth={isBound ? 1.5 : 2.5}
+                  strokeDasharray={isBound ? "3 3" : undefined}
+                  dot={isBound ? false : { r: 3, strokeWidth: 1.5 }}
+                  activeDot={isBound ? false : { r: 5, strokeWidth: 0 }}
+                />
+              );
+            })}
           </LineChart>
         );
       case "bar":

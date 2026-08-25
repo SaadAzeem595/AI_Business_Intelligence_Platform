@@ -10,7 +10,8 @@ import { useUIStore } from "@/shared/services/uiStore";
 import { useProjects } from "@/features/projects/hooks/useProjects";
 import { 
   useForecastSchemaInfo, 
-  useProjectForecast 
+  useProjectForecast,
+  useForecastingHealth
 } from "@/features/analytics/hooks/useForecast";
 import { 
   ProjectForecastRequest, 
@@ -45,6 +46,9 @@ export default function ForecastingPage() {
       setActiveProject(projects[0].id);
     }
   }, [activeProject, projects, setActiveProject]);
+
+  // Backend Health Probe
+  const { isHealthy, error: healthError } = useForecastingHealth(activeProject);
 
   // Schema Discovery Hook
   const { 
@@ -83,27 +87,30 @@ export default function ForecastingPage() {
   // Sync auto-detected candidates into form state
   useEffect(() => {
     if (candidates && candidates.length > 0) {
-      const activeCandidate = candidates.find(c => c.dataset_id === selectedCandidateId) || candidates[0];
+      const activeCandidate = candidates.find(c => c.dataset_id === selectedCandidateId) || candidates.find(c => c.is_time_series_capable) || candidates[0];
       setSelectedCandidateId(activeCandidate.dataset_id);
-      setDateColumn(activeCandidate.suggested_date || activeCandidate.date_columns[0] || "");
-      setTargetMetric(activeCandidate.suggested_metric || activeCandidate.metric_columns[0] || "");
+      const dCol = activeCandidate.suggested_date || activeCandidate.date_columns[0] || "";
+      const mCol = activeCandidate.suggested_metric || activeCandidate.metric_columns[0] || "";
+      setDateColumn(dCol);
+      setTargetMetric(mCol);
       if (activeCandidate.categorical_columns.length > 0) {
         setGroupBy(activeCandidate.categorical_columns[0]);
       } else {
         setGroupBy("");
       }
 
-      // Automatically trigger initial forecast
-      setActiveConfig({
-        dataset_id: activeCandidate.dataset_id,
-        date_column: activeCandidate.suggested_date || activeCandidate.date_columns[0] || "",
-        target_column: activeCandidate.suggested_metric || activeCandidate.metric_columns[0] || "",
-        aggregation: "monthly",
-        horizon: 6,
-        group_by: undefined,
-        model: "auto",
-        confidence: 0.95
-      });
+      if (dCol && mCol && activeCandidate.is_time_series_capable) {
+        setActiveConfig({
+          dataset_id: activeCandidate.dataset_id,
+          date_column: dCol,
+          target_column: mCol,
+          aggregation: "monthly",
+          horizon: 6,
+          group_by: undefined,
+          model: "auto",
+          confidence: 0.95
+        });
+      }
     }
   }, [candidates]);
 
@@ -114,6 +121,11 @@ export default function ForecastingPage() {
     if (cand) {
       setDateColumn(cand.suggested_date || cand.date_columns[0] || "");
       setTargetMetric(cand.suggested_metric || cand.metric_columns[0] || "");
+      if (cand.categorical_columns.length > 0) {
+        setGroupBy(cand.categorical_columns[0]);
+      } else {
+        setGroupBy("");
+      }
     }
   };
 
@@ -126,18 +138,7 @@ export default function ForecastingPage() {
   } = useProjectForecast(activeProject, activeConfig);
 
   const handleRunForecast = () => {
-    if (process.env.NODE_ENV === "development") {
-      console.log("[Forecast request]", {
-        project_id: activeProject,
-        dataset_id: selectedCandidateId,
-        date_column: dateColumn,
-        target_column: targetMetric,
-        aggregation,
-        horizon,
-        model: modelChoice,
-        confidence: confidence / 100.0,
-      });
-    }
+    if (!selectedCandidateId || !dateColumn || !targetMetric) return;
     setActiveConfig({
       dataset_id: selectedCandidateId,
       date_column: dateColumn,
@@ -185,15 +186,23 @@ export default function ForecastingPage() {
     },
   ];
 
-  // Chart data formatting
+  // Chart data formatting: bridge historical actuals with forecast curve
   const chartData = (forecastResult?.status === "success" && forecastResult?.timeline)
-    ? forecastResult.timeline.map(pt => ({
-        date: pt.date,
-        Actual: pt.actual,
-        Forecast: pt.forecast,
-        LowerBound: pt.lower,
-        UpperBound: pt.upper
-      }))
+    ? (() => {
+        const rawTimeline = forecastResult.timeline;
+        const lastActualIndex = rawTimeline.reduce((lastIdx, pt, idx) => pt.actual !== null && pt.actual !== undefined ? idx : lastIdx, -1);
+        
+        return rawTimeline.map((pt, idx) => {
+          const isBridgePoint = idx === lastActualIndex && idx + 1 < rawTimeline.length && rawTimeline[idx + 1].forecast !== null;
+          return {
+            date: pt.date,
+            Actual: pt.actual,
+            Forecast: pt.forecast !== null && pt.forecast !== undefined ? pt.forecast : (isBridgePoint ? pt.actual : undefined),
+            LowerBound: pt.lower !== null && pt.lower !== undefined ? pt.lower : (isBridgePoint ? pt.actual : undefined),
+            UpperBound: pt.upper !== null && pt.upper !== undefined ? pt.upper : (isBridgePoint ? pt.actual : undefined),
+          };
+        });
+      })()
     : [];
 
   return (
@@ -530,6 +539,10 @@ export default function ForecastingPage() {
                     <span className="h-2.5 w-2.5 rounded-full bg-emerald-500" />
                     <span>Forecast</span>
                   </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="h-2.5 w-2.5 rounded-full border border-dashed border-emerald-400 bg-emerald-500/20" />
+                    <span>Confidence Bounds</span>
+                  </div>
                 </div>
               </CardHeader>
               <CardContent className="pt-4">
@@ -537,8 +550,8 @@ export default function ForecastingPage() {
                   type="line"
                   data={chartData}
                   xKey="date"
-                  yKeys={["Actual", "Forecast"]}
-                  colors={["var(--color-brand-indigo)", "#10b981"]}
+                  yKeys={["Actual", "Forecast", "LowerBound", "UpperBound"]}
+                  colors={["var(--color-brand-indigo)", "#10b981", "#6ee7b7", "#6ee7b7"]}
                 />
               </CardContent>
             </Card>

@@ -11,6 +11,12 @@ import {
 } from "@/shared/types/analytics";
 
 export const AnalyticsService = {
+  async checkForecastingHealth(projectId?: string): Promise<any> {
+    const url = projectId ? `/projects/${projectId}/forecast/health` : `/forecasting/health`;
+    const response = await apiClient.get<any>(url);
+    return response.data;
+  },
+
   async getProjectForecastSchemaInfo(projectId: string): Promise<ProjectSchemaInfoResponse> {
     const response = await apiClient.get<ProjectSchemaInfoResponse>(`/projects/${projectId}/forecast/schema-info`);
     return response.data;
@@ -30,32 +36,24 @@ export const AnalyticsService = {
     return response.data;
   },
 
-  async getSegmentation(clusters: number, features: string): Promise<SegmentationResult> {
-    try {
-      const response = await apiClient.post<SegmentationResult>(API_ENDPOINTS.ANALYTICS.SEGMENT, {
-        clusters,
-        features,
-      });
-      return response.data;
-    } catch {
-      return {
-        scatter: [
-          { name: "John", x: 85, y: 92, cluster: "Champions" },
-          { name: "Sarah", x: 78, y: 88, cluster: "Champions" },
-          { name: "Acme LLC", x: 92, y: 95, cluster: "Champions" },
-          { name: "David", x: 42, y: 55, cluster: "Loyal" },
-          { name: "Emily", x: 38, y: 62, cluster: "Loyal" },
-          { name: "Mike", x: 12, y: 22, cluster: "At-Risk" },
-          { name: "Jessica", x: 15, y: 18, cluster: "At-Risk" },
-        ],
-        cohorts: [
-          { name: "Champions (High Spend, High Recency)", count: 420, avgSpent: "$4,850", freqScore: "94/100", riskRating: "Low" },
-          { name: "Loyal Customers (Average Spend)", count: 1850, avgSpent: "$1,280", freqScore: "62/100", riskRating: "Low" },
-          { name: "At-Risk Core (High Spend, Idle)", count: 280, avgSpent: "$3,120", freqScore: "18/100", riskRating: "High" },
-          { name: "Snoozing (Low engagement)", count: 3200, avgSpent: "$140", freqScore: "8/100", riskRating: "Medium" },
-        ],
-      };
-    }
+  async getSegmentation(
+    clusters?: number,
+    features?: string,
+    datasetId?: string,
+    projectId?: string,
+    mode?: string,
+    entityKey?: string
+  ): Promise<SegmentationResult> {
+    const endpoint = projectId ? `/projects/${projectId}/segment` : API_ENDPOINTS.ANALYTICS.SEGMENT;
+    const response = await apiClient.post<SegmentationResult>(endpoint, {
+      clusters,
+      features,
+      dataset_id: datasetId,
+      project_id: projectId,
+      mode: mode || "auto",
+      entity_key: entityKey,
+    });
+    return response.data;
   },
 
   async getAnomalies(sensitivity: number): Promise<AnomaliesResult> {

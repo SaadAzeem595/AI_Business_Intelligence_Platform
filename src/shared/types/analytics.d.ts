@@ -108,9 +108,35 @@ export interface CohortSegment {
   riskRating: "Low" | "Medium" | "High";
 }
 
+export interface ClusterEvaluation {
+  optimal_k: number;
+  selected_k: number;
+  silhouette_score: number;
+  davies_bouldin_index: number;
+  calinski_harabasz_index: number;
+  metrics_by_k?: Record<number, { silhouette_score: number; davies_bouldin_index: number; calinski_harabasz_index: number }>;
+}
+
+export interface SegmentProfile {
+  cluster_id: number;
+  name: string;
+  size: number;
+  percentage: number;
+  characteristics: string;
+  recommendation: string;
+  risk_rating: "Low" | "Medium" | "High";
+  feature_means?: Record<string, number>;
+}
+
 export interface SegmentationResult {
-  scatter: { x: number; y: number; cluster: string; name: string }[];
+  scatter: { x: number; y: number; cluster: string; name: string; details?: Record<string, number> }[];
   cohorts: CohortSegment[];
+  evaluation?: ClusterEvaluation;
+  profiles?: SegmentProfile[];
+  features_used?: string[];
+  dataset_type?: string;
+  entity_key?: string | null;
+  message?: string | null;
 }
 
 export interface AnomalyLog {

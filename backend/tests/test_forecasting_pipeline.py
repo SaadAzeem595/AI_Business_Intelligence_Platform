@@ -267,3 +267,57 @@ def test_electric_production_forecast():
     app.dependency_overrides.clear()
 
 
+def test_multi_date_format_and_excel_date_detection():
+    """Tests date column validation and safe parsing across DD/MM/YYYY, MM/DD/YYYY, YYYY/MM/DD, and Excel dates."""
+    from app.features.analytics.engine.discovery import is_valid_date_column
+    from app.features.analytics.engine.forecasting import safe_parse_datetime_series
+
+    # 1. DD/MM/YYYY strings
+    df_dd_mm = pd.DataFrame({
+        "transaction_date": ["15/01/2026", "16/01/2026", "17/01/2026", "18/01/2026"],
+        "sales": [100, 200, 300, 400]
+    })
+    assert is_valid_date_column(df_dd_mm, "transaction_date") is True
+    parsed = safe_parse_datetime_series(df_dd_mm["transaction_date"])
+    assert parsed.isna().sum() == 0
+
+    # 2. MM/DD/YYYY strings
+    df_mm_dd = pd.DataFrame({
+        "order_date": ["01/15/2026", "01/16/2026", "01/17/2026", "01/18/2026"],
+        "sales": [100, 200, 300, 400]
+    })
+    assert is_valid_date_column(df_mm_dd, "order_date") is True
+    parsed_mm = safe_parse_datetime_series(df_mm_dd["order_date"])
+    assert parsed_mm.isna().sum() == 0
+
+    # 3. Excel serial numbers (e.g. 44196 = 2021-01-01)
+    df_excel = pd.DataFrame({
+        "timestamp_col": [44196, 44227, 44255, 44286],
+        "metric": [50.0, 60.0, 70.0, 80.0]
+    })
+    parsed_excel = safe_parse_datetime_series(df_excel["timestamp_col"])
+    assert parsed_excel.isna().sum() == 0
+    assert parsed_excel.dt.year.iloc[0] in [2020, 2021]
+
+
+def test_forecasting_health_check_endpoint():
+    """Tests GET /api/v1/forecasting/health and GET /api/v1/projects/{project_id}/forecast/health."""
+    client = TestClient(app)
+    set_active_user("user_health_test")
+
+    res1 = client.get("/api/v1/forecasting/health")
+    assert res1.status_code == 200
+    data1 = res1.json()
+    assert data1["api"] == "ok"
+    assert data1["forecasting_router"] == "ok"
+
+    res2 = client.get("/api/v1/projects/proj_test_123/forecast/health")
+    assert res2.status_code == 200
+    data2 = res2.json()
+    assert data2["api"] == "ok"
+    assert data2["project_id"] == "proj_test_123"
+
+    app.dependency_overrides.clear()
+
+
+

@@ -1,3 +1,4 @@
+import os
 import pandas as pd
 import numpy as np
 from abc import ABC, abstractmethod
@@ -33,6 +34,44 @@ from sklearn.metrics import mean_absolute_error, root_mean_squared_error
 # Time Series Validation & Preparation Helpers
 # ==========================================
 
+def safe_parse_datetime_series(series: pd.Series) -> pd.Series:
+    """
+    Safely parses a pandas Series to datetime64[ns], handling:
+    - Standard ISO/YYYY-MM-DD strings
+    - Slash formats (MM/DD/YYYY, DD/MM/YYYY, YYYY/MM/DD)
+    - Excel date serial numbers (e.g. 44196)
+    - Unix epoch timestamps
+    """
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return series
+
+    if pd.api.types.is_numeric_dtype(series):
+        num = series.dropna()
+        if len(num) > 0 and ((num >= 30000) & (num <= 60000)).all():
+            return pd.to_datetime(series, unit='D', origin='1899-12-30', errors='coerce')
+        elif len(num) > 0 and ((num >= 1e9) & (num <= 2e9)).all():
+            return pd.to_datetime(series, unit='s', errors='coerce')
+
+    try:
+        res = pd.to_datetime(series, errors='coerce', format='mixed')
+        if res.dropna().shape[0] > 0:
+            return res
+    except Exception:
+        pass
+
+    try:
+        res = pd.to_datetime(series, errors='coerce')
+        if res.dropna().shape[0] > 0:
+            return res
+    except Exception:
+        pass
+
+    try:
+        return pd.to_datetime(series, errors='coerce', dayfirst=True)
+    except Exception:
+        return pd.to_datetime(series, errors='coerce')
+
+
 def validate_and_prepare_timeseries(
     df: pd.DataFrame,
     date_col: str,
@@ -52,7 +91,7 @@ def validate_and_prepare_timeseries(
         value_col = df.columns[1] if len(df.columns) > 1 else df.columns[0]
 
     temp = df[[date_col, value_col]].dropna().copy()
-    temp[date_col] = pd.to_datetime(temp[date_col], errors='coerce')
+    temp[date_col] = safe_parse_datetime_series(temp[date_col])
     temp = temp.dropna(subset=[date_col])
 
     if temp.empty:
@@ -257,11 +296,17 @@ class ProphetForecaster(BaseForecaster):
         }
 
 
+PLUGGABLE_MODELS: Dict[str, Type[BaseForecaster]] = {}
+
 # ==========================================
 # Main Production Forecasting Service Engine
 # ==========================================
 
 class ProductionForecastingEngine:
+    @classmethod
+    def register_model(cls, name: str, forecaster_cls: Type[BaseForecaster]) -> None:
+        PLUGGABLE_MODELS[name.lower()] = forecaster_cls
+
     @classmethod
     def execute_project_forecast(
         self,
@@ -299,11 +344,22 @@ class ProductionForecastingEngine:
         models_to_test: List[BaseForecaster] = [NaiveForecaster(), ArimaForecaster()]
         if PROPHET_AVAILABLE:
             models_to_test.append(ProphetForecaster())
+        if requested_model and requested_model.lower() in PLUGGABLE_MODELS:
+            models_to_test.append(PLUGGABLE_MODELS[requested_model.lower()]())
 
         model_results: List[Dict[str, Any]] = []
         for forecaster in models_to_test:
             try:
                 res = forecaster.fit_predict(cleaned_df, date_col, target_col, horizon, confidence)
+                if isinstance(res, tuple):
+                    timeline, metrics = res
+                    res = {
+                        "model_name": getattr(forecaster, "model_name", forecaster.__class__.__name__),
+                        "mae": metrics.get("mae", 0.0),
+                        "rmse": metrics.get("rmse", 0.0),
+                        "mape": metrics.get("mape", 0.0),
+                        "predictions": timeline
+                    }
                 model_results.append(res)
             except Exception as e:
                 logger.warning(f"Forecaster {forecaster.__class__.__name__} failed: {e}")
@@ -458,6 +514,10 @@ class ForecastingService:
         conn: Any = None
     ) -> Dict[str, Any]:
         df = load_dataset(dataset_ref, conn)
+        df_date = pd.to_datetime(df[date_col], errors="coerce").dropna()
+        span_days = (df_date.max() - df_date.min()).days if len(df_date) > 0 else 0
+        agg_choice = "daily" if span_days < 90 else "monthly"
+
         resp = ProductionForecastingEngine.execute_project_forecast(
             df=df,
             project_id="legacy",
@@ -465,7 +525,7 @@ class ForecastingService:
             dataset_name=os.path.basename(dataset_ref),
             date_col=date_col,
             target_col=value_col,
-            aggregation="monthly",
+            aggregation=agg_choice,
             horizon=periods,
             requested_model=model_name,
             confidence=confidence
@@ -494,4 +554,7 @@ class ForecastingService:
             "timeline": timeline,
             "metrics": metrics
         }
+
+    def register_model(self, name: str, forecaster_cls: Type[BaseForecaster]) -> None:
+        ProductionForecastingEngine.register_model(name, forecaster_cls)
 

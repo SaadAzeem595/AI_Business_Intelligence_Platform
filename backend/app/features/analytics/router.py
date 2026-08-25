@@ -78,7 +78,10 @@ def resolve_dataset_path(dataset_id: Optional[str] = None) -> str:
     if UPLOADED_PATHS_CACHE:
         first_id = list(UPLOADED_PATHS_CACHE.keys())[0]
         return UPLOADED_PATHS_CACHE[first_id]["path"]
-    return get_fallback_dataset_path()
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="No active dataset found. Please upload a dataset to run analytics."
+    )
 
 
 @router.post("/analytics/forecast", response_model=ForecastResponse)
@@ -187,41 +190,6 @@ async def get_project_forecast_schema_info(
     await get_project_and_verify_access(project_id, current_user, db)
 
     return await DatasetDiscoveryService.discover_project_candidates(project_id, db)
-
-
-@router.get("/forecasting/health", tags=["Health & Status Checks"])
-async def forecasting_health_check() -> dict:
-    """Diagnostic health check inspecting forecasting engine dependencies, DuckDB, and router availability."""
-    deps = {}
-    try:
-        import statsmodels
-        deps["statsmodels"] = statsmodels.__version__
-    except ImportError:
-        deps["statsmodels"] = "not_installed"
-
-    try:
-        import prophet
-        deps["prophet"] = prophet.__version__
-    except Exception:
-        deps["prophet"] = "not_installed"
-
-    try:
-        import duckdb
-        deps["duckdb"] = duckdb.__version__
-    except Exception:
-        deps["duckdb"] = "not_installed"
-
-    try:
-        import pandas
-        deps["pandas"] = pandas.__version__
-    except Exception:
-        deps["pandas"] = "not_installed"
-
-    return {
-        "status": "healthy",
-        "service": "forecasting_engine",
-        "dependencies": deps
-    }
 
 
 
@@ -337,84 +305,114 @@ async def segment_cohorts(
     dataset_id: Optional[str] = None,
     current_user: MockUser = Depends(require_role(["Analyst", "Admin"])),
 ) -> SegmentResponse:
-    """Executes customer segmentation / clustering on the active dataset."""
+    """Executes dynamic customer (RFM) or generic numerical dataset segmentation."""
     try:
-        dataset_path = resolve_dataset_path(dataset_id)
-        df = load_dataset(dataset_path)
-        if df.empty:
-            raise HTTPException(status_code=400, detail="The dataset is empty.")
+        ds_id = payload.dataset_id or dataset_id
+        dataset_path = resolve_dataset_path(ds_id)
 
         segment_svc = SegmentationService()
-        
-        # Standardize features format
-        feats = [f.strip() for f in payload.features.split(",")] if payload.features else None
-        
+        feats = [f.strip() for f in payload.features.split(",")] if (payload.features and isinstance(payload.features, str)) else None
+
+        n_clusters = payload.clusters if payload.clusters is not None else 3
+
         seg_res = segment_svc.segment_dataset(
             dataset_ref=dataset_path,
             method="kmeans",
-            n_clusters=payload.clusters,
-            features=feats
+            n_clusters=n_clusters,
+            features=feats,
+            mode=payload.mode or "auto",
+            entity_key=payload.entity_key
         )
 
-        # Retrieve X and Y coordinate columns from features used
-        used_feats = seg_res["features_used"]
-        x_feat = used_feats[0] if len(used_feats) > 0 else df.columns[0]
-        y_feat = used_feats[1] if len(used_feats) > 1 else (used_feats[0] if len(used_feats) > 0 else df.columns[0])
-
-        # Find optional identifier column
-        name_col = None
-        for col in df.columns:
-            if any(x in str(col).lower() for x in ['name', 'user_id', 'customer_id', 'id']):
-                name_col = col
-                break
-
-        # Build scatter points (cap at 100 for graph performance)
-        scatter = []
-        assignments = seg_res["assignments"]
-        for assign in assignments[:100]:
-            idx = assign["index"]
-            c_id = assign["cluster"]
-            row_name = str(df.iloc[idx][name_col]) if name_col else f"Row {idx}"
-            
-            scatter.append(
-                ScatterPoint(
-                    name=row_name,
-                    x=float(df.iloc[idx][x_feat]) if pd.notna(df.iloc[idx][x_feat]) else 0.0,
-                    y=float(df.iloc[idx][y_feat]) if pd.notna(df.iloc[idx][y_feat]) else 0.0,
-                    cluster=f"Cluster {c_id}"
-                )
+        scatter_points = [
+            ScatterPoint(
+                name=pt["name"],
+                x=pt["x"],
+                y=pt["y"],
+                cluster=pt["cluster"],
+                details=pt.get("details")
             )
+            for pt in seg_res.get("scatter", [])
+        ]
 
-        # Build cohort segments
-        cohorts = []
-        for cid, s_info in seg_res["summaries"].items():
-            # Find average spend if revenue/sales is one of the features
-            avg_spent_val = 0.0
-            rev_col = None
-            for col in df.columns:
-                if any(x in str(col).lower() for x in ['revenue', 'sales', 'amount', 'spend']):
-                    rev_col = col
-                    break
-            if rev_col and rev_col in s_info["feature_means"]:
-                avg_spent_val = s_info["feature_means"][rev_col]
-            else:
-                avg_spent_val = list(s_info["feature_means"].values())[0] if s_info["feature_means"] else 0.0
-
-            risk = "Low"
-            if int(cid) % 2 == 1:
-                risk = "High" if int(cid) == 1 else "Medium"
-
-            cohorts.append(
-                CohortSegment(
-                    name=s_info["name"] + f" - {s_info['characteristics']}",
-                    count=s_info["size"],
-                    avgSpent=f"${avg_spent_val:,.0f}",
-                    freqScore=f"{int(s_info['percentage'])}/100",
-                    riskRating=risk
-                )
+        cohort_segments = [
+            CohortSegment(
+                name=c["name"],
+                count=c["count"],
+                avgSpent=c["avgSpent"],
+                freqScore=c["freqScore"],
+                riskRating=c["riskRating"]
             )
+            for c in seg_res.get("cohorts", [])
+        ]
 
-        return SegmentResponse(scatter=scatter, cohorts=cohorts)
+        return SegmentResponse(
+            scatter=scatter_points,
+            cohorts=cohort_segments,
+            evaluation=seg_res.get("evaluation"),
+            profiles=seg_res.get("profiles", []),
+            features_used=seg_res.get("features_used", []),
+            dataset_type=seg_res.get("dataset_type", "tabular"),
+            entity_key=seg_res.get("entity_key"),
+            message=seg_res.get("message")
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
+
+@router.get("/projects/{project_id}/segment/schema-info")
+async def get_project_segment_schema_info(
+    project_id: str,
+    current_user: MockUser = Depends(require_role(["Analyst", "Admin"])),
+    db: AsyncSession = Depends(get_db_session),
+) -> Dict[str, Any]:
+    """Inspects project datasets to return available segmentation dataset candidates."""
+    from app.features.projects.router import get_project_and_verify_access
+    from app.features.datasets.models import Dataset
+    from app.features.datasets.router import UPLOADED_PATHS_CACHE
+    from sqlalchemy import select
+
+    await get_project_and_verify_access(project_id, current_user, db)
+
+    stmt = select(Dataset).where(Dataset.project_id == project_id)
+    res = await db.execute(stmt)
+    db_datasets = res.scalars().all()
+
+    available = []
+    for d in db_datasets:
+        available.append({"id": str(d.id), "filename": d.filename, "duckdb_table": d.duckdb_table})
+
+    for d_id, cached in UPLOADED_PATHS_CACHE.items():
+        if cached.get("project_id") == project_id:
+            if not any(x["filename"] == cached.get("filename") for x in available):
+                available.append({"id": str(d_id), "filename": cached.get("filename", "dataset.csv"), "duckdb_table": cached.get("duckdb_table")})
+
+    return {
+        "project_id": project_id,
+        "dataset_count": len(available),
+        "datasets": available,
+        "suggested_mode": "auto"
+    }
+
+
+@router.post("/projects/{project_id}/segment", response_model=SegmentResponse)
+async def run_project_segmentation(
+    project_id: str,
+    payload: SegmentPayload,
+    current_user: MockUser = Depends(require_role(["Analyst", "Admin"])),
+    db: AsyncSession = Depends(get_db_session),
+) -> SegmentResponse:
+    """Executes dataset-aware segmentation on project datasets."""
+    from app.features.projects.router import get_project_and_verify_access
+    await get_project_and_verify_access(project_id, current_user, db)
+
+    payload.project_id = project_id
+    return await segment_cohorts(payload=payload, dataset_id=payload.dataset_id, current_user=current_user)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

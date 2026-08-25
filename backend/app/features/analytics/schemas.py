@@ -26,8 +26,12 @@ class ForecastResponse(BaseModel):
 
 
 class SegmentPayload(BaseModel):
-    clusters: int
-    features: str
+    clusters: Optional[int] = Field(3, description="Number of clusters (k)")
+    features: Optional[str] = Field(None, description="Comma-separated feature list or None for auto-selection")
+    dataset_id: Optional[str] = Field(None, description="ID of dataset to segment")
+    project_id: Optional[str] = Field(None, description="Scope segmentation to project")
+    mode: Optional[str] = Field("auto", description="Segmentation mode: 'auto', 'rfm', or 'numerical'")
+    entity_key: Optional[str] = Field(None, description="Explicit entity/customer key column")
 
 
 class CohortSegment(BaseModel):
@@ -43,11 +47,38 @@ class ScatterPoint(BaseModel):
     x: float
     y: float
     cluster: str
+    details: Optional[Dict[str, Any]] = None
+
+
+class ClusterEvaluation(BaseModel):
+    optimal_k: int
+    selected_k: int
+    silhouette_score: float
+    davies_bouldin_index: float
+    calinski_harabasz_index: float
+    metrics_by_k: Dict[int, Dict[str, float]] = {}
+
+
+class SegmentProfile(BaseModel):
+    cluster_id: int
+    name: str
+    size: int
+    percentage: float
+    characteristics: str
+    recommendation: str
+    risk_rating: str
+    feature_means: Dict[str, float] = {}
 
 
 class SegmentResponse(BaseModel):
     scatter: List[ScatterPoint]
     cohorts: List[CohortSegment]
+    evaluation: Optional[ClusterEvaluation] = None
+    profiles: List[SegmentProfile] = []
+    features_used: List[str] = []
+    dataset_type: str = "tabular"
+    entity_key: Optional[str] = None
+    message: Optional[str] = None
 
 
 class AnomalyPayload(BaseModel):
