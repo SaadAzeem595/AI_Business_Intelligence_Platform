@@ -112,10 +112,17 @@ class SegmentationService:
         if len(feature_df) == 0:
             raise ValueError("DataFrame contains no valid rows or non-null features for clustering.")
 
+        # If dataset exceeds 3000 rows, sample 3000 rows for real-time high-performance clustering
+        if len(feature_df) > 3000:
+            sample_indices = np.random.choice(len(feature_df), 3000, replace=False)
+            feature_df = feature_df.iloc[sample_indices].copy()
+            entity_names = [entity_names[i] for i in sample_indices]
+
         # 3. Clean & Standardize Features (Prevent Data Leakage)
         cleaned_df = feature_df.fillna(feature_df.median(numeric_only=True)).fillna(0)
         scaler = StandardScaler()
         scaled_data = scaler.fit_transform(cleaned_df)
+
 
         # 4. Optimal-K Evaluation
         optimal_k, evaluation_metrics = self.evaluate_optimal_k(scaled_data, max_k=min(8, len(cleaned_df)))
@@ -315,21 +322,29 @@ class SegmentationService:
         if max_k_eval < 2:
             max_k_eval = 2
 
+        # Subsample high-dimensional or large matrices for fast evaluation
+        if n_samples > 2000:
+            np.random.seed(42)
+            eval_indices = np.random.choice(n_samples, 2000, replace=False)
+            eval_data = scaled_data[eval_indices]
+        else:
+            eval_data = scaled_data
+
         metrics_by_k = {}
         best_k = 2
         best_sil = -1.0
 
         for k in range(2, max_k_eval + 1):
             try:
-                km = KMeans(n_clusters=k, random_state=42, n_init=10)
-                lbls = km.fit_predict(scaled_data)
+                km = KMeans(n_clusters=k, random_state=42, n_init=5)
+                lbls = km.fit_predict(eval_data)
 
                 if len(set(lbls)) < 2:
                     continue
 
-                sil = float(silhouette_score(scaled_data, lbls))
-                db_idx = float(davies_bouldin_score(scaled_data, lbls))
-                ch_idx = float(calinski_harabasz_score(scaled_data, lbls))
+                sil = float(silhouette_score(eval_data, lbls, sample_size=min(1000, len(eval_data)), random_state=42))
+                db_idx = float(davies_bouldin_score(eval_data, lbls))
+                ch_idx = float(calinski_harabasz_score(eval_data, lbls))
 
                 metrics_by_k[k] = {
                     "silhouette_score": round(sil, 4),
@@ -354,6 +369,7 @@ class SegmentationService:
             "metrics_by_k": metrics_by_k
         }
         return best_k, evaluation_result
+
 
     # =========================================================================
     # 2D Scatter Coordinate Generation
