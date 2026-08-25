@@ -105,7 +105,7 @@ export interface CohortSegment {
   count: number;
   avgSpent: string;
   freqScore: string;
-  riskRating: "Low" | "Medium" | "High";
+  riskRating: "Low" | "Medium" | "High" | "Neutral" | "N/A" | string;
 }
 
 export interface ClusterEvaluation {
@@ -124,7 +124,7 @@ export interface SegmentProfile {
   percentage: number;
   characteristics: string;
   recommendation: string;
-  risk_rating: "Low" | "Medium" | "High";
+  risk_rating: "Low" | "Medium" | "High" | "Neutral" | "N/A" | string;
   feature_means?: Record<string, number>;
 }
 

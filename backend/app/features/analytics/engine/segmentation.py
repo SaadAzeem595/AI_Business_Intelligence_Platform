@@ -112,12 +112,6 @@ class SegmentationService:
         if len(feature_df) == 0:
             raise ValueError("DataFrame contains no valid rows or non-null features for clustering.")
 
-        # If dataset exceeds 3000 rows, sample 3000 rows for real-time high-performance clustering
-        if len(feature_df) > 3000:
-            sample_indices = np.random.choice(len(feature_df), 3000, replace=False)
-            feature_df = feature_df.iloc[sample_indices].copy()
-            entity_names = [entity_names[i] for i in sample_indices]
-
         # 3. Clean & Standardize Features (Prevent Data Leakage)
         cleaned_df = feature_df.fillna(feature_df.median(numeric_only=True)).fillna(0)
         scaler = StandardScaler()
@@ -147,12 +141,14 @@ class SegmentationService:
             raise ValueError(f"Unsupported clustering method: {method}")
 
         # Update evaluation dict with selected k metrics if computed
-        if evaluation_metrics and selected_k in evaluation_metrics.get("metrics_by_k", {}):
-            sel_m = evaluation_metrics["metrics_by_k"][selected_k]
+        if evaluation_metrics:
+            evaluation_metrics["optimal_k"] = optimal_k
             evaluation_metrics["selected_k"] = selected_k
-            evaluation_metrics["silhouette_score"] = sel_m["silhouette_score"]
-            evaluation_metrics["davies_bouldin_index"] = sel_m["davies_bouldin_index"]
-            evaluation_metrics["calinski_harabasz_index"] = sel_m["calinski_harabasz_index"]
+            if selected_k in evaluation_metrics.get("metrics_by_k", {}):
+                sel_m = evaluation_metrics["metrics_by_k"][selected_k]
+                evaluation_metrics["silhouette_score"] = sel_m["silhouette_score"]
+                evaluation_metrics["davies_bouldin_index"] = sel_m["davies_bouldin_index"]
+                evaluation_metrics["calinski_harabasz_index"] = sel_m["calinski_harabasz_index"]
 
         # 6. Generate 2D Scatter Coordinates
         scatter_points = self._generate_scatter_points(
@@ -425,13 +421,18 @@ class SegmentationService:
         used_features: List[str],
         mode: str
     ) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]]]:
-        """Generates dynamic, data-driven business profiles, risk ratings, and recommendations."""
+        """
+        Generates dynamic, evidence-based business profiles, risk ratings, and recommendations.
+        Compares each cluster's feature means and medians against global dataset averages/medians.
+        """
         summaries = {}
         cohorts = []
         profiles = []
 
         unique_labels = sorted(list(set(labels)))
-        global_means = feature_df.mean().to_dict()
+        global_means = feature_df[used_features].mean().to_dict()
+        global_medians = feature_df[used_features].median().to_dict()
+        global_stds = feature_df[used_features].std().to_dict()
         total_count = len(feature_df)
 
         original_with_labels = feature_df.copy()
@@ -441,19 +442,36 @@ class SegmentationService:
             c_df = feature_df[original_with_labels["cluster"] == cid]
             size = len(c_df)
             pct = (size / total_count) * 100.0 if total_count > 0 else 0.0
-            feature_means = c_df.mean().to_dict()
+            feature_means = c_df[used_features].mean().to_dict()
+            feature_medians = c_df[used_features].median().to_dict()
 
-            high_feats = []
-            low_feats = []
+            stat_high_feats = []
+            stat_low_feats = []
+            feature_stats = {}
+
             for f in used_features:
-                c_m = feature_means.get(f, 0.0)
-                g_m = global_means.get(f, 0.0)
-                if g_m != 0:
-                    ratio = c_m / g_m
-                    if ratio > 1.15:
-                        high_feats.append(f)
-                    elif ratio < 0.85:
-                        low_feats.append(f)
+                c_m = float(feature_means.get(f, 0.0))
+                g_m = float(global_means.get(f, 0.0))
+                c_med = float(feature_medians.get(f, 0.0))
+                g_med = float(global_medians.get(f, 0.0))
+                g_std = float(global_stds.get(f, 0.0))
+
+                pct_diff = ((c_m - g_m) / abs(g_m)) * 100.0 if abs(g_m) > 1e-6 else (100.0 if c_m > 0 else 0.0)
+                z_score = (c_m - g_m) / g_std if g_std > 1e-6 else 0.0
+
+                feature_stats[f] = {
+                    "cluster_mean": c_m,
+                    "cluster_median": c_med,
+                    "global_mean": g_m,
+                    "global_median": g_med,
+                    "pct_diff": pct_diff,
+                    "z_score": z_score
+                }
+
+                if pct_diff >= 15.0 or z_score >= 0.4:
+                    stat_high_feats.append((f, c_m, g_m, pct_diff))
+                elif pct_diff <= -15.0 or z_score <= -0.4:
+                    stat_low_feats.append((f, c_m, g_m, pct_diff))
 
             if mode == "rfm":
                 name, desc, rec, risk, avg_spend_str, freq_score_str = self._describe_rfm_cluster(
@@ -461,17 +479,18 @@ class SegmentationService:
                     size=size,
                     pct=pct,
                     means=feature_means,
-                    global_means=global_means
+                    global_means=global_means,
+                    feature_stats=feature_stats
                 )
             else:
                 name, desc, rec, risk, avg_spend_str, freq_score_str = self._describe_generic_cluster(
                     cid=cid,
                     size=size,
                     pct=pct,
-                    high_feats=high_feats,
-                    low_feats=low_feats,
-                    means=feature_means,
-                    global_means=global_means
+                    stat_high_feats=stat_high_feats,
+                    stat_low_feats=stat_low_feats,
+                    feature_stats=feature_stats,
+                    used_features=used_features
                 )
 
             summaries[str(cid)] = {
@@ -511,9 +530,13 @@ class SegmentationService:
         size: int,
         pct: float,
         means: Dict[str, float],
-        global_means: Dict[str, float]
+        global_means: Dict[str, float],
+        feature_stats: Dict[str, Dict[str, float]]
     ) -> Tuple[str, str, str, str, str, str]:
-        """Classifies RFM clusters into business personas with tailored recommendations."""
+        """Classifies RFM clusters into evidence-based business personas with data-driven recommendations."""
+        if cid == -1:
+            return "Outlier Segment", "Entities with unclassified outlier transaction behavior.", "Audit individual anomaly records.", "Neutral", "$0", "0/100"
+
         c_r = means.get("recency", 0.0)
         c_f = means.get("frequency", 0.0)
         c_m = means.get("monetary", 0.0)
@@ -526,43 +549,39 @@ class SegmentationService:
         is_frequent = c_f >= g_f
         is_high_mon = c_m >= g_m
 
-        # Convert log transformed values back for display if needed
         real_monetary = np.expm1(c_m) if c_m > 0 else 0.0
         avg_spend_str = f"${real_monetary:,.0f}" if real_monetary > 0 else "$0"
         freq_score_str = f"{min(100, int(pct))}/100"
 
-        if cid == -1:
-            return "Outlier Segment", "Unclassified customer behaviors.", "Audit individual user actions.", "Medium", "$0", "0/100"
+        r_diff = feature_stats.get("recency", {}).get("pct_diff", 0.0)
+        f_diff = feature_stats.get("frequency", {}).get("pct_diff", 0.0)
+        m_diff = feature_stats.get("monetary", {}).get("pct_diff", 0.0)
+
+        desc = f"Recency mean: {c_r:.1f} days ({r_diff:+.1f}% vs global avg {g_r:.1f}); Frequency mean score: {c_f:.2f} ({f_diff:+.1f}% vs avg); Monetary sum mean: {c_m:.2f} ({m_diff:+.1f}% vs avg)."
 
         if is_recent and is_frequent and is_high_mon:
-            name = "Champions & VIP Customers"
-            desc = "High spenders with frequent recent orders."
-            rec = "Provide exclusive VIP perks, early product access, and dedicated customer service."
+            name = "High Engagement & Spend Cohort"
+            rec = "Maintain active engagement with high-frequency, recent spenders through ongoing value programs and dedicated support."
             risk = "Low"
         elif not is_recent and is_frequent and is_high_mon:
-            name = "At-Risk VIPs (High Spend, Idle)"
-            desc = "Historically high spenders who haven't ordered recently."
-            rec = "Deploy personalized win-back offers and retention incentives immediately."
+            name = "Dormant High-Value Cohort"
+            rec = f"Address elevated recency ({r_diff:+.1f}% above avg) for historically active spenders through targeted re-engagement offers."
             risk = "High"
         elif is_recent and not is_frequent and is_high_mon:
-            name = "New High-Value Prospects"
-            desc = "Recent high monetary buyers with low order count."
-            rec = "Offer onboarding incentives and cross-sell premium complementary products."
+            name = "New High-Spend Cohort"
+            rec = f"Leverage strong monetary baseline ({m_diff:+.1f}% vs avg) by introducing onboarding pathways to increase order frequency."
             risk = "Medium"
         elif is_recent and is_frequent and not is_high_mon:
-            name = "Frequent Bargain Hunters"
-            desc = "Highly active buyers with lower order basket values."
-            rec = "Offer bundle discounts and order thresholds to increase average cart size."
+            name = "Frequent Low-Basket Cohort"
+            rec = f"Capitalize on high transaction frequency ({f_diff:+.1f}% vs avg) by offering volume bundles to increase basket value."
             risk = "Low"
         elif not is_recent and not is_frequent and not is_high_mon:
-            name = "Hibernating / Churned Buyers"
-            desc = "Inactive customers with low historical spend."
-            rec = "Include in automated email re-engagement or limit paid ad spend."
+            name = "Inactive Cohort"
+            rec = f"Monitor inactive segment exhibiting low frequency ({f_diff:+.1f}%) and high recency ({r_diff:+.1f}%). Limit high-cost ad acquisition spend."
             risk = "High"
         else:
-            name = f"Core Customer Segment {cid}"
-            desc = f"Cluster {cid} exhibiting steady operational interactions."
-            rec = "Maintain standard automated marketing workflows."
+            name = f"Standard Activity Cohort (Cluster {cid + 1})"
+            rec = "Maintain standard automated engagement flows and monitor metrics for cohort migration."
             risk = "Medium"
 
         return name, desc, rec, risk, avg_spend_str, freq_score_str
@@ -572,37 +591,56 @@ class SegmentationService:
         cid: int,
         size: int,
         pct: float,
-        high_feats: List[str],
-        low_feats: List[str],
-        means: Dict[str, float],
-        global_means: Dict[str, float]
+        stat_high_feats: List[Tuple[str, float, float, float]],
+        stat_low_feats: List[Tuple[str, float, float, float]],
+        feature_stats: Dict[str, Dict[str, float]],
+        used_features: List[str]
     ) -> Tuple[str, str, str, str, str, str]:
-        """Generates dynamic, business-readable names and recommendations for numerical feature clusters."""
+        """
+        Generates evidence-based cohort names, characteristics, risk labels, and recommendations
+        for numerical feature clusters. Avoids generic labels like 'Feature Content'.
+        Names are derived strictly from features with the largest statistically meaningful deviations.
+        """
         if cid == -1:
-            return "Outlier & Noise Cohort", "Entities with irregular or extreme data points differing significantly from primary clusters.", "Inspect individual row anomalies and audit data quality.", "High", "N/A", "0/100"
+            return "Outlier & Noise Cohort", "Entities with extreme metric deviations differing from primary cluster patterns.", "Audit data quality and inspect individual row anomalies.", "N/A", "N/A", "0/100"
 
-        # Friendly column label mapping dictionary
+        # Friendly column label mapping
         COLUMN_BUSINESS_NAMES = {
-            "price": "Unit Price & Spend",
-            "payment_value": "Order Payment Value",
-            "revenue": "Revenue Volume",
+            "price": "Unit Price",
+            "unit_price": "Unit Price",
+            "payment_value": "Payment Value",
+            "revenue": "Revenue",
             "spend": "Total Spend",
+            "annual_spend": "Annual Spend",
             "monetary": "Monetary Value",
             "amount": "Transaction Amount",
             "total": "Total Financial Value",
             "cost": "Operating Cost",
-            "freight_value": "Logistics & Freight Cost",
-            "product_weight_g": "Product Basket Weight",
-            "weight": "Item Mass / Weight",
-            "frequency": "Purchase Frequency",
-            "order_count": "Transaction Count",
+            "freight_value": "Freight Cost",
+            "shipping_cost": "Shipping Cost",
+            "postage": "Postage Cost",
+            "product_weight_g": "Product Weight",
+            "weight": "Item Weight",
+            "mass": "Item Mass",
+            "product_length_cm": "Product Length",
+            "length": "Item Length",
+            "product_height_cm": "Product Height",
+            "height": "Item Height",
+            "product_width_cm": "Product Width",
+            "width": "Item Width",
+            "frequency": "Frequency",
+            "order_count": "Order Count",
             "conversions": "Conversions",
-            "visitors": "Traffic Visitors",
-            "recency": "Days Since Last Active",
-            "profit": "Net Profit Margin",
+            "visitors": "Visitors",
+            "sessions": "Sessions",
+            "recency": "Days Active",
+            "profit": "Net Profit",
             "sales_volume": "Sales Volume",
-            "feature_x": "Primary Trait Index",
-            "feature_y": "Secondary Trait Index",
+            "feature_x": "Feature X",
+            "feature_y": "Feature Y",
+            "churn_rate": "Churn Rate",
+            "risk_score": "Risk Score",
+            "default_rate": "Default Rate"
         }
 
         def clean_label(feat: str) -> str:
@@ -611,43 +649,160 @@ class SegmentationService:
                 return COLUMN_BUSINESS_NAMES[f_lower]
             return feat.replace("_", " ").title()
 
-        high_labels = [clean_label(f) for f in high_feats]
-        low_labels = [clean_label(f) for f in low_feats]
+        # Check for explicit risk metrics in dataset
+        RISK_KEYWORDS = ["churn", "risk", "default", "delinquent", "loss", "cancellation", "fraud", "late", "overdue", "error_rate", "bounce_rate", "unpaid", "chargeback"]
+        risk_metric_feat = None
+        for f in used_features:
+            if any(k in f.lower() for k in RISK_KEYWORDS):
+                risk_metric_feat = f
+                break
 
-        if high_labels and not low_labels:
-            if any(k in " ".join(high_labels).lower() for k in ["price", "revenue", "spend", "value", "amount", "monetary"]):
-                name = f"High-Value VIP Performers ({high_labels[0]})"
-            elif any(k in " ".join(high_labels).lower() for k in ["frequency", "volume", "count", "conversions"]):
-                name = f"High-Volume Active Segment"
+        # 1. Determine Risk Rating (Strictly Evidence-Based)
+        if risk_metric_feat:
+            r_stat = feature_stats.get(risk_metric_feat, {})
+            r_diff = r_stat.get("pct_diff", 0.0)
+            if r_diff >= 15.0:
+                risk = "High"
+            elif r_diff <= -15.0:
+                risk = "Low"
             else:
-                name = f"Top Performing Cohort ({high_labels[0]})"
-            desc = f"Demonstrates significantly elevated metrics in {', '.join(high_labels[:2])}, outperforming global dataset averages."
-            rec = "Capitalize on strong feature performance by offering premium incentives, targeted expansion, and high-tier perks."
-            risk = "Low"
-        elif low_labels and not high_labels:
-            if any(k in " ".join(low_labels).lower() for k in ["price", "revenue", "spend", "value"]):
-                name = f"Budget / Low-Spend Tier"
-            elif any(k in " ".join(low_labels).lower() for k in ["frequency", "volume", "visitors"]):
-                name = f"Low-Activity / Idle Cohort"
-            else:
-                name = f"Low-Yield Segment ({low_labels[0]})"
-            desc = f"Exhibits lower-than-average performance in {', '.join(low_labels[:2])}, indicating underutilized capacity."
-            rec = "Implement targeted re-engagement campaigns, promotional bundling, or address underlying operational bottlenecks."
-            risk = "High"
-        elif high_labels and low_labels:
-            name = f"High {high_labels[0]} & Low {low_labels[0]} Cohort"
-            desc = f"Characterized by strong {high_labels[0]} coupled with lower {low_labels[0]} levels."
-            rec = "Optimize feature balance by boosting underperforming dimensions while maintaining core operational strengths."
-            risk = "Medium"
+                risk = "Medium"
         else:
-            name = f"Core Standard Cohort (Cluster {cid + 1})"
-            desc = f"Exhibits steady operational metrics aligning closely with baseline dataset averages."
-            rec = "Maintain standard automated workflows and monitor for performance migration over time."
-            risk = "Medium"
+            risk = "N/A"
 
-        first_feat_val = list(means.values())[0] if means else 0.0
-        avg_spend_str = f"${first_feat_val:,.0f}" if first_feat_val > 10 else f"{first_feat_val:.1f}"
+        # Categorize features by domain semantics
+        WEIGHT_KEYWORDS = ["weight", "mass"]
+        DIMENSION_KEYWORDS = ["length", "height", "width", "size", "volume", "cubage", "dimension"]
+        PRICE_KEYWORDS = ["price", "spend", "revenue", "monetary", "amount", "cost", "total", "value"]
+        FREIGHT_KEYWORDS = ["freight", "shipping", "postage", "logistics"]
+
+        def find_domain_feats(feat_tuples, keywords):
+            return [t for t in feat_tuples if any(k in t[0].lower() for k in keywords)]
+
+        high_weight = find_domain_feats(stat_high_feats, WEIGHT_KEYWORDS)
+        low_weight = find_domain_feats(stat_low_feats, WEIGHT_KEYWORDS)
+        high_dim = find_domain_feats(stat_high_feats, DIMENSION_KEYWORDS)
+        low_dim = find_domain_feats(stat_low_feats, DIMENSION_KEYWORDS)
+        high_price = find_domain_feats(stat_high_feats, PRICE_KEYWORDS)
+        low_price = find_domain_feats(stat_low_feats, PRICE_KEYWORDS)
+        high_freight = find_domain_feats(stat_high_feats, FREIGHT_KEYWORDS)
+        low_freight = find_domain_feats(stat_low_feats, FREIGHT_KEYWORDS)
+
+        # 2. Formulate Cluster Name based on strongest domain traits or strongest statistical deviations
+        name = None
+
+        # Pattern A: Physical product attributes (Weight & Dimensions)
+        if high_weight and high_dim:
+            name = "Large & Heavy Products"
+        elif low_weight and low_dim:
+            name = "Compact & Lightweight Products"
+        elif high_weight and low_dim:
+            name = "Dense & Heavyweight Compact Products"
+        elif low_weight and high_dim:
+            name = "Bulky & Lightweight Products"
+        elif high_weight:
+            name = "Heavyweight Product Cohort"
+        elif low_weight:
+            name = "Lightweight Product Cohort"
+        elif high_dim:
+            name = "Large Dimension Products"
+        elif low_dim:
+            name = "Compact Dimension Products"
+        # Pattern B: Pricing & Financial Value
+        elif high_price and not low_price:
+            p_name = clean_label(high_price[0][0])
+            name = f"High {p_name} Cluster"
+        elif low_price and not high_price:
+            p_name = clean_label(low_price[0][0])
+            name = f"Low {p_name} Cluster"
+        # Pattern C: Freight / Shipping Costs
+        elif high_freight:
+            name = "High Freight & Shipping Cost Cohort"
+        elif low_freight:
+            name = "Low Freight & Shipping Cost Cohort"
+
+        # Pattern D: Fallback to strongest individual feature deviations sorted by absolute deviation
+        if not name:
+            all_deviations = sorted(
+                stat_high_feats + stat_low_feats,
+                key=lambda x: abs(x[3]),
+                reverse=True
+            )
+            if all_deviations:
+                top = all_deviations[0]
+                top_name = clean_label(top[0])
+                if top[3] > 0:
+                    name = f"Elevated {top_name} Cohort"
+                else:
+                    name = f"Reduced {top_name} Cohort"
+
+                if len(all_deviations) > 1:
+                    second = all_deviations[1]
+                    second_name = clean_label(second[0])
+                    if (top[3] > 0 and second[3] > 0):
+                        name = f"High {top_name} & {second_name} Cluster"
+                    elif (top[3] < 0 and second[3] < 0):
+                        name = f"Low {top_name} & {second_name} Cluster"
+                    elif (top[3] > 0 and second[3] < 0):
+                        name = f"High {top_name} & Low {second_name} Cluster"
+                    elif (top[3] < 0 and second[3] > 0):
+                        name = f"Low {top_name} & High {second_name} Cluster"
+            else:
+                name = f"Standard Baseline Trait Cluster (Cluster {cid + 1})"
+
+        # 3. Build Detailed Characteristics (Citing exact calculated feature means/medians vs global dataset averages/medians)
+        char_parts = []
+        for f in used_features:
+            st = feature_stats.get(f, {})
+            c_m = st.get("cluster_mean", 0.0)
+            g_m = st.get("global_mean", 0.0)
+            diff = st.get("pct_diff", 0.0)
+            char_parts.append(f"{clean_label(f)} mean is {c_m:.2f} ({diff:+.1f}% vs global avg {g_m:.2f})")
+
+        desc = "; ".join(char_parts) + "." if char_parts else "Cluster feature metrics align closely with dataset baseline averages."
+
+        # 4. Generate Practical Business Recommendations derived strictly from strongest deviations
+        all_dev_sorted = sorted(
+            stat_high_feats + stat_low_feats,
+            key=lambda x: abs(x[3]),
+            reverse=True
+        )
+
+        rec_parts = []
+        if high_weight and high_dim:
+            w_diff = high_weight[0][3]
+            d_diff = high_dim[0][3]
+            rec_parts.append(f"Because product weight is +{w_diff:.1f}% above average and dimensions are +{d_diff:.1f}% larger, optimize warehouse rack allocation, evaluate heavy-freight carrier tiers, and audit bulk packaging costs.")
+        elif low_weight and low_dim:
+            w_diff = low_weight[0][3]
+            d_diff = low_dim[0][3]
+            rec_parts.append(f"Because product weight is {w_diff:.1f}% below average and dimensions are {d_diff:.1f}% smaller, leverage standard parcel envelopes and small-box fulfillment to minimize postage fees.")
+        elif high_freight:
+            f_diff = high_freight[0][3]
+            rec_parts.append(f"Given shipping costs are +{f_diff:.1f}% above average, review carrier rate tables and evaluate regional fulfillment centers to lower logistics expenses.")
+        elif low_freight:
+            f_diff = low_freight[0][3]
+            rec_parts.append(f"Capitalize on lower shipping costs ({f_diff:.1f}% below average) by offering multi-item bundling thresholds to optimize net fulfillment margins.")
+        elif high_price:
+            p_diff = high_price[0][3]
+            rec_parts.append(f"For higher price-point items (+{p_diff:.1f}% vs global avg), offer signature delivery tracking and premium protective packaging.")
+        elif low_price:
+            p_diff = low_price[0][3]
+            rec_parts.append(f"For lower price-point items ({p_diff:.1f}% below avg), focus on unit volume fulfillment efficiency to preserve operational margins.")
+        elif all_dev_sorted:
+            top = all_dev_sorted[0]
+            top_name = clean_label(top[0])
+            direction = "above" if top[3] > 0 else "below"
+            rec_parts.append(f"Focus operational monitoring on {top_name} exhibiting the strongest deviation ({top[3]:+.1f}% {direction} dataset average). Adjust process baselines accordingly.")
+        else:
+            rec_parts.append("All evaluated features operate within ±15% of dataset global baseline averages. Maintain standard monitoring workflows.")
+
+        rec = " ".join(rec_parts)
+
+        first_feat_val = list(feature_stats.values())[0]["cluster_mean"] if feature_stats else 0.0
+        avg_spend_str = f"${first_feat_val:,.2f}" if (high_price or low_price or first_feat_val > 100) else f"{first_feat_val:.2f}"
         freq_score_str = f"{min(100, int(pct))}/100"
 
         return name, desc, rec, risk, avg_spend_str, freq_score_str
+
 

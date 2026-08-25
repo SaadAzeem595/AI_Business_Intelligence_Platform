@@ -113,7 +113,7 @@ async def resolve_dataset_path_async(
             return d_obj.storage_path
 
     # 4. If dataset_id is missing but project_id is provided, search first dataset belonging to project_id
-    if project_id:
+    if not dataset_id and project_id:
         if db:
             stmt = select(Dataset).where(Dataset.project_id == project_id)
             res = await db.execute(stmt)

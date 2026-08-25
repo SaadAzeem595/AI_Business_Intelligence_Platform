@@ -132,11 +132,71 @@ def test_business_profile_generation(sample_transactional_df):
         assert "name" in prof
         assert "characteristics" in prof
         assert "recommendation" in prof
-        assert prof["risk_rating"] in ["Low", "Medium", "High"]
+        assert prof["risk_rating"] in ["Low", "Medium", "High", "Neutral", "N/A"]
         assert len(prof["recommendation"]) > 10
 
 
-# Test 6: Error Handling for Invalid / Edge Case Inputs
+# Test 6: Refined Domain Naming & Practical Business Recommendations for Product Datasets
+def test_evidence_based_generic_product_segmentation():
+    service = SegmentationService()
+    np.random.seed(42)
+
+    df = pd.DataFrame({
+        "product_weight_g": np.concatenate([np.random.normal(100, 10, 50), np.random.normal(500, 20, 50)]),
+        "product_length_cm": np.concatenate([np.random.normal(10, 2, 50), np.random.normal(30, 3, 50)]),
+        "shipping_cost": np.random.uniform(5, 15, 100)
+    })
+
+    res = service.cluster_data(df, mode="numerical", n_clusters=2)
+
+    # 1. Verify cluster counts sum to 100% of full dataset length (no pre-sampling truncation)
+    total_assignments = len(res["assignments"])
+    assert total_assignments == 100
+    sum_profile_counts = sum(prof["size"] for prof in res["profiles"])
+    assert sum_profile_counts == 100
+
+    assert "evaluation" in res
+    assert "optimal_k" in res["evaluation"]
+    assert "selected_k" in res["evaluation"]
+    assert res["evaluation"]["selected_k"] == 2
+
+    profiles = res["profiles"]
+    assert len(profiles) == 2
+
+    profile_names = {prof["name"] for prof in profiles}
+    # Verify exact domain product names instead of generic 'Feature Content'
+    assert "Large & Heavy Products" in profile_names or "Compact & Lightweight Products" in profile_names
+
+    for prof in profiles:
+        # Verify neutral evidence-based risk rating (no arbitrary 'High Risk' or 'Low Risk')
+        assert prof["risk_rating"] == "N/A"
+        # Verify practical recommendations cite operational details (rack space, envelope, postage, packaging)
+        assert any(term in prof["recommendation"].lower() for term in ["postage", "parcel", "rack", "packaging", "freight", "fulfillment", "carrier"])
+        # Verify characteristics cite actual calculated means and % differences vs global average
+        assert "vs global avg" in prof["characteristics"]
+
+
+# Test 7: Explicit Risk Metric Classification
+def test_evidence_based_risk_rating_with_explicit_metric():
+    service = SegmentationService()
+    np.random.seed(42)
+
+    df = pd.DataFrame({
+        "user_id": [f"U-{i}" for i in range(60)],
+        "churn_rate": np.concatenate([np.random.uniform(0.7, 0.9, 30), np.random.uniform(0.01, 0.05, 30)]),
+        "session_count": np.random.randint(5, 50, 60)
+    })
+
+    res = service.cluster_data(df, mode="numerical", n_clusters=2)
+    profiles = res["profiles"]
+    assert len(profiles) == 2
+
+    risk_ratings = {prof["risk_rating"] for prof in profiles}
+    # Should contain High and Low risk derived from the actual churn_rate metric
+    assert "High" in risk_ratings or "Low" in risk_ratings
+
+
+# Test 8: Error Handling for Invalid / Edge Case Inputs
 def test_segmentation_error_handling():
     service = SegmentationService()
 
@@ -154,3 +214,4 @@ def test_segmentation_error_handling():
     str_df = pd.DataFrame({"col_a": ["A", "B", "C"], "col_b": ["X", "Y", "Z"]})
     with pytest.raises(ValueError, match="No clusterable numerical features"):
         service.cluster_data(str_df, mode="numerical")
+

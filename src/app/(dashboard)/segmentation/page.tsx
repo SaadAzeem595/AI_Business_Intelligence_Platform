@@ -117,12 +117,14 @@ export default function SegmentationPage() {
       header: "Risk Rating",
       accessorKey: "riskRating",
       cell: (row) => {
-        const variants: Record<CohortSegment["riskRating"], "success" | "warning" | "destructive"> = {
+        const variants: Record<string, "success" | "warning" | "destructive" | "secondary" | "outline"> = {
           Low: "success",
           Medium: "warning",
           High: "destructive",
+          Neutral: "secondary",
+          "N/A": "outline",
         };
-        return <Badge variant={variants[row.riskRating] || "warning"}>{row.riskRating}</Badge>;
+        return <Badge variant={variants[row.riskRating] || "outline"}>{row.riskRating}</Badge>;
       },
     },
   ];
@@ -281,9 +283,26 @@ export default function SegmentationPage() {
                   className="w-full h-1 bg-muted rounded-lg appearance-none cursor-pointer accent-brand-indigo"
                 />
                 {evaluation?.optimal_k && (
-                  <div className="flex items-center gap-1.5 text-[11px] text-emerald-600 dark:text-emerald-400 mt-1">
-                    <CheckCircle2 className="h-3.5 w-3.5" />
-                    <span>Optimal K recommended: <strong>{evaluation.optimal_k}</strong></span>
+                  <div className="space-y-1 mt-1.5 p-2 rounded-md bg-brand-indigo/5 border border-brand-indigo/20 text-[11px]">
+                    <div className="flex justify-between items-center text-foreground font-semibold">
+                      <span>Recommended K:</span>
+                      <span className="font-bold text-brand-indigo">{evaluation.optimal_k}</span>
+                    </div>
+                    <div className="flex justify-between items-center text-muted-foreground">
+                      <span>Currently Selected K:</span>
+                      <span className="font-bold">{clustersCount}</span>
+                    </div>
+                    {clustersCount === evaluation.optimal_k ? (
+                      <div className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-medium text-[10px] mt-0.5">
+                        <CheckCircle2 className="h-3 w-3 shrink-0" />
+                        <span>Selected K matches Optimal K</span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1 text-amber-600 dark:text-amber-400 font-medium text-[10px] mt-0.5">
+                        <Info className="h-3 w-3 shrink-0" />
+                        <span>Custom Selected K (Optimal: {evaluation.optimal_k})</span>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -363,7 +382,15 @@ export default function SegmentationPage() {
 
             {/* Evaluation Metrics Cards */}
             {evaluation && (
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="p-3 rounded-lg border border-border/80 bg-card">
+                  <span className="text-[10px] text-muted-foreground uppercase font-semibold">Recommended vs Selected K</span>
+                  <div className="text-sm font-bold text-foreground mt-0.5 flex items-baseline gap-1">
+                    <span className="text-lg text-brand-indigo">{evaluation.selected_k ?? clustersCount}</span>
+                    <span className="text-xs text-muted-foreground font-normal">(Rec: {evaluation.optimal_k})</span>
+                  </div>
+                  <span className="text-[10px] text-muted-foreground">Currently Selected vs Optimal K</span>
+                </div>
                 <div className="p-3 rounded-lg border border-border/80 bg-card">
                   <span className="text-[10px] text-muted-foreground uppercase font-semibold">Silhouette Score</span>
                   <div className="text-lg font-bold text-foreground mt-0.5">{evaluation.silhouette_score}</div>
@@ -443,11 +470,17 @@ export default function SegmentationPage() {
                                 ? "success"
                                 : prof.risk_rating === "High"
                                 ? "destructive"
-                                : "warning"
+                                : prof.risk_rating === "Medium"
+                                ? "warning"
+                                : prof.risk_rating === "Neutral"
+                                ? "secondary"
+                                : "outline"
                             }
                             className="text-[10px]"
                           >
-                            {prof.risk_rating} Risk
+                            {prof.risk_rating === "Neutral" || prof.risk_rating === "N/A"
+                              ? `Risk Rating: ${prof.risk_rating}`
+                              : `${prof.risk_rating} Risk`}
                           </Badge>
                         </div>
                         <CardDescription className="text-xs">

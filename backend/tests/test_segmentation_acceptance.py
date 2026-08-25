@@ -2,13 +2,14 @@ import pytest
 import os
 import pandas as pd
 import numpy as np
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from app.features.datasets.router import UPLOADED_PATHS_CACHE
 from app.features.analytics.engine.segmentation import SegmentationService
 from app.features.analytics.router import resolve_dataset_path_async
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_project_dataset_segmentation_isolation(tmp_path):
     """
     Acceptance test: Verify selecting Project A -> Dataset A returns results based on Dataset A,
@@ -71,5 +72,6 @@ async def test_project_dataset_segmentation_isolation(tmp_path):
     assert len(res_b["assignments"]) == 60
 
     # 3. Verify cross-project dataset access restriction
-    with pytest.raises(Exception, match="No dataset found"):
+    with pytest.raises(HTTPException):
         await resolve_dataset_path_async(dataset_id="ds_a_id", project_id="proj_b")
+
