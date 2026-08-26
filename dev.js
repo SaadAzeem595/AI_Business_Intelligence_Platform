@@ -22,7 +22,7 @@ const runScript = path.join(__dirname, "backend", "run.py");
 const backendDev = spawn(pythonPath, [runScript], {
   stdio: "inherit",
   cwd: path.join(__dirname, "backend"),
-  shell: true
+  shell: false
 });
 
 // Handle processes shutdown gracefully on CTRL+C
