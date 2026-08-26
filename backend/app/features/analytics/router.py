@@ -25,6 +25,8 @@ from app.features.analytics.schemas import (
     ProjectForecastRequest,
     ProjectForecastResponse,
     ProjectSchemaInfoResponse,
+    ProjectAnomalyRequest,
+    ProjectAnomalyResponse,
 )
 from app.features.analytics.service import AnalyticsService
 from app.features.analytics.engine.utils import load_dataset
@@ -570,6 +572,121 @@ async def run_project_segmentation(
             detail=str(e),
         )
 
+
+
+@router.get("/projects/{project_id}/anomalies/schema-info", response_model=ProjectSchemaInfoResponse)
+async def get_project_anomalies_schema_info(
+    project_id: str,
+    current_user: MockUser = Depends(require_role(["Analyst", "Admin"])),
+    db: AsyncSession = Depends(get_db_session),
+) -> ProjectSchemaInfoResponse:
+    """Inspects all project datasets and returns anomaly detection candidates and suggested columns."""
+    from app.features.projects.router import get_project_and_verify_access
+    from app.features.analytics.engine.discovery import DatasetDiscoveryService
+    await get_project_and_verify_access(project_id, current_user, db)
+
+    return await DatasetDiscoveryService.discover_project_candidates(project_id, db)
+
+
+@router.post("/projects/{project_id}/anomalies", response_model=ProjectAnomalyResponse)
+async def run_project_anomalies(
+    project_id: str,
+    payload: ProjectAnomalyRequest,
+    current_user: MockUser = Depends(require_role(["Analyst", "Admin"])),
+    db: AsyncSession = Depends(get_db_session),
+) -> ProjectAnomalyResponse:
+    """Executes dataset-aware anomaly detection pipeline (Z-Score, IQR, Isolation Forest) on project datasets."""
+    from app.features.projects.router import get_project_and_verify_access
+    from app.features.analytics.engine.discovery import DatasetDiscoveryService
+
+    await get_project_and_verify_access(project_id, current_user, db)
+
+    # 1. Discover project dataset candidates
+    discovery_res = await DatasetDiscoveryService.discover_project_candidates(project_id, db)
+    if not discovery_res.candidates:
+        return ProjectAnomalyResponse(
+            status="error",
+            project_id=project_id,
+            message="No suitable datasets found in this project. Please upload a dataset with date and numeric metric columns."
+        )
+
+    # Select target candidate
+    candidate = None
+    if payload.dataset_id:
+        candidate = next((c for c in discovery_res.candidates if c.dataset_id == payload.dataset_id), None)
+    if not candidate:
+        candidate = next((c for c in discovery_res.candidates if c.is_time_series_capable or len(c.date_columns) > 0), discovery_res.candidates[0])
+
+    ts_col = payload.timestamp_column or candidate.suggested_date or (candidate.date_columns[0] if candidate.date_columns else None)
+    metric_col = payload.metric_column or candidate.suggested_metric or (candidate.metric_columns[0] if candidate.metric_columns else None)
+
+    if not ts_col:
+        return ProjectAnomalyResponse(
+            status="error",
+            project_id=project_id,
+            dataset_id=candidate.dataset_id,
+            dataset_name=candidate.dataset_name,
+            message="No timestamp/date column found in dataset candidate for anomaly detection."
+        )
+
+    if not metric_col:
+        return ProjectAnomalyResponse(
+            status="error",
+            project_id=project_id,
+            dataset_id=candidate.dataset_id,
+            dataset_name=candidate.dataset_name,
+            message="No numeric metric column found in dataset candidate for anomaly detection."
+        )
+
+    # 2. Build time-series query to extract data for the target columns
+    df = None
+    try:
+        sql, meta = await DatasetDiscoveryService.build_time_series_query_async(
+            project_id=project_id,
+            dataset_id=candidate.dataset_id,
+            date_column=ts_col,
+            target_column=metric_col,
+            aggregation="daily",
+            db=db
+        )
+        query_res = AnalyticsService.execute_duckdb_query(sql, project_id)
+        rows = query_res.rows if hasattr(query_res, "rows") else (query_res.get("rows", []) if isinstance(query_res, dict) else [])
+        if rows:
+            df = pd.DataFrame(rows)
+    except Exception:
+        pass
+
+    if df is None or df.empty:
+        path = await resolve_dataset_path_async(candidate.dataset_id, project_id, db)
+        df = load_dataset(path)
+
+    if df is None or df.empty:
+        return ProjectAnomalyResponse(
+            status="error",
+            project_id=project_id,
+            dataset_id=candidate.dataset_id,
+            dataset_name=candidate.dataset_name,
+            message="Dataset is empty or could not be loaded."
+        )
+
+    # Clean & standardize column names if df comes from time-series query
+    if "date" in df.columns and ts_col not in df.columns:
+        ts_col = "date"
+    if "actual" in df.columns and metric_col not in df.columns:
+        metric_col = "actual"
+
+    # 3. Run production anomaly detection service
+    anomaly_svc = AnomalyDetectionService()
+    return anomaly_svc.run_dataset_anomaly_detection(
+        df=df,
+        timestamp_column=ts_col,
+        metric_column=metric_col,
+        detection_method=payload.detection_method,
+        sensitivity=payload.sensitivity,
+        dataset_name=candidate.dataset_name,
+        dataset_id=candidate.dataset_id,
+        project_id=project_id
+    )
 
 
 @router.post("/analytics/anomalies", response_model=AnomalyResponse)

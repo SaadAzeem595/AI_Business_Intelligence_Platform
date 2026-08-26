@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnalyticsService } from "../services/analytics.service";
-import { ProjectForecastRequest } from "@/shared/types/analytics";
+import { ProjectForecastRequest, ProjectAnomalyRequest } from "@/shared/types/analytics";
 
 export function useForecastingHealth(projectId?: string) {
   const query = useQuery({
@@ -119,6 +119,42 @@ export function useSegmentation(
     datasetType: query.data?.dataset_type || null,
     entityKey: query.data?.entity_key || null,
     message: query.data?.message || null,
+    isLoading: query.isLoading,
+    isError: query.isError,
+    error: query.error as any,
+    refetch: query.refetch,
+  };
+}
+
+export function useProjectAnomalySchemaInfo(projectId?: string) {
+  const query = useQuery({
+    queryKey: ["analytics", "anomaly-schema-info", projectId],
+    queryFn: () => AnalyticsService.getProjectAnomalySchemaInfo(projectId!),
+    enabled: !!projectId,
+    staleTime: 30 * 1000,
+  });
+
+  return {
+    hasTimeSeries: query.data?.has_time_series || false,
+    candidates: query.data?.candidates || [],
+    message: query.data?.message || null,
+    isLoading: query.isLoading,
+    isError: query.isError,
+    refetch: query.refetch,
+  };
+}
+
+export function useProjectAnomalies(projectId?: string, config?: ProjectAnomalyRequest) {
+  const query = useQuery({
+    queryKey: ["analytics", "project-anomalies", projectId, config],
+    queryFn: () => AnalyticsService.runProjectAnomaly(projectId!, config || {}),
+    enabled: !!projectId && !!config && !!config.dataset_id && !!config.timestamp_column && !!config.metric_column,
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  });
+
+  return {
+    anomalyResult: query.data || null,
     isLoading: query.isLoading,
     isError: query.isError,
     error: query.error as any,

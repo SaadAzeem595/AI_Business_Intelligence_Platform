@@ -105,6 +105,62 @@ class AnomalyResponse(BaseModel):
     logs: List[AnomalyLog]
 
 
+# Production Anomaly Detection Schemas
+class ProjectAnomalyRequest(BaseModel):
+    dataset_id: Optional[str] = Field(None, description="ID of specific dataset to inspect, or auto-detect")
+    timestamp_column: Optional[str] = Field(None, description="Timestamp/date column name")
+    metric_column: Optional[str] = Field(None, description="Numeric metric column name")
+    detection_method: str = Field("zscore", description="Anomaly detection algorithm: 'zscore', 'iqr', 'iforest'")
+    sensitivity: float = Field(0.05, description="Sensitivity threshold or contamination factor (0.01 - 0.20)")
+
+
+class AnomalyTimelinePointDetailed(BaseModel):
+    timestamp: str
+    value: float
+    upper_limit: Optional[float] = None
+    lower_limit: Optional[float] = None
+    is_anomaly: bool = False
+    anomaly_score: float = 0.0
+    severity: str = "None"
+
+
+class AnomalyLogDetailed(BaseModel):
+    id: str
+    timestamp: str
+    metric: str
+    value: float
+    value_formatted: str
+    score: float
+    deviation: str
+    severity: str
+    status: str = "Unresolved"
+    explanation: str
+    threshold: Optional[float] = None
+
+
+class ProjectAnomalyResponse(BaseModel):
+    status: str = Field("success", description="'success' or 'error'")
+    project_id: Optional[str] = None
+    dataset_id: Optional[str] = None
+    dataset_name: Optional[str] = None
+    timestamp_column: Optional[str] = None
+    metric_column: Optional[str] = None
+    detection_method: str = "zscore"
+    sensitivity: float = 0.05
+    total_observations: int = 0
+    anomalies_detected: int = 0
+    anomaly_rate: float = 0.0
+    highest_severity: str = "None"
+    upper_threshold: Optional[float] = None
+    lower_threshold: Optional[float] = None
+    timeline: List[AnomalyTimelinePointDetailed] = []
+    logs: List[AnomalyLogDetailed] = []
+    business_impact: List[str] = []
+    recommended_actions: List[str] = []
+    message: Optional[str] = None
+
+
+
 class SQLPayload(BaseModel):
     query: str = Field(..., description="The read-only SQL query statement to execute against DuckDB", examples=["SELECT region, SUM(revenue) FROM active_dataset GROUP BY region"])
     project_id: Optional[str] = Field(None, description="Scope the query context to a specific project workspace")

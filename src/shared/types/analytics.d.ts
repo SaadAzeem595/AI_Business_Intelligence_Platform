@@ -153,8 +153,63 @@ export interface AnomaliesResult {
   logs: AnomalyLog[];
 }
 
+export interface ProjectAnomalyRequest {
+  dataset_id?: string;
+  timestamp_column?: string;
+  metric_column?: string;
+  detection_method?: "zscore" | "iqr" | "iforest" | string;
+  sensitivity?: number;
+}
+
+export interface AnomalyTimelinePointDetailed {
+  timestamp: string;
+  value: number;
+  upper_limit?: number | null;
+  lower_limit?: number | null;
+  is_anomaly: boolean;
+  anomaly_score: number;
+  severity: "High" | "Medium" | "Low" | "None" | string;
+}
+
+export interface AnomalyLogDetailed {
+  id: string;
+  timestamp: string;
+  metric: string;
+  value: number;
+  value_formatted: string;
+  score: number;
+  deviation: string;
+  severity: "High" | "Medium" | "Low" | string;
+  status: "Unresolved" | "Resolved";
+  explanation: string;
+  threshold?: number | null;
+}
+
+export interface ProjectAnomalyResponse {
+  status: "success" | "warning" | "error";
+  project_id?: string;
+  dataset_id?: string;
+  dataset_name?: string;
+  timestamp_column?: string;
+  metric_column?: string;
+  detection_method: string;
+  sensitivity: number;
+  total_observations: number;
+  anomalies_detected: number;
+  anomaly_rate: number;
+  highest_severity: "High" | "Medium" | "Low" | "None" | string;
+  upper_threshold?: number | null;
+  lower_threshold?: number | null;
+  timeline: AnomalyTimelinePointDetailed[];
+  logs: AnomalyLogDetailed[];
+  business_impact: string[];
+  recommended_actions: string[];
+  message?: string;
+}
+
 export interface SQLResult {
   columns: string[];
   rows: Record<string, string | number | boolean>[];
   elapsedMs: number;
 }
+

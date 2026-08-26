@@ -43,7 +43,13 @@ app = FastAPI(
     openapi_url=f"{settings.API_V1_STR}/openapi.json",
 )
 
-# Setup CORS policies middleware for Next.js queries
+# Setup compression
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+# Setup execution timing tracking middleware
+app.add_middleware(RequestLoggingMiddleware)
+
+# Setup CORS policies middleware for Next.js queries (added last to ensure it is outermost)
 cors_source = settings.FRONTEND_ORIGINS or settings.ALLOWED_ORIGINS
 raw_origins = [o.strip() for o in cors_source.split(",") if o.strip()] if cors_source else []
 origins = [o for o in raw_origins if o != "*"]
@@ -69,12 +75,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Setup compression
-app.add_middleware(GZipMiddleware, minimum_size=1000)
-
-# Setup execution timing tracking middleware
-app.add_middleware(RequestLoggingMiddleware)
 
 # Wire global exception handler envelopes
 setup_exception_handlers(app)

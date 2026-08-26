@@ -7,7 +7,9 @@ import {
   SQLResult,
   ProjectForecastRequest,
   ProjectForecastResponse,
-  ProjectSchemaInfoResponse
+  ProjectSchemaInfoResponse,
+  ProjectAnomalyRequest,
+  ProjectAnomalyResponse
 } from "@/shared/types/analytics";
 
 export const AnalyticsService = {
@@ -62,34 +64,21 @@ export const AnalyticsService = {
   },
 
 
+  async getProjectAnomalySchemaInfo(projectId: string): Promise<ProjectSchemaInfoResponse> {
+    const response = await apiClient.get<ProjectSchemaInfoResponse>(`/projects/${projectId}/anomalies/schema-info`);
+    return response.data;
+  },
+
+  async runProjectAnomaly(projectId: string, payload: ProjectAnomalyRequest): Promise<ProjectAnomalyResponse> {
+    const response = await apiClient.post<ProjectAnomalyResponse>(`/projects/${projectId}/anomalies`, payload);
+    return response.data;
+  },
+
   async getAnomalies(sensitivity: number): Promise<AnomaliesResult> {
-    try {
-      const response = await apiClient.post<AnomaliesResult>(API_ENDPOINTS.ANALYTICS.ANOMALIES, {
-        sensitivity,
-      });
-      return response.data;
-    } catch {
-      return {
-        timeline: [
-          { date: "Jul 20", value: 1400, limit: 1800 },
-          { date: "Jul 21", value: 1450, limit: 1800 },
-          { date: "Jul 22", value: 1390, limit: 1800 },
-          { date: "Jul 23", value: 1560, limit: 1800 },
-          { date: "Jul 24", value: 1200, limit: 1800 },
-          { date: "Jul 25", value: 1480, limit: 1800 },
-          { date: "Jul 26", value: 1520, limit: 1800 },
-          { date: "Jul 27", value: 1610, limit: 1800 },
-          { date: "Jul 28", value: 1580, limit: 1800 },
-          { date: "Jul 29", value: 2450, limit: 1800 },
-          { date: "Jul 30", value: 1600, limit: 1800 },
-        ],
-        logs: [
-          { id: "A-9204", metric: "Daily API Calls Spike", value: "85,420 calls", deviation: "+3.2 Std Dev", date: "2026-08-02", status: "Unresolved" },
-          { id: "A-8902", metric: "Unusual refund volume", value: "$4,850 value", deviation: "+4.1 Std Dev", date: "2026-07-29", status: "Unresolved" },
-          { id: "A-7201", metric: "Logins count dip", value: "1,200 count", deviation: "-2.8 Std Dev", date: "2026-07-24", status: "Resolved" },
-        ],
-      };
-    }
+    const response = await apiClient.post<AnomaliesResult>(API_ENDPOINTS.ANALYTICS.ANOMALIES, {
+      sensitivity,
+    });
+    return response.data;
   },
 
   async executeSQL(query: string, projectId?: string): Promise<SQLResult> {
