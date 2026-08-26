@@ -18,8 +18,12 @@ const isDevAuthBypass =
 
 
 const getBaseURL = () => {
-  let url = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
+  let url = process.env.NEXT_PUBLIC_API_URL || "/api/v1";
   url = url.trim().replace(/\/+$/, "");
+  if (url.startsWith("/")) {
+    return url.endsWith("/api/v1") ? url : `${url}/api/v1`;
+  }
+  url = url.replace("://localhost", "://127.0.0.1");
   if (!url.endsWith("/api/v1")) {
     url = `${url}/api/v1`;
   }
@@ -206,9 +210,15 @@ const validateApiUrl = () => {
   if (!url) {
     if (process.env.NODE_ENV === "development") {
       console.warn(
-        "%c[API Client Warning] NEXT_PUBLIC_API_URL is missing. Using default http://localhost:8000",
+        "%c[API Client Warning] NEXT_PUBLIC_API_URL is missing. Using default /api/v1",
         "color: orange; font-weight: bold;"
       );
+    }
+    return;
+  }
+  if (url.startsWith("/")) {
+    if (process.env.NODE_ENV === "development") {
+      console.log(`[API Client Initialized] baseURL = ${apiClient.defaults.baseURL}`);
     }
     return;
   }
