@@ -183,6 +183,10 @@ export interface AnomalyLogDetailed {
   status: "Unresolved" | "Resolved";
   explanation: string;
   threshold?: number | null;
+  threshold_formatted?: string | null;
+  expected_value?: number | null;
+  expected_value_formatted?: string | null;
+  deviation_pct?: number | null;
 }
 
 export interface ProjectAnomalyResponse {
@@ -200,6 +204,11 @@ export interface ProjectAnomalyResponse {
   highest_severity: "High" | "Medium" | "Low" | "None" | string;
   upper_threshold?: number | null;
   lower_threshold?: number | null;
+  min_observed?: number | null;
+  max_observed?: number | null;
+  mean_observed?: number | null;
+  std_observed?: number | null;
+  sensitivity_explanation?: string | null;
   timeline: AnomalyTimelinePointDetailed[];
   logs: AnomalyLogDetailed[];
   business_impact: string[];

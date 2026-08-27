@@ -136,6 +136,10 @@ class AnomalyLogDetailed(BaseModel):
     status: str = "Unresolved"
     explanation: str
     threshold: Optional[float] = None
+    threshold_formatted: Optional[str] = None
+    expected_value: Optional[float] = None
+    expected_value_formatted: Optional[str] = None
+    deviation_pct: Optional[float] = None
 
 
 class ProjectAnomalyResponse(BaseModel):
@@ -153,11 +157,17 @@ class ProjectAnomalyResponse(BaseModel):
     highest_severity: str = "None"
     upper_threshold: Optional[float] = None
     lower_threshold: Optional[float] = None
+    min_observed: Optional[float] = None
+    max_observed: Optional[float] = None
+    mean_observed: Optional[float] = None
+    std_observed: Optional[float] = None
+    sensitivity_explanation: Optional[str] = None
     timeline: List[AnomalyTimelinePointDetailed] = []
     logs: List[AnomalyLogDetailed] = []
     business_impact: List[str] = []
     recommended_actions: List[str] = []
     message: Optional[str] = None
+
 
 
 

@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from scipy.stats import norm
 from sklearn.ensemble import IsolationForest
 from sklearn.neighbors import LocalOutlierFactor
 from sklearn.preprocessing import StandardScaler
@@ -28,6 +29,7 @@ class AnomalyDetectionService:
         dataset_name: str = "Dataset",
         dataset_id: Optional[str] = None,
         project_id: Optional[str] = None,
+        display_metric_name: Optional[str] = None,
     ) -> ProjectAnomalyResponse:
         """
         Production-grade anomaly detection on time-series dataset.
@@ -80,40 +82,63 @@ class AnomalyDetectionService:
         timestamps = clean_df[timestamp_column]
         total_obs = len(values)
 
+        min_val = float(np.min(values))
+        max_val = float(np.max(values))
         mean_val = float(np.mean(values))
         std_val = float(np.std(values)) if np.std(values) > 0 else 1.0
 
         # Method Execution: Z-Score, IQR, or Isolation Forest
         method = detection_method.lower().strip()
         sens = min(0.20, max(0.01, sensitivity))
+        sens_pct = round(sens * 100.0, 1)
 
         is_anomaly_mask = np.zeros(total_obs, dtype=bool)
         anomaly_scores = np.zeros(total_obs, dtype=float)
-        upper_limit = float(mean_val + 3.0 * std_val)
-        lower_limit = float(mean_val - 3.0 * std_val)
+
+        metric_display = display_metric_name or metric_column
+        is_currency = any(kw in metric_display.lower() for kw in ["revenue", "price", "sales", "cost", "profit", "amount", "spend", "value", "freight"])
+
+        def format_val(val: float) -> str:
+            if is_currency:
+                return f"${val:,.2f}" if abs(val) < 1000 else f"${val:,.0f}"
+            return f"{val:,.2f}" if abs(val) < 100 else f"{val:,.0f}"
 
         if method in ["zscore", "z-score"]:
-            # Dynamic Z threshold: 3.5 - 15 * sensitivity (e.g. sensitivity 0.05 -> z_thresh = 2.75)
-            z_thresh = max(1.5, 3.5 - (15.0 * sens))
+            # Mathematical Z-Score quantiles: Z_thresh = norm.ppf(1 - sens/2)
+            z_thresh = float(norm.ppf(1.0 - (sens / 2.0)))
             z_scores = np.abs((values - mean_val) / std_val)
             anomaly_scores = z_scores
             is_anomaly_mask = z_scores > z_thresh
 
             upper_limit = float(mean_val + z_thresh * std_val)
             lower_limit = float(mean_val - z_thresh * std_val)
+            sensitivity_explanation = (
+                f"Z-Score evaluates standard normal distribution quantiles. At sensitivity α={sens_pct}%, "
+                f"the critical threshold is Z={z_thresh:.2f} standard deviations from baseline average (Mean={format_val(mean_val)}, Std Dev={format_val(std_val)}). "
+                f"Statistical boundary bounds are set at [{format_val(lower_limit)}, {format_val(upper_limit)}]."
+            )
 
         elif method in ["iqr", "interquartile"]:
             q1 = float(np.percentile(values, 25))
             q3 = float(np.percentile(values, 75))
             iqr = q3 - q1 if (q3 - q1) > 0 else 1.0
 
-            # Multiplier: 2.2 - 4.0 * sensitivity (e.g. 0.05 -> multiplier 2.0)
-            iqr_mult = max(0.5, 2.2 - (4.0 * sens))
+            # Mathematical Tukey fence multiplier derived from sensitivity
+            iqr_mult = float(max(1.0, min(3.0, 1.5 * np.sqrt(0.05 / sens))))
             upper_limit = float(q3 + iqr_mult * iqr)
             lower_limit = float(q1 - iqr_mult * iqr)
 
             is_anomaly_mask = (values > upper_limit) | (values < lower_limit)
-            anomaly_scores = np.where(values > upper_limit, (values - upper_limit) / iqr, np.where(values < lower_limit, (lower_limit - values) / iqr, 0.0))
+            anomaly_scores = np.where(
+                values > upper_limit, 
+                (values - upper_limit) / iqr, 
+                np.where(values < lower_limit, (lower_limit - values) / iqr, 0.0)
+            )
+            sensitivity_explanation = (
+                f"IQR uses Tukey's boxplot fence rule. At sensitivity α={sens_pct}%, "
+                f"the fence multiplier is k={iqr_mult:.2f} (Q1={format_val(q1)}, Q3={format_val(q3)}, IQR={format_val(iqr)}). "
+                f"Outlier fences are calculated as Q1 - {iqr_mult:.2f}×IQR ({format_val(lower_limit)}) and Q3 + {iqr_mult:.2f}×IQR ({format_val(upper_limit)})."
+            )
 
         elif method in ["iforest", "isolation_forest"]:
             scaler = StandardScaler()
@@ -126,20 +151,21 @@ class AnomalyDetectionService:
             is_anomaly_mask = preds == -1
             anomaly_scores = dec_scores
 
-            # Estimate upper & lower bounds for chart
-            z_thresh = max(1.5, 3.0 - (10.0 * sens))
-            upper_limit = float(mean_val + z_thresh * std_val)
-            lower_limit = float(mean_val - z_thresh * std_val)
+            # Empirical upper & lower boundary estimation from non-anomalous inliers
+            inliers = values[preds == 1]
+            if len(inliers) > 0:
+                upper_limit = float(np.max(inliers))
+                lower_limit = float(np.min(inliers))
+            else:
+                upper_limit = float(mean_val + 2.0 * std_val)
+                lower_limit = float(mean_val - 2.0 * std_val)
+
+            sensitivity_explanation = (
+                f"Isolation Forest isolates anomalies using randomized decision trees with contamination rate α={sens_pct}%. "
+                f"Empirical non-outlier decision boundaries define the expected operational bounds as [{format_val(lower_limit)}, {format_val(upper_limit)}]."
+            )
         else:
             raise ValueError(f"Unsupported anomaly detection algorithm: '{detection_method}'. Choose 'zscore', 'iqr', or 'iforest'.")
-
-        # Format helpers
-        is_currency = any(kw in metric_column.lower() for kw in ["revenue", "price", "sales", "cost", "profit", "amount", "spend", "value", "freight"])
-
-        def format_val(val: float) -> str:
-            if is_currency:
-                return f"${val:,.2f}" if abs(val) < 1000 else f"${val:,.0f}"
-            return f"{val:,.2f}" if abs(val) < 100 else f"{val:,.0f}"
 
         timeline: List[AnomalyTimelinePointDetailed] = []
         logs: List[AnomalyLogDetailed] = []
@@ -159,47 +185,59 @@ class AnomalyDetectionService:
                 sev = "None"
             else:
                 anomalies_count += 1
+                z_diff = (val - mean_val) / std_val
+                abs_z = abs(z_diff)
+
                 if method in ["zscore", "z-score"]:
-                    z_val = score
-                    if z_val > 4.0:
+                    if abs_z > 3.5:
                         sev = "High"
-                    elif z_val > 3.0:
+                    elif abs_z > 2.5:
                         sev = "Medium"
                     else:
                         sev = "Low"
                 else:
-                    if score > 2.0 or (val > upper_limit * 1.3 or val < lower_limit * 0.7):
+                    if score > 2.0 or val > upper_limit * 1.3 or val < lower_limit * 0.7:
                         sev = "High"
-                    elif score > 1.0 or (val > upper_limit * 1.1 or val < lower_limit * 0.9):
+                    elif score > 1.0 or val > upper_limit * 1.1 or val < lower_limit * 0.9:
                         sev = "Medium"
                     else:
                         sev = "Low"
 
                 severities_found.append(sev)
 
-                z_diff = (val - mean_val) / std_val
-                dev_str = f"{'+' if z_diff > 0 else ''}{z_diff:.2f} Std Dev"
-                exp_direction = "spiked above" if val > upper_limit else "dipped below"
                 bound_ref = upper_limit if val > upper_limit else lower_limit
+                dev_pct = float(((val - mean_val) / abs(mean_val)) * 100.0) if mean_val != 0 else 0.0
+                sign_str = "+" if dev_pct >= 0 else ""
+                dev_str = f"{'+' if z_diff > 0 else ''}{z_diff:.2f} Std Dev ({sign_str}{dev_pct:.1f}% vs mean)"
 
-                explanation = (
-                    f"Observed value {format_val(val)} on {ts_str} {exp_direction} "
-                    f"boundary {format_val(bound_ref)} ({dev_str} from mean {format_val(mean_val)})."
-                )
+                if val > upper_limit:
+                    explanation = (
+                        f"On {ts_str}, '{metric_display}' in dataset '{dataset_name}' spiked to {format_val(val)}, "
+                        f"exceeding the upper threshold of {format_val(upper_limit)} (+{dev_pct:.1f}% above baseline average {format_val(mean_val)})."
+                    )
+                else:
+                    explanation = (
+                        f"On {ts_str}, '{metric_display}' in dataset '{dataset_name}' dropped to {format_val(val)}, "
+                        f"falling below the lower threshold of {format_val(lower_limit)} ({dev_pct:.1f}% below baseline average {format_val(mean_val)})."
+                    )
 
                 logs.append(
                     AnomalyLogDetailed(
                         id=f"ANOM-{anomalies_count:03d}",
                         timestamp=ts_str,
-                        metric=metric_column,
-                        value=val,
+                        metric=metric_display,
+                        value=round(val, 2),
                         value_formatted=format_val(val),
                         score=round(score, 2),
                         deviation=dev_str,
                         severity=sev,
                         status="Unresolved",
                         explanation=explanation,
-                        threshold=round(bound_ref, 2)
+                        threshold=round(bound_ref, 2),
+                        threshold_formatted=format_val(bound_ref),
+                        expected_value=round(mean_val, 2),
+                        expected_value_formatted=format_val(mean_val),
+                        deviation_pct=round(dev_pct, 2)
                     )
                 )
 
@@ -229,40 +267,73 @@ class AnomalyDetectionService:
 
         anomaly_rate = round((anomalies_count / total_obs) * 100.0, 2) if total_obs > 0 else 0.0
 
-        # Business Impact & Actionable Recommendations synthesis
+        # Business Impact & Actionable Recommendations synthesis strictly grounded in dataset findings
         impact_insights = []
         recommendations = []
+
+        start_date = timestamps.iloc[0].strftime("%Y-%m-%d") if hasattr(timestamps.iloc[0], "strftime") else str(timestamps.iloc[0])
+        end_date = timestamps.iloc[-1].strftime("%Y-%m-%d") if hasattr(timestamps.iloc[-1], "strftime") else str(timestamps.iloc[-1])
 
         if anomalies_count > 0:
             top_anom = logs[0]
             impact_insights.append(
-                f"Identified {anomalies_count} anomaly observation(s) out of {total_obs} total data points ({anomaly_rate}% anomaly rate)."
+                f"Identified {anomalies_count} anomaly observation(s) out of {total_obs} data points ({anomaly_rate}% anomaly rate) in dataset '{dataset_name}' between {start_date} and {end_date}."
             )
             impact_insights.append(
-                f"Highest severity peak observed on {top_anom.timestamp} where '{metric_column}' reached {top_anom.value_formatted} ({top_anom.deviation})."
+                f"Highest severity outlier recorded on {top_anom.timestamp} where '{metric_display}' reached {top_anom.value_formatted} ({top_anom.deviation})."
             )
             impact_insights.append(
-                f"Baseline distribution mean for '{metric_column}' is {format_val(mean_val)} with standard deviation {format_val(std_val)}."
+                f"Baseline distribution for '{metric_display}' has a mean of {format_val(mean_val)} and standard deviation of {format_val(std_val)} (Observed Range: {format_val(min_val)} to {format_val(max_val)})."
+            )
+            impact_insights.append(sensitivity_explanation)
+
+            # Generate dynamic dataset-specific recommendations from actual findings
+            # 1. Top peak anomaly action
+            recommendations.append(
+                f"Audit operational data for '{metric_display}' around {top_anom.timestamp} where value peaked at {top_anom.value_formatted} ({top_anom.deviation}) to confirm whether this reflects authentic volume or a data pipeline anomaly."
             )
 
+            # 2. Check if low dips exist
+            low_dips = [l for l in logs if l.value < lower_limit]
+            if low_dips:
+                worst_dip = min(low_dips, key=lambda x: x.value)
+                recommendations.append(
+                    f"Investigate the low outlier on {worst_dip.timestamp} where '{metric_display}' dropped to {worst_dip.value_formatted} ({worst_dip.deviation_pct:.1f}% below average), checking for potential service outage or missing logs."
+                )
+
+            # 3. Alerting recommendation with exact bounds
             recommendations.append(
-                f"Audit raw transaction logs around {top_anom.timestamp} to rule out data entry errors, system outages, or flash sales events."
+                f"Configure automated monitoring alerts for '{metric_display}' whenever daily values breach upper boundary ({format_val(upper_limit)}) or lower boundary ({format_val(lower_limit)})."
             )
-            recommendations.append(
-                f"Establish automated alerting threshold for '{metric_column}' when values exceed upper limit ({format_val(upper_limit)})."
-            )
-            recommendations.append(
-                "Review flagged unresolved anomalies with business domain leaders and update operational safeguards."
-            )
+
+            # 4. Anomaly rate recommendation
+            if anomaly_rate > 10.0:
+                recommendations.append(
+                    f"High anomaly rate of {anomaly_rate}% detected across {total_obs} observations. Consider reducing sensitivity below {sens_pct}% or applying rolling average aggregation to smooth series variance."
+                )
         else:
             impact_insights.append(
-                f"No statistically significant anomalies detected across {total_obs} observations for '{metric_column}' using {detection_method.upper()} algorithm."
+                f"Analyzed {total_obs} observations for '{metric_display}' in dataset '{dataset_name}' across the time series from {start_date} to {end_date}."
             )
             impact_insights.append(
-                f"Metric value distribution remains stable within baseline expected range ({format_val(lower_limit)} to {format_val(upper_limit)})."
+                f"Observed values ranged from a minimum of {format_val(min_val)} to a maximum of {format_val(max_val)} (Mean: {format_val(mean_val)}, Std Dev: {format_val(std_val)})."
+            )
+            impact_insights.append(
+                f"Calculated statistical bounds for {detection_method.upper()}: Lower Limit = {format_val(lower_limit)}, Upper Limit = {format_val(upper_limit)}."
+            )
+            impact_insights.append(
+                f"Zero anomalies detected (0.00% anomaly rate). All {total_obs} observations fell strictly within the calculated statistical boundaries [{format_val(lower_limit)}, {format_val(upper_limit)}]."
+            )
+            impact_insights.append(sensitivity_explanation)
+
+            recommendations.append(
+                f"Metric distribution for '{metric_display}' in '{dataset_name}' is statistically stable across all {total_obs} observations within expected bounds [{format_val(lower_limit)}, {format_val(upper_limit)}]."
             )
             recommendations.append(
-                "Maintain current monitoring threshold and re-run detection if sensitivity parameters are adjusted."
+                f"To capture subtle variance shifts in '{metric_display}', consider increasing algorithm sensitivity above {sens_pct}% (e.g. {min(15.0, round(sens_pct * 2.0, 1))}%)."
+            )
+            recommendations.append(
+                f"Maintain real-time threshold alerts at lower bound {format_val(lower_limit)} and upper bound {format_val(upper_limit)} for future dataset ingestions."
             )
 
         return ProjectAnomalyResponse(
@@ -271,7 +342,7 @@ class AnomalyDetectionService:
             dataset_id=dataset_id,
             dataset_name=dataset_name,
             timestamp_column=timestamp_column,
-            metric_column=metric_column,
+            metric_column=metric_display,
             detection_method=detection_method,
             sensitivity=sensitivity,
             total_observations=total_obs,
@@ -280,6 +351,11 @@ class AnomalyDetectionService:
             highest_severity=highest_sev,
             upper_threshold=round(upper_limit, 2),
             lower_threshold=round(lower_limit, 2),
+            min_observed=round(min_val, 2),
+            max_observed=round(max_val, 2),
+            mean_observed=round(mean_val, 2),
+            std_observed=round(std_val, 2),
+            sensitivity_explanation=sensitivity_explanation,
             timeline=timeline,
             logs=logs,
             business_impact=impact_insights,

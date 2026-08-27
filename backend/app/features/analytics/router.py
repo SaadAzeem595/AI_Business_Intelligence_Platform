@@ -669,24 +669,43 @@ async def run_project_anomalies(
             message="Dataset is empty or could not be loaded."
         )
 
+    display_metric_name = metric_col
+
     # Clean & standardize column names if df comes from time-series query
-    if "date" in df.columns and ts_col not in df.columns:
+    if "date_bucket" in df.columns:
+        ts_col = "date_bucket"
+    elif "date" in df.columns and ts_col not in df.columns:
         ts_col = "date"
-    if "actual" in df.columns and metric_col not in df.columns:
+
+    if "metric_value" in df.columns:
+        metric_col = "metric_value"
+    elif "actual" in df.columns and metric_col not in df.columns:
         metric_col = "actual"
 
     # 3. Run production anomaly detection service
-    anomaly_svc = AnomalyDetectionService()
-    return anomaly_svc.run_dataset_anomaly_detection(
-        df=df,
-        timestamp_column=ts_col,
-        metric_column=metric_col,
-        detection_method=payload.detection_method,
-        sensitivity=payload.sensitivity,
-        dataset_name=candidate.dataset_name,
-        dataset_id=candidate.dataset_id,
-        project_id=project_id
-    )
+    try:
+        anomaly_svc = AnomalyDetectionService()
+        return anomaly_svc.run_dataset_anomaly_detection(
+            df=df,
+            timestamp_column=ts_col,
+            metric_column=metric_col,
+            detection_method=payload.detection_method,
+            sensitivity=payload.sensitivity,
+            dataset_name=candidate.dataset_name,
+            dataset_id=candidate.dataset_id,
+            project_id=project_id,
+            display_metric_name=display_metric_name
+        )
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Error executing anomaly detection pipeline: {e}", exc_info=True)
+        return ProjectAnomalyResponse(
+            status="error",
+            project_id=project_id,
+            dataset_id=candidate.dataset_id,
+            dataset_name=candidate.dataset_name,
+            message=f"Failed to execute anomaly detection: {str(e)}"
+        )
 
 
 @router.post("/analytics/anomalies", response_model=AnomalyResponse)

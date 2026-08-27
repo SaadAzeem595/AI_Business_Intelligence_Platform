@@ -149,14 +149,24 @@ export default function AnomaliesPage() {
       cell: (row) => <span className="font-semibold text-foreground">{row.metric}</span>,
     },
     {
-      header: "Observed Value",
+      header: "Observed",
       accessorKey: "value_formatted",
       cell: (row) => <span className="font-mono font-bold text-foreground">{row.value_formatted}</span>,
     },
     {
-      header: "Score / Deviation",
+      header: "Expected Mean",
+      accessorKey: "expected_value_formatted",
+      cell: (row) => <span className="font-mono text-xs text-muted-foreground">{row.expected_value_formatted || "-"}</span>,
+    },
+    {
+      header: "Threshold",
+      accessorKey: "threshold_formatted",
+      cell: (row) => <span className="font-mono text-xs text-amber-500 font-semibold">{row.threshold_formatted || "-"}</span>,
+    },
+    {
+      header: "Deviation",
       accessorKey: "deviation",
-      cell: (row) => <span className="font-mono font-bold text-rose-500">{row.deviation}</span>,
+      cell: (row) => <span className="font-mono font-bold text-rose-500 text-xs">{row.deviation}</span>,
     },
     {
       header: "Severity",
@@ -172,15 +182,13 @@ export default function AnomaliesPage() {
       },
     },
     {
-      header: "Status",
-      accessorKey: "status",
-      cell: (row) => {
-        return (
-          <Badge variant={row.status === "Resolved" ? "success" : "warning"} className="text-[10px]">
-            {row.status}
-          </Badge>
-        );
-      },
+      header: "Business Explanation",
+      accessorKey: "explanation",
+      cell: (row) => (
+        <span className="text-xs text-muted-foreground leading-snug line-clamp-2 max-w-xs" title={row.explanation}>
+          {row.explanation}
+        </span>
+      ),
     },
     {
       header: "Action",
@@ -198,7 +206,7 @@ export default function AnomaliesPage() {
           onClick={() => handleResolve(row.id)}
         >
           <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
-          {row.status === "Resolved" ? "Mark Unresolved" : "Resolve"}
+          {row.status === "Resolved" ? "Resolved" : "Resolve"}
         </Button>
       ),
     },
@@ -350,8 +358,8 @@ export default function AnomaliesPage() {
                   onChange={(e) => setDetectionMethod(e.target.value as any)}
                   className="text-xs p-2 rounded-md border border-border/80 bg-background w-full text-foreground cursor-pointer font-medium"
                 >
-                  <option value="zscore">Z-Score (Standard Deviation Bounds)</option>
-                  <option value="iqr">IQR (Interquartile Range Outliers)</option>
+                  <option value="zscore">Z-Score (Normal Distribution Quantiles)</option>
+                  <option value="iqr">IQR (Tukey Boxplot Fences)</option>
                   <option value="iforest">Isolation Forest (ML Outlier Tree)</option>
                 </select>
               </div>
@@ -359,20 +367,22 @@ export default function AnomaliesPage() {
               {/* Sensitivity Slider */}
               <div className="space-y-1.5">
                 <div className="flex justify-between text-xs font-semibold">
-                  <span className="text-muted-foreground">Sensitivity Factor</span>
-                  <span className="text-rose-500 font-mono font-bold">{(sensitivity * 100).toFixed(0)}%</span>
+                  <span className="text-muted-foreground">Sensitivity Factor (α)</span>
+                  <span className="text-rose-500 font-mono font-bold">{(sensitivity * 100).toFixed(1)}%</span>
                 </div>
                 <input
                   type="range"
                   min="0.01"
-                  max="0.15"
+                  max="0.20"
                   step="0.01"
                   value={sensitivity}
                   onChange={(e) => setSensitivity(Number(e.target.value))}
                   className="w-full h-1 bg-muted rounded-lg appearance-none cursor-pointer accent-rose-500"
                 />
-                <p className="text-[10px] text-muted-foreground leading-relaxed mt-1">
-                  Lower percentage increases strictness (fewer outliers); higher percentage flags milder variance.
+                <p className="text-[10px] text-muted-foreground leading-relaxed mt-1 bg-muted/30 p-2 rounded border border-border/40">
+                  {detectionMethod === "zscore" && `α = ${(sensitivity * 100).toFixed(1)}% sets critical Z-score quantile. Lower % strictly demands extreme standard deviation spikes.`}
+                  {detectionMethod === "iqr" && `α = ${(sensitivity * 100).toFixed(1)}% calculates Tukey multiplier k. Lower % expands Q1/Q3 outer fences.`}
+                  {detectionMethod === "iforest" && `α = ${(sensitivity * 100).toFixed(1)}% sets Isolation Forest expected tree contamination rate.`}
                 </p>
               </div>
 
@@ -451,6 +461,46 @@ export default function AnomaliesPage() {
                   <span className="text-[10px] text-muted-foreground mt-1 block">Maximum flagged level</span>
                 </div>
               </div>
+            )}
+
+            {/* Zero Anomalies Status Banner */}
+            {anomalyResult && anomalyResult.status === "success" && anomalyResult.anomalies_detected === 0 && (
+              <Card className="border-emerald-500/40 bg-emerald-500/5 dark:bg-emerald-500/10 p-5">
+                <div className="flex items-start gap-4">
+                  <CheckCircle2 className="h-6 w-6 shrink-0 text-emerald-500 mt-0.5" />
+                  <div className="space-y-2 w-full">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-sm font-bold text-foreground">
+                        Zero Anomalies Detected — All Observations Within Calculated Boundaries
+                      </h3>
+                      <Badge variant="outline" className="text-[10px] border-emerald-500/40 text-emerald-600 dark:text-emerald-400 font-mono">
+                        0.00% Anomaly Rate
+                      </Badge>
+                    </div>
+                    <p className="text-xs leading-relaxed text-muted-foreground">
+                      All <span className="font-bold text-foreground">{anomalyResult.total_observations}</span> observations for metric <span className="font-bold text-foreground">'{anomalyResult.metric_column}'</span> fell strictly within calculated statistical bounds [<span className="font-mono text-emerald-600 dark:text-emerald-400 font-bold">{anomalyResult.lower_threshold}</span>, <span className="font-mono text-emerald-600 dark:text-emerald-400 font-bold">{anomalyResult.upper_threshold}</span>].
+                    </p>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2 text-xs border-t border-emerald-500/20">
+                      <div>
+                        <span className="text-[10px] text-muted-foreground block">Observation Count:</span>
+                        <span className="font-bold text-foreground font-mono">{anomalyResult.total_observations}</span>
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-muted-foreground block">Observed Range:</span>
+                        <span className="font-bold text-foreground font-mono">{anomalyResult.min_observed} to {anomalyResult.max_observed}</span>
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-muted-foreground block">Baseline Mean:</span>
+                        <span className="font-bold text-foreground font-mono">{anomalyResult.mean_observed}</span>
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-muted-foreground block">Calculated Bounds:</span>
+                        <span className="font-bold text-emerald-600 dark:text-emerald-400 font-mono">{anomalyResult.lower_threshold} ~ {anomalyResult.upper_threshold}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </Card>
             )}
 
             {/* Anomaly Detection Chart */}
