@@ -11,6 +11,7 @@ class DocumentMetadata(BaseModel):
     heading: Optional[str] = None
     tags: List[str] = Field(default_factory=list)
     document_type: str  # PDF, DOCX, PPTX, TXT, MD, HTML, CSV, XLSX, JSON
+    file_size: Optional[int] = 0
 
 class Document(BaseModel):
     id: str

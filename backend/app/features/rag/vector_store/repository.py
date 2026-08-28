@@ -141,57 +141,62 @@ class InMemoryVectorRepository(BaseVectorRepository):
 class DuckDBVectorRepository(BaseVectorRepository):
     def __init__(self, db_path: str = "rag_vector.db"):
         self.db_path = db_path
+        self._mem_conn = None
         self._init_db()
 
-    def _get_connection(self):
+    def _create_chunks_table(self, conn):
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS rag_chunks (
+                id VARCHAR PRIMARY KEY,
+                doc_id VARCHAR,
+                text VARCHAR,
+                embedding VARCHAR,  -- Store embedding as JSON string
+                filename VARCHAR,
+                author VARCHAR,
+                upload_date VARCHAR,
+                workspace VARCHAR,
+                page INTEGER,
+                heading VARCHAR,
+                tags VARCHAR,       -- Comma-separated list
+                document_type VARCHAR,
+                file_size INTEGER DEFAULT 0
+            )
+        """)
         try:
-            return duckdb.connect(self.db_path)
+            conn.execute("ALTER TABLE rag_chunks ADD COLUMN file_size INTEGER DEFAULT 0")
+        except Exception:
+            pass
+
+    def _get_connection(self):
+        if self.db_path == ":memory:":
+            if self._mem_conn is None:
+                self._mem_conn = duckdb.connect(":memory:")
+                self._create_chunks_table(self._mem_conn)
+            return self._mem_conn
+
+        try:
+            conn = duckdb.connect(self.db_path)
+            self._create_chunks_table(conn)
+            return conn
         except (duckdb.IOException, duckdb.ConnectionException, Exception) as e:
-            if self.db_path != ":memory:":
-                logger.warning(f"DuckDB lock contention on '{self.db_path}'. Falling back to ':memory:': {e}")
-                self.db_path = ":memory:"
-                conn = duckdb.connect(self.db_path)
-                conn.execute("""
-                    CREATE TABLE IF NOT EXISTS rag_chunks (
-                        id VARCHAR PRIMARY KEY,
-                        doc_id VARCHAR,
-                        text VARCHAR,
-                        embedding VARCHAR,  -- Store embedding as JSON string
-                        filename VARCHAR,
-                        author VARCHAR,
-                        upload_date VARCHAR,
-                        workspace VARCHAR,
-                        page INTEGER,
-                        heading VARCHAR,
-                        tags VARCHAR,       -- Comma-separated list
-                        document_type VARCHAR
-                    )
-                """)
-                return conn
-            raise e
+            logger.warning(f"DuckDB lock contention on '{self.db_path}'. Falling back to ':memory:': {e}")
+            self.db_path = ":memory:"
+            self._mem_conn = duckdb.connect(self.db_path)
+            self._create_chunks_table(self._mem_conn)
+            return self._mem_conn
 
     def _init_db(self):
         # Initialize DuckDB table
         conn = self._get_connection()
-        try:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS rag_chunks (
-                    id VARCHAR PRIMARY KEY,
-                    doc_id VARCHAR,
-                    text VARCHAR,
-                    embedding VARCHAR,  -- Store embedding as JSON string
-                    filename VARCHAR,
-                    author VARCHAR,
-                    upload_date VARCHAR,
-                    workspace VARCHAR,
-                    page INTEGER,
-                    heading VARCHAR,
-                    tags VARCHAR,       -- Comma-separated list
-                    document_type VARCHAR
-                )
-            """)
-        finally:
+        if self.db_path != ":memory:":
             conn.close()
+
+    def _close_conn(self, conn):
+        if self.db_path != ":memory:" and conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def insert_chunks(self, chunks: List[Chunk]) -> None:
         conn = self._get_connection()
@@ -201,8 +206,8 @@ class DuckDBVectorRepository(BaseVectorRepository):
                 tags_str = ",".join(chunk.metadata.tags)
                 conn.execute("""
                     INSERT OR REPLACE INTO rag_chunks (
-                        id, doc_id, text, embedding, filename, author, upload_date, workspace, page, heading, tags, document_type
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        id, doc_id, text, embedding, filename, author, upload_date, workspace, page, heading, tags, document_type, file_size
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     chunk.id,
                     chunk.doc_id,
@@ -215,10 +220,11 @@ class DuckDBVectorRepository(BaseVectorRepository):
                     chunk.metadata.page,
                     chunk.metadata.heading,
                     tags_str,
-                    chunk.metadata.document_type
+                    chunk.metadata.document_type,
+                    getattr(chunk.metadata, "file_size", 0) or 0
                 ))
         finally:
-            conn.close()
+            self._close_conn(conn)
 
     def _build_filter_clause(self, filters: Optional[Dict[str, Any]]) -> Tuple[str, List[Any]]:
         if not filters:
@@ -238,8 +244,9 @@ class DuckDBVectorRepository(BaseVectorRepository):
 
     def _row_to_chunk(self, row: tuple) -> Chunk:
         # Columns mapping:
-        # 0: id, 1: doc_id, 2: text, 3: embedding, 4: filename, 5: author, 6: upload_date, 7: workspace, 8: page, 9: heading, 10: tags, 11: document_type
+        # 0: id, 1: doc_id, 2: text, 3: embedding, 4: filename, 5: author, 6: upload_date, 7: workspace, 8: page, 9: heading, 10: tags, 11: document_type, 12: file_size
         tags = row[10].split(",") if row[10] else []
+        file_sz = row[12] if len(row) > 12 and row[12] is not None else 0
         meta = DocumentMetadata(
             filename=row[4],
             author=row[5],
@@ -248,7 +255,8 @@ class DuckDBVectorRepository(BaseVectorRepository):
             page=row[8],
             heading=row[9],
             tags=tags,
-            document_type=row[11]
+            document_type=row[11],
+            file_size=file_sz
         )
         emb = json.loads(row[3]) if row[3] else None
         return Chunk(
@@ -289,7 +297,7 @@ class DuckDBVectorRepository(BaseVectorRepository):
             results = sorted(results, key=lambda x: x[1], reverse=True)
             return results[:limit]
         finally:
-            conn.close()
+            self._close_conn(conn)
 
     def keyword_search(
         self, 
@@ -329,31 +337,49 @@ class DuckDBVectorRepository(BaseVectorRepository):
                 results = sorted(results, key=lambda x: x[1], reverse=True)
                 return results[:limit]
         finally:
-            conn.close()
+            self._close_conn(conn)
 
     def delete_by_document(self, doc_id: str) -> None:
         conn = self._get_connection()
         try:
             conn.execute("DELETE FROM rag_chunks WHERE doc_id = ?", (doc_id,))
         finally:
-            conn.close()
+            self._close_conn(conn)
 
     def list_documents(self, workspace: str = "default") -> List[Dict[str, Any]]:
         conn = self._get_connection()
         try:
             res = conn.execute("""
-                SELECT DISTINCT doc_id, filename, document_type, upload_date 
+                SELECT 
+                    doc_id, 
+                    filename, 
+                    document_type, 
+                    upload_date, 
+                    workspace, 
+                    COUNT(id) as chunks_count, 
+                    MAX(page) as pages_count, 
+                    MAX(file_size) as file_size, 
+                    MAX(author) as author
                 FROM rag_chunks 
                 WHERE workspace = ?
+                GROUP BY doc_id, filename, document_type, upload_date, workspace
+                ORDER BY upload_date DESC, doc_id DESC
             """, (workspace,)).fetchall()
             return [
                 {
                     "doc_id": row[0],
                     "filename": row[1],
                     "document_type": row[2],
-                    "upload_date": row[3]
+                    "upload_date": row[3],
+                    "workspace": row[4],
+                    "chunks_count": row[5],
+                    "pages_count": row[6] or 1,
+                    "file_size": row[7] or 0,
+                    "author": row[8] or "Unknown",
+                    "status": "Indexed"
                 }
                 for row in res
             ]
         finally:
-            conn.close()
+            self._close_conn(conn)
+

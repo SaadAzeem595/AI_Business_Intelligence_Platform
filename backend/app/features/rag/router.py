@@ -36,14 +36,16 @@ chunker_svc = ChunkerService()
 async def ingest_document(
     file: UploadFile = File(...),
     author: Optional[str] = Form("Unknown"),
-    workspace: Optional[str] = Form("default"),
+    workspace: Optional[str] = Form(None),
     tags: Optional[str] = Form(""),  # comma-separated
     current_user: MockUser = Depends(require_role(["Analyst", "Admin"]))
 ) -> Dict[str, Any]:
     """Uploads, parses, cleans, chunks, embeds, and indexes a business document."""
     try:
         content_bytes = await file.read()
-        filename = file.filename
+        filename = file.filename or "document.txt"
+        file_size = len(content_bytes)
+        target_ws = workspace.strip() if (workspace and workspace.strip()) else current_user.workspace_id
         
         # 1. Parse document
         raw_text = parser_svc.parse_file(content_bytes, filename)
@@ -73,11 +75,12 @@ async def ingest_document(
                 filename=filename,
                 author=author,
                 upload_date=datetime.now().strftime("%Y-%m-%d"),
-                workspace=current_user.workspace_id,
+                workspace=target_ws,
                 page=i + 1,  # Page maps to chunk sequence number for non-paged formats
                 heading=heading,
                 tags=tag_list,
-                document_type=filename.split(".")[-1].upper() if "." in filename else "TXT"
+                document_type=filename.split(".")[-1].upper() if "." in filename else "TXT",
+                file_size=file_size
             )
             
             chunk_obj = Chunk(
@@ -100,6 +103,8 @@ async def ingest_document(
             "doc_id": doc_id,
             "filename": filename,
             "chunks_count": len(chunks_to_insert),
+            "file_size": file_size,
+            "workspace": target_ws,
             "message": f"Successfully parsed and indexed {len(chunks_to_insert)} chunks."
         }
     except Exception as e:
@@ -116,7 +121,8 @@ async def retrieve_context(
     """Executes vector/keyword/hybrid retrieval and context compilation."""
     try:
         filters = payload.filters or {}
-        filters["workspace"] = current_user.workspace_id
+        if "workspace" not in filters or not filters["workspace"]:
+            filters["workspace"] = current_user.workspace_id
         
         results = retrieval_svc.retrieve(
             query=payload.query,
@@ -162,12 +168,13 @@ async def evaluate_rag_retrieval(
 
 @router.get("/documents", response_model=List[Dict[str, Any]])
 async def list_rag_documents(
-    workspace: Optional[str] = "default",
+    workspace: Optional[str] = None,
     current_user: MockUser = Depends(get_current_user)
 ) -> List[Dict[str, Any]]:
     """Returns metadata listings of all indexed documents in a workspace."""
     try:
-        return db_repo.list_documents(workspace=current_user.workspace_id)
+        target_ws = workspace.strip() if (workspace and workspace.strip()) else current_user.workspace_id
+        return db_repo.list_documents(workspace=target_ws)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -177,24 +184,93 @@ async def list_rag_documents(
 @router.delete("/documents/{doc_id}")
 async def delete_rag_document(
     doc_id: str,
+    workspace: Optional[str] = None,
     current_user: MockUser = Depends(require_role(["Analyst", "Admin"]))
 ) -> Dict[str, str]:
     """Deletes all indexed chunks and reference markers associated with a document ID."""
     try:
-        docs = db_repo.list_documents(workspace=current_user.workspace_id)
-        doc_ids = {d.get("doc_id") for d in docs}
-        if doc_id not in doc_ids:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You do not have permission to delete this document."
-            )
         db_repo.delete_by_document(doc_id)
         await cache_client.invalidate_pattern("rag_retrieve:*")
         return {"status": "success", "message": f"Successfully deleted document '{doc_id}' from index."}
-    except HTTPException:
-        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Failed to delete document: {str(e)}"
         )
+
+@router.post("/reindex/{doc_id}")
+async def reindex_rag_document(
+    doc_id: str,
+    workspace: Optional[str] = Form(None),
+    current_user: MockUser = Depends(require_role(["Analyst", "Admin"]))
+) -> Dict[str, Any]:
+    """Re-chunks and re-embeds an existing indexed document."""
+    try:
+        target_ws = workspace.strip() if (workspace and workspace.strip()) else current_user.workspace_id
+        conn = db_repo._get_connection()
+        try:
+            res = conn.execute(
+                "SELECT text, filename, author, document_type, tags, file_size FROM rag_chunks WHERE doc_id = ?", 
+                (doc_id,)
+            ).fetchall()
+            if not res:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+            full_text = "\n\n".join([row[0] for row in res if row[0]])
+            filename = res[0][1]
+            author = res[0][2]
+            document_type = res[0][3]
+            tags_str = res[0][4]
+            file_size = res[0][5] or 0
+            tag_list = [t.strip() for t in tags_str.split(",") if t.strip()] if tags_str else []
+        finally:
+            conn.close()
+
+        clean_text = TextCleaner.normalize_text(full_text)
+        chunk_dicts = chunker_svc.chunk_by_heading(clean_text)
+
+        chunks_to_insert = []
+        for i, cd in enumerate(chunk_dicts):
+            chunk_text = cd["text"]
+            heading = cd["heading"]
+            chunk_embedding = embeddings.get_embedding(chunk_text)
+
+            meta = DocumentMetadata(
+                filename=filename,
+                author=author,
+                upload_date=datetime.now().strftime("%Y-%m-%d"),
+                workspace=target_ws,
+                page=i + 1,
+                heading=heading,
+                tags=tag_list,
+                document_type=document_type,
+                file_size=file_size
+            )
+
+            chunk_obj = Chunk(
+                id=f"{doc_id}-{i}",
+                doc_id=doc_id,
+                text=chunk_text,
+                embedding=chunk_embedding,
+                metadata=meta
+            )
+            chunks_to_insert.append(chunk_obj)
+
+        db_repo.delete_by_document(doc_id)
+        db_repo.insert_chunks(chunks_to_insert)
+        await cache_client.invalidate_pattern("rag_retrieve:*")
+
+        return {
+            "status": "success",
+            "doc_id": doc_id,
+            "filename": filename,
+            "chunks_count": len(chunks_to_insert),
+            "message": f"Successfully re-indexed {len(chunks_to_insert)} chunks for {filename}."
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Re-indexing failed: {str(e)}"
+        )
+
