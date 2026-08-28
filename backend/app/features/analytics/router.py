@@ -834,45 +834,111 @@ async def get_sql_schema(
     current_user: MockUser = Depends(require_role(["Analyst", "Admin"])),
     db: AsyncSession = Depends(get_db_session),
 ) -> List[Dict[str, Any]]:
-    """Returns currently available view mappings registered in the DuckDB context."""
+    """Returns currently available table and column view mappings registered in the DuckDB context."""
+    import json
     from app.features.datasets.router import UPLOADED_PATHS_CACHE
     from app.features.datasets.models import Dataset
+    from app.core.database import get_duckdb_conn
+    from app.features.analytics.service import register_all_datasets_in_duckdb
     from sqlalchemy import select
 
     if project_id:
         from app.features.projects.router import get_project_and_verify_access
         await get_project_and_verify_access(project_id, current_user, db)
-        
-        # Get datasets belonging to the project
-        stmt = select(Dataset).where(Dataset.project_id == project_id)
+
+    gen = get_duckdb_conn()
+    conn = next(gen)
+    try:
+        # Register DuckDB views for project (or global)
+        register_all_datasets_in_duckdb(conn, project_id)
+
+        # Get dataset items from DB
+        stmt = select(Dataset)
+        if project_id:
+            stmt = stmt.where(Dataset.project_id == project_id)
+        else:
+            stmt = stmt.where(Dataset.project_id == None)
         result = await db.execute(stmt)
-        db_items = result.scalars().all()
-        
+        db_items = list(result.scalars().all())
+
         schema_list = []
+        registered_table_names = set()
+
         for item in db_items:
-            schema_list.append({"name": item.duckdb_table, "rowsCount": item.rows})
-            
-        # Also check cache
+            table_name = item.duckdb_table or (os.path.splitext(item.filename)[0] if item.filename else "dataset")
+            clean_v = table_name.strip().lower().replace(" ", "_").replace("-", "_")
+            clean_v = "".join(c for c in clean_v if c.isalnum() or c == "_")
+
+            if not clean_v or clean_v in registered_table_names:
+                continue
+
+            columns = []
+            rows_count = item.rows or 0
+
+            # Inspect DuckDB for exact columns & actual row count
+            try:
+                cols_info = conn.execute(f'DESCRIBE SELECT * FROM "{clean_v}"').fetchall()
+                columns = [{"name": c[0], "type": str(c[1])} for c in cols_info]
+                count_res = conn.execute(f'SELECT COUNT(*) FROM "{clean_v}"').fetchone()
+                if count_res:
+                    rows_count = count_res[0]
+            except Exception:
+                # Fallback to model json metadata if DuckDB view inspect fails
+                if item.columns_json:
+                    try:
+                        raw_cols = json.loads(item.columns_json)
+                        if isinstance(raw_cols, list):
+                            columns = [{"name": str(c), "type": "VARCHAR"} for c in raw_cols]
+                    except Exception:
+                        pass
+
+            registered_table_names.add(clean_v)
+            schema_list.append({
+                "id": item.id,
+                "name": clean_v,
+                "rowsCount": rows_count,
+                "columns": columns
+            })
+
+        # Also inspect cache for any extra registered tables
         for d_id, item in UPLOADED_PATHS_CACHE.items():
-            if item.get("project_id") == project_id:
-                if not any(x["name"] == item["duckdb_table"] for x in schema_list):
-                    schema_list.append({"name": item["duckdb_table"], "rowsCount": item["rows"]})
-                    
+            if project_id and item.get("project_id") != project_id:
+                continue
+            if not project_id and item.get("project_id") is not None:
+                continue
+
+            table_name = item.get("duckdb_table") or (os.path.splitext(item.get("filename", ""))[0] if item.get("filename") else None)
+            if not table_name:
+                continue
+            clean_v = table_name.strip().lower().replace(" ", "_").replace("-", "_")
+            clean_v = "".join(c for c in clean_v if c.isalnum() or c == "_")
+
+            if clean_v and clean_v not in registered_table_names:
+                columns = []
+                rows_count = item.get("rows", 0)
+                try:
+                    cols_info = conn.execute(f'DESCRIBE SELECT * FROM "{clean_v}"').fetchall()
+                    columns = [{"name": c[0], "type": str(c[1])} for c in cols_info]
+                    count_res = conn.execute(f'SELECT COUNT(*) FROM "{clean_v}"').fetchone()
+                    if count_res:
+                        rows_count = count_res[0]
+                except Exception:
+                    pass
+
+                registered_table_names.add(clean_v)
+                schema_list.append({
+                    "id": str(d_id),
+                    "name": clean_v,
+                    "rowsCount": rows_count,
+                    "columns": columns
+                })
+
         return schema_list
-    else:
-        schema_list = []
-        for dataset_id, item in UPLOADED_PATHS_CACHE.items():
-            if item.get("project_id") is None:
-                view_name = item["filename"].split(".")[0]
-                schema_list.append({"name": view_name, "rowsCount": 100})
-            
-        if not schema_list:
-            schema_list = [
-                {"name": "q3_financials", "rowsCount": 14020},
-                {"name": "customer_churn", "rowsCount": 6200},
-                {"name": "raw_clicks_logs", "rowsCount": 185000},
-            ]
-        return schema_list
+    finally:
+        try:
+            gen.close()
+        except Exception:
+            pass
 
 
 @router.get("/metrics", tags=["Dashboard & Platform Metrics"])

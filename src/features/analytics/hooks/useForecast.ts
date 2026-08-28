@@ -194,8 +194,12 @@ export function useSQL(projectId?: string) {
   return {
     schema: schemaQuery.data || [],
     isLoadingSchema: schemaQuery.isLoading,
+    refetchSchema: schemaQuery.refetch,
     executeSQL: executeMutation.mutateAsync,
     isExecuting: executeMutation.isPending,
     results: executeMutation.data || null,
+    isError: executeMutation.isError,
+    error: executeMutation.error ? (executeMutation.error as any).message || String(executeMutation.error) : null,
+    resetResults: executeMutation.reset,
   };
 }

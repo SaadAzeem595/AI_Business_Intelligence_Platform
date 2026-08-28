@@ -98,13 +98,10 @@ export const AnalyticsService = {
     try {
       const url = projectId ? `${API_ENDPOINTS.SQL.SCHEMA}?project_id=${projectId}` : API_ENDPOINTS.SQL.SCHEMA;
       const response = await apiClient.get<any[]>(url);
-      return response.data;
-    } catch {
-      return [
-        { name: "q3_financials", rowsCount: 14020 },
-        { name: "customer_churn", rowsCount: 6200 },
-        { name: "raw_clicks_logs", rowsCount: 185000 },
-      ];
+      return response.data || [];
+    } catch (error) {
+      console.error("Failed to fetch SQL schema:", error);
+      return [];
     }
   },
 };
