@@ -45,7 +45,8 @@ class ReportService:
             file_path=None
         )
         db.add(db_report)
-        await db.flush()
+        await db.commit()
+        await db.refresh(db_report)
         
         # 2. Trigger Celery task
         from app.features.reports.tasks import generate_report_task
@@ -219,6 +220,7 @@ class ReportService:
             size_str = f"{file_size_kb:.1f} KB" if file_size_kb < 1024 else f"{(file_size_kb/1024):.1f} MB"
             
             # 6. Update database record with final details
+            report = await db.get(Report, report_id) or report
             report.status = "Active"
             report.size = size_str
             report.file_path = report_path
@@ -234,12 +236,14 @@ class ReportService:
             
         except Exception as e:
             logger.error(f"Error compiling report ID {report_id}: {str(e)}", exc_info=True)
+            report = await db.get(Report, report_id) or report
             report.delivery_status = "Failed"
             report.size = "0 KB"
             # Keep frequency and basic stubs
             
         db.add(report)
-        await db.flush()
+        await db.commit()
+        await db.refresh(report)
         return report
 
     @staticmethod

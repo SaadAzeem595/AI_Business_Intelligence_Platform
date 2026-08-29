@@ -1,0 +1,1093 @@
+{"timestamp": "2026-08-30 00:34:52", "name": "app.core.telemetry", "level": "INFO", "message": "OpenTelemetry trace instrumentation configured successfully."}
+
+--- Testing 1st Project/Dataset ---
+{"timestamp": "2026-08-30 00:34:53", "name": "app.core.cache", "level": "INFO", "message": "Connecting to Redis cache at redis://localhost:6379/1"}
+{"timestamp": "2026-08-30 00:34:53", "name": "app.core.cache", "level": "WARNING", "message": "Redis cache connection failed: Timeout connecting to server. Falling back to local in-memory storage for resiliency."}
+{"timestamp": "2026-08-30 00:34:53", "name": "app.core.middleware", "level": "INFO", "message": "Request started: POST /api/v1/projects [ID: fba868f3-1b7a-4737-9bfc-5f994716cfc8]
+Request Payload: {"name":"Sales Analytics Workspace","description":"Project 1"}"}
+{"timestamp": "2026-08-30 00:34:53", "name": "app.features.projects.router", "level": "INFO", "message": "PROJECT_CREATE_STARTED: project_id=proj-a857ec80 user_id=dev_user name='Sales Analytics Workspace'"}
+{"timestamp": "2026-08-30 00:34:53", "name": "app.features.projects.router", "level": "INFO", "message": "PROJECT_CREATE_AUTHENTICATED: user_id=dev_user role=Admin"}
+{"timestamp": "2026-08-30 00:34:53", "name": "app.features.projects.router", "level": "INFO", "message": "PROJECT_CREATE_DB_INSERT: project_id=proj-a857ec80 owner_id=dev_user"}
+{"timestamp": "2026-08-30 00:34:53", "name": "app.features.projects.router", "level": "INFO", "message": "PROJECT_CREATE_DB_COMMITTED: project_id=proj-a857ec80"}
+{"timestamp": "2026-08-30 00:34:53", "name": "app.features.projects.router", "level": "INFO", "message": "PROJECT_CREATE_CACHE_INVALIDATED: user_id=dev_user"}
+{"timestamp": "2026-08-30 00:34:53", "name": "app.features.projects.router", "level": "INFO", "message": "PROJECT_CREATE_SUCCESS: project_id=proj-a857ec80 user_id=dev_user duration=0.1549s"}
+{"timestamp": "2026-08-30 00:34:53", "name": "app.core.middleware", "level": "INFO", "message": "Request finished: POST /api/v1/projects Status: 201 in 0.6892s [ID: fba868f3-1b7a-4737-9bfc-5f994716cfc8]"}
+{"timestamp": "2026-08-30 00:34:53", "name": "httpx", "level": "INFO", "message": "HTTP Request: POST http://testserver/api/v1/projects "HTTP/1.1 201 Created""}
+Project 1 create response: 201 {'id': 'proj-a857ec80', 'name': 'Sales Analytics Workspace', 'description': 'Project 1', 'owner_id': 'dev_user', 'created_at': '2026-08-30T00:34:53.889576', 'updated_at': '2026-08-30T00:34:53.889581', 'datasetsCount': 0, 'dataset_count': 0, 'status': 'Active'}
+{"timestamp": "2026-08-30 00:34:53", "name": "app.core.middleware", "level": "INFO", "message": "Request started: POST /api/v1/projects/proj-a857ec80/datasets [ID: 789ddd36-0905-4f56-afae-b3c4c4fe0c52]
+Request Payload: --8edc797cc44a28ea0f5332d3cd70d82c
+Content-Disposition: form-data; name="tableName"
+
+sales_data
+--8edc797cc44a28ea0f5332d3cd70d82c
+Content-Disposition: form-data; name="file"; filename="sales.csv"
+Content-Type: text/csv
+
+date,sales,region
+2026-01-01,100,North
+2026-01-02,200,South
+--8edc797cc44a28ea0f5332d3cd70d82c--
+"}
+{"timestamp": "2026-08-30 00:34:53", "name": "app.features.projects.router", "level": "INFO", "message": "DATASET_UPLOAD_STARTED: dataset_id=3c2f0497-b1ca-45b4-b374-2cef460b3b9b project_id=proj-a857ec80 user_id=dev_user filename='sales.csv'"}
+{"timestamp": "2026-08-30 00:34:53", "name": "app.features.projects.router", "level": "INFO", "message": "duckdb_ingestion_started: dataset_id=3c2f0497-b1ca-45b4-b374-2cef460b3b9b path=d:\AI Business Intelligence Platform\backend\app\uploads\81066545-9a68-4841-9c4d-c059ad5a45cb_sales.csv"}
+{"timestamp": "2026-08-30 00:34:54", "name": "app.features.projects.router", "level": "INFO", "message": "duckdb_ingestion_completed: dataset_id=3c2f0497-b1ca-45b4-b374-2cef460b3b9b rows=2"}
+{"timestamp": "2026-08-30 00:34:54", "name": "app.features.projects.router", "level": "INFO", "message": "DATASET_UPLOAD_SUCCESS: dataset_id=3c2f0497-b1ca-45b4-b374-2cef460b3b9b project_id=proj-a857ec80 user_id=dev_user duration=0.2841s"}
+{"timestamp": "2026-08-30 00:34:54", "name": "app.core.middleware", "level": "INFO", "message": "Request finished: POST /api/v1/projects/proj-a857ec80/datasets Status: 200 in 0.3158s [ID: 789ddd36-0905-4f56-afae-b3c4c4fe0c52]"}
+{"timestamp": "2026-08-30 00:34:54", "name": "httpx", "level": "INFO", "message": "HTTP Request: POST http://testserver/api/v1/projects/proj-a857ec80/datasets "HTTP/1.1 200 OK""}
+Dataset 1 upload response: 200 {'id': '3c2f0497-b1ca-45b4-b374-2cef460b3b9b', 'filename': 'sales.csv', 'type': 'CSV', 'size': '0.1 KB', 'rows': 2, 'qualityScore': 100, 'status': 'Active', 'date': '2026-08-30', 'workspace_id': 'default', 'display_name': 'sales_data', 'storage_path': 'd:\\AI Business Intelligence Platform\\backend\\app\\uploads\\81066545-9a68-4841-9c4d-c059ad5a45cb_sales.csv', 'duckdb_table': 'project_proj_a857ec80_sales_data', 'columns_json': '["date", "sales", "region"]', 'schema_json': '{"date": {"type": "DATE", "nullable": true, "completeness": 100.0, "missing_count": 0, "unique_count": 2, "min": "2026-01-01", "max": "2026-01-02", "sample_values": ["2026-01-01", "2026-01-02"], "is_categorical": false, "is_date": true, "is_numeric": false}, "sales": {"type": "BIGINT", "nullable": true, "completeness": 100.0, "missing_count": 0, "unique_count": 2, "min": "100", "max": "200", "sample_values": [200, 100], "is_categorical": false, "is_date": false, "is_numeric": true}, "region": {"type": "VARCHAR", "nullable": true, "completeness": 100.0, "missing_count": 0, "unique_count": 2, "min": null, "max": null, "sample_values": ["North", "South"], "is_categorical": true, "is_date": false, "is_numeric": false}}', 'project_id': 'proj-a857ec80', 'owner_id': 'dev_user', 'original_filename': 'sales.csv', 'error_message': None, 'created_at': '2026-08-30T00:34:54.222565', 'updated_at': '2026-08-30T00:34:54.222569'}
+
+--- Testing 2nd Project/Dataset ---
+{"timestamp": "2026-08-30 00:34:54", "name": "app.core.middleware", "level": "INFO", "message": "Request started: POST /api/v1/projects [ID: 9154b064-b506-4657-ac5c-67f92dc51742]
+Request Payload: {"name":"Customer Churn Analysis","description":"Project 2"}"}
+{"timestamp": "2026-08-30 00:34:54", "name": "app.features.projects.router", "level": "INFO", "message": "PROJECT_CREATE_STARTED: project_id=proj-94aed951 user_id=dev_user name='Customer Churn Analysis'"}
+{"timestamp": "2026-08-30 00:34:54", "name": "app.features.projects.router", "level": "INFO", "message": "PROJECT_CREATE_AUTHENTICATED: user_id=dev_user role=Admin"}
+{"timestamp": "2026-08-30 00:34:54", "name": "app.features.projects.router", "level": "INFO", "message": "PROJECT_CREATE_DB_INSERT: project_id=proj-94aed951 owner_id=dev_user"}
+{"timestamp": "2026-08-30 00:34:54", "name": "app.features.projects.router", "level": "INFO", "message": "PROJECT_CREATE_DB_COMMITTED: project_id=proj-94aed951"}
+{"timestamp": "2026-08-30 00:34:54", "name": "app.features.projects.router", "level": "INFO", "message": "PROJECT_CREATE_CACHE_INVALIDATED: user_id=dev_user"}
+{"timestamp": "2026-08-30 00:34:54", "name": "app.features.projects.router", "level": "INFO", "message": "PROJECT_CREATE_SUCCESS: project_id=proj-94aed951 user_id=dev_user duration=0.0147s"}
+{"timestamp": "2026-08-30 00:34:54", "name": "app.core.middleware", "level": "INFO", "message": "Request finished: POST /api/v1/projects Status: 201 in 0.0226s [ID: 9154b064-b506-4657-ac5c-67f92dc51742]"}
+{"timestamp": "2026-08-30 00:34:54", "name": "httpx", "level": "INFO", "message": "HTTP Request: POST http://testserver/api/v1/projects "HTTP/1.1 201 Created""}
+Project 2 create response: 201 {'id': 'proj-94aed951', 'name': 'Customer Churn Analysis', 'description': 'Project 2', 'owner_id': 'dev_user', 'created_at': '2026-08-30T00:34:54.295471', 'updated_at': '2026-08-30T00:34:54.295475', 'datasetsCount': 0, 'dataset_count': 0, 'status': 'Active'}
+{"timestamp": "2026-08-30 00:34:54", "name": "app.core.middleware", "level": "INFO", "message": "Request started: POST /api/v1/projects/proj-94aed951/datasets [ID: 4f275ef0-49af-49e3-9e08-2242d7d0fe3e]
+Request Payload: --777b93c83fa59080a1e43617afe608d8
+Content-Disposition: form-data; name="tableName"
+
+churn_data
+--777b93c83fa59080a1e43617afe608d8
+Content-Disposition: form-data; name="file"; filename="churn.csv"
+Content-Type: text/csv
+
+customer_id,churn,tenure
+C1,0,12
+C2,1,3
+--777b93c83fa59080a1e43617afe608d8--
+"}
+{"timestamp": "2026-08-30 00:34:54", "name": "app.features.projects.router", "level": "INFO", "message": "DATASET_UPLOAD_STARTED: dataset_id=935963e1-4a89-463b-8847-6e4d1f2417c3 project_id=proj-94aed951 user_id=dev_user filename='churn.csv'"}
+{"timestamp": "2026-08-30 00:34:54", "name": "app.features.projects.router", "level": "INFO", "message": "duckdb_ingestion_started: dataset_id=935963e1-4a89-463b-8847-6e4d1f2417c3 path=d:\AI Business Intelligence Platform\backend\app\uploads\df8d9ced-8341-4f49-a527-002482117fe5_churn.csv"}
+{"timestamp": "2026-08-30 00:34:54", "name": "app.features.projects.router", "level": "INFO", "message": "duckdb_ingestion_completed: dataset_id=935963e1-4a89-463b-8847-6e4d1f2417c3 rows=2"}
+{"timestamp": "2026-08-30 00:34:54", "name": "app.features.projects.router", "level": "INFO", "message": "DATASET_UPLOAD_SUCCESS: dataset_id=935963e1-4a89-463b-8847-6e4d1f2417c3 project_id=proj-94aed951 user_id=dev_user duration=0.2501s"}
+{"timestamp": "2026-08-30 00:34:54", "name": "app.core.middleware", "level": "INFO", "message": "Request finished: POST /api/v1/projects/proj-94aed951/datasets Status: 200 in 0.2665s [ID: 4f275ef0-49af-49e3-9e08-2242d7d0fe3e]"}
+{"timestamp": "2026-08-30 00:34:54", "name": "httpx", "level": "INFO", "message": "HTTP Request: POST http://testserver/api/v1/projects/proj-94aed951/datasets "HTTP/1.1 200 OK""}
+Dataset 2 upload response: 200 {'id': '935963e1-4a89-463b-8847-6e4d1f2417c3', 'filename': 'churn.csv', 'type': 'CSV', 'size': '0.0 KB', 'rows': 2, 'qualityScore': 100, 'status': 'Active', 'date': '2026-08-30', 'workspace_id': 'default', 'display_name': 'churn_data', 'storage_path': 'd:\\AI Business Intelligence Platform\\backend\\app\\uploads\\df8d9ced-8341-4f49-a527-002482117fe5_churn.csv', 'duckdb_table': 'project_proj_94aed951_churn_data', 'columns_json': '["customer_id", "churn", "tenure"]', 'schema_json': '{"customer_id": {"type": "VARCHAR", "nullable": true, "completeness": 100.0, "missing_count": 0, "unique_count": 2, "min": null, "max": null, "sample_values": ["C1", "C2"], "is_categorical": true, "is_date": false, "is_numeric": false}, "churn": {"type": "BIGINT", "nullable": true, "completeness": 100.0, "missing_count": 0, "unique_count": 2, "min": "0", "max": "1", "sample_values": [0, 1], "is_categorical": false, "is_date": false, "is_numeric": true}, "tenure": {"type": "BIGINT", "nullable": true, "completeness": 100.0, "missing_count": 0, "unique_count": 2, "min": "3", "max": "12", "sample_values": [12, 3], "is_categorical": false, "is_date": false, "is_numeric": true}}', 'project_id': 'proj-94aed951', 'owner_id': 'dev_user', 'original_filename': 'churn.csv', 'error_message': None, 'created_at': '2026-08-30T00:34:54.591783', 'updated_at': '2026-08-30T00:34:54.591785'}
+
+--- Testing 3rd Project: E-commerce Customer Reviews 100K ---
+{"timestamp": "2026-08-30 00:34:54", "name": "app.core.middleware", "level": "INFO", "message": "Request started: POST /api/v1/projects [ID: ef5a3049-757b-4ee5-8fde-15d0fca27d69]
+Request Payload: {"name":"E-commerce Customer Reviews 100K","description":"Project 3 100K dataset"}"}
+{"timestamp": "2026-08-30 00:34:54", "name": "app.features.projects.router", "level": "INFO", "message": "PROJECT_CREATE_STARTED: project_id=proj-183c76d2 user_id=dev_user name='E-commerce Customer Reviews 100K'"}
+{"timestamp": "2026-08-30 00:34:54", "name": "app.features.projects.router", "level": "INFO", "message": "PROJECT_CREATE_AUTHENTICATED: user_id=dev_user role=Admin"}
+{"timestamp": "2026-08-30 00:34:54", "name": "app.features.projects.router", "level": "INFO", "message": "PROJECT_CREATE_DB_INSERT: project_id=proj-183c76d2 owner_id=dev_user"}
+{"timestamp": "2026-08-30 00:34:54", "name": "app.features.projects.router", "level": "INFO", "message": "PROJECT_CREATE_DB_COMMITTED: project_id=proj-183c76d2"}
+{"timestamp": "2026-08-30 00:34:54", "name": "app.features.projects.router", "level": "INFO", "message": "PROJECT_CREATE_CACHE_INVALIDATED: user_id=dev_user"}
+{"timestamp": "2026-08-30 00:34:54", "name": "app.features.projects.router", "level": "INFO", "message": "PROJECT_CREATE_SUCCESS: project_id=proj-183c76d2 user_id=dev_user duration=0.0148s"}
+{"timestamp": "2026-08-30 00:34:54", "name": "app.core.middleware", "level": "INFO", "message": "Request finished: POST /api/v1/projects Status: 201 in 0.0240s [ID: ef5a3049-757b-4ee5-8fde-15d0fca27d69]"}
+{"timestamp": "2026-08-30 00:34:54", "name": "httpx", "level": "INFO", "message": "HTTP Request: POST http://testserver/api/v1/projects "HTTP/1.1 201 Created""}
+Project 3 create response: 201 {'id': 'proj-183c76d2', 'name': 'E-commerce Customer Reviews 100K', 'description': 'Project 3 100K dataset', 'owner_id': 'dev_user', 'created_at': '2026-08-30T00:34:54.644891', 'updated_at': '2026-08-30T00:34:54.644896', 'datasetsCount': 0, 'dataset_count': 0, 'status': 'Active'}
+Generating 100K E-commerce Customer Reviews dataset...
+{
+    "name": "POST /api/v1/projects http receive",
+    "context": {
+        "trace_id": "0x78a96db26da2d9b1f4ccba8fd6b1f551",
+        "span_id": "0xdaefcc76ce7e1eeb",
+        "trace_state": "[]"
+    },
+    "kind": "SpanKind.INTERNAL",
+    "parent_id": "0x1c58d945ca484190",
+    "start_time": "2026-08-29T19:34:53.723040Z",
+    "end_time": "2026-08-29T19:34:53.723252Z",
+    "status": {
+        "status_code": "UNSET"
+    },
+    "attributes": {
+        "asgi.event.type": "http.request"
+    },
+    "events": [],
+    "links": [],
+    "resource": {
+        "attributes": {
+            "telemetry.sdk.language": "python",
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.version": "1.44.0",
+            "service.instance.id": "ab542306-a9f7-46b8-ab6e-eaddf4826d97",
+            "service.name": "AI Business Intelligence Platform"
+        },
+        "schema_url": ""
+    }
+}
+{
+    "name": "POST /api/v1/projects http send",
+    "context": {
+        "trace_id": "0x78a96db26da2d9b1f4ccba8fd6b1f551",
+        "span_id": "0x452e09e5306c6872",
+        "trace_state": "[]"
+    },
+    "kind": "SpanKind.INTERNAL",
+    "parent_id": "0x1c58d945ca484190",
+    "start_time": "2026-08-29T19:34:53.902307Z",
+    "end_time": "2026-08-29T19:34:53.902636Z",
+    "status": {
+        "status_code": "UNSET"
+    },
+    "attributes": {
+        "asgi.event.type": "http.response.start",
+        "http.status_code": 201
+    },
+    "events": [],
+    "links": [],
+    "resource": {
+        "attributes": {
+            "telemetry.sdk.language": "python",
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.version": "1.44.0",
+            "service.instance.id": "ab542306-a9f7-46b8-ab6e-eaddf4826d97",
+            "service.name": "AI Business Intelligence Platform"
+        },
+        "schema_url": ""
+    }
+}
+{
+    "name": "POST /api/v1/projects http send",
+    "context": {
+        "trace_id": "0x78a96db26da2d9b1f4ccba8fd6b1f551",
+        "span_id": "0x8bbb7e82b73abda0",
+        "trace_state": "[]"
+    },
+    "kind": "SpanKind.INTERNAL",
+    "parent_id": "0x1c58d945ca484190",
+    "start_time": "2026-08-29T19:34:53.903573Z",
+    "end_time": "2026-08-29T19:34:53.903617Z",
+    "status": {
+        "status_code": "UNSET"
+    },
+    "attributes": {
+        "asgi.event.type": "http.response.body"
+    },
+    "events": [],
+    "links": [],
+    "resource": {
+        "attributes": {
+            "telemetry.sdk.language": "python",
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.version": "1.44.0",
+            "service.instance.id": "ab542306-a9f7-46b8-ab6e-eaddf4826d97",
+            "service.name": "AI Business Intelligence Platform"
+        },
+        "schema_url": ""
+    }
+}
+{
+    "name": "POST /api/v1/projects http send",
+    "context": {
+        "trace_id": "0x78a96db26da2d9b1f4ccba8fd6b1f551",
+        "span_id": "0xd4dc3e610588b5a0",
+        "trace_state": "[]"
+    },
+    "kind": "SpanKind.INTERNAL",
+    "parent_id": "0x1c58d945ca484190",
+    "start_time": "2026-08-29T19:34:53.903746Z",
+    "end_time": "2026-08-29T19:34:53.903777Z",
+    "status": {
+        "status_code": "UNSET"
+    },
+    "attributes": {
+        "asgi.event.type": "http.response.body"
+    },
+    "events": [],
+    "links": [],
+    "resource": {
+        "attributes": {
+            "telemetry.sdk.language": "python",
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.version": "1.44.0",
+            "service.instance.id": "ab542306-a9f7-46b8-ab6e-eaddf4826d97",
+            "service.name": "AI Business Intelligence Platform"
+        },
+        "schema_url": ""
+    }
+}
+{
+    "name": "POST /api/v1/projects",
+    "context": {
+        "trace_id": "0x78a96db26da2d9b1f4ccba8fd6b1f551",
+        "span_id": "0x1c58d945ca484190",
+        "trace_state": "[]"
+    },
+    "kind": "SpanKind.SERVER",
+    "parent_id": null,
+    "start_time": "2026-08-29T19:34:52.799647Z",
+    "end_time": "2026-08-29T19:34:53.903814Z",
+    "status": {
+        "status_code": "UNSET"
+    },
+    "attributes": {
+        "http.scheme": "http",
+        "http.host": "testserver",
+        "net.host.port": 80,
+        "http.flavor": "1.1",
+        "http.target": "/api/v1/projects",
+        "http.url": "http://testserver/api/v1/projects",
+        "http.method": "POST",
+        "http.server_name": "testserver",
+        "http.user_agent": "testclient",
+        "net.peer.ip": "testclient",
+        "net.peer.port": 50000,
+        "http.route": "/api/v1/projects",
+        "http.status_code": 201
+    },
+    "events": [],
+    "links": [],
+    "resource": {
+        "attributes": {
+            "telemetry.sdk.language": "python",
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.version": "1.44.0",
+            "service.instance.id": "ab542306-a9f7-46b8-ab6e-eaddf4826d97",
+            "service.name": "AI Business Intelligence Platform"
+        },
+        "schema_url": ""
+    }
+}
+{
+    "name": "POST /api/v1/projects/{project_id}/datasets http receive",
+    "context": {
+        "trace_id": "0x78578aaa98f511d6f12356d8402c412c",
+        "span_id": "0x008c25b139991ee4",
+        "trace_state": "[]"
+    },
+    "kind": "SpanKind.INTERNAL",
+    "parent_id": "0x0f22de19034cfae6",
+    "start_time": "2026-08-29T19:34:53.938092Z",
+    "end_time": "2026-08-29T19:34:53.938227Z",
+    "status": {
+        "status_code": "UNSET"
+    },
+    "attributes": {
+        "asgi.event.type": "http.request"
+    },
+    "events": [],
+    "links": [],
+    "resource": {
+        "attributes": {
+            "telemetry.sdk.language": "python",
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.version": "1.44.0",
+            "service.instance.id": "ab542306-a9f7-46b8-ab6e-eaddf4826d97",
+            "service.name": "AI Business Intelligence Platform"
+        },
+        "schema_url": ""
+    }
+}
+{
+    "name": "POST /api/v1/projects/{project_id}/datasets http send",
+    "context": {
+        "trace_id": "0x78578aaa98f511d6f12356d8402c412c",
+        "span_id": "0x67f1bc8669912348",
+        "trace_state": "[]"
+    },
+    "kind": "SpanKind.INTERNAL",
+    "parent_id": "0x0f22de19034cfae6",
+    "start_time": "2026-08-29T19:34:54.254552Z",
+    "end_time": "2026-08-29T19:34:54.254666Z",
+    "status": {
+        "status_code": "UNSET"
+    },
+    "attributes": {
+        "asgi.event.type": "http.response.start",
+        "http.status_code": 200
+    },
+    "events": [],
+    "links": [],
+    "resource": {
+        "attributes": {
+            "telemetry.sdk.language": "python",
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.version": "1.44.0",
+            "service.instance.id": "ab542306-a9f7-46b8-ab6e-eaddf4826d97",
+            "service.name": "AI Business Intelligence Platform"
+        },
+        "schema_url": ""
+    }
+}
+{
+    "name": "POST /api/v1/projects/{project_id}/datasets http send",
+    "context": {
+        "trace_id": "0x78578aaa98f511d6f12356d8402c412c",
+        "span_id": "0x196286431d46caad",
+        "trace_state": "[]"
+    },
+    "kind": "SpanKind.INTERNAL",
+    "parent_id": "0x0f22de19034cfae6",
+    "start_time": "2026-08-29T19:34:54.255110Z",
+    "end_time": "2026-08-29T19:34:54.255148Z",
+    "status": {
+        "status_code": "UNSET"
+    },
+    "attributes": {
+        "asgi.event.type": "http.response.body"
+    },
+    "events": [],
+    "links": [],
+    "resource": {
+        "attributes": {
+            "telemetry.sdk.language": "python",
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.version": "1.44.0",
+            "service.instance.id": "ab542306-a9f7-46b8-ab6e-eaddf4826d97",
+            "service.name": "AI Business Intelligence Platform"
+        },
+        "schema_url": ""
+    }
+}
+{
+    "name": "POST /api/v1/projects/{project_id}/datasets http send",
+    "context": {
+        "trace_id": "0x78578aaa98f511d6f12356d8402c412c",
+        "span_id": "0x52f1d5a47c6c4ce1",
+        "trace_state": "[]"
+    },
+    "kind": "SpanKind.INTERNAL",
+    "parent_id": "0x0f22de19034cfae6",
+    "start_time": "2026-08-29T19:34:54.255264Z",
+    "end_time": "2026-08-29T19:34:54.255301Z",
+    "status": {
+        "status_code": "UNSET"
+    },
+    "attributes": {
+        "asgi.event.type": "http.response.body"
+    },
+    "events": [],
+    "links": [],
+    "resource": {
+        "attributes": {
+            "telemetry.sdk.language": "python",
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.version": "1.44.0",
+            "service.instance.id": "ab542306-a9f7-46b8-ab6e-eaddf4826d97",
+            "service.name": "AI Business Intelligence Platform"
+        },
+        "schema_url": ""
+    }
+}
+{
+    "name": "POST /api/v1/projects/{project_id}/datasets",
+    "context": {
+        "trace_id": "0x78578aaa98f511d6f12356d8402c412c",
+        "span_id": "0x0f22de19034cfae6",
+        "trace_state": "[]"
+    },
+    "kind": "SpanKind.SERVER",
+    "parent_id": null,
+    "start_time": "2026-08-29T19:34:53.936760Z",
+    "end_time": "2026-08-29T19:34:54.255334Z",
+    "status": {
+        "status_code": "UNSET"
+    },
+    "attributes": {
+        "http.scheme": "http",
+        "http.host": "testserver",
+        "net.host.port": 80,
+        "http.flavor": "1.1",
+        "http.target": "/api/v1/projects/proj-a857ec80/datasets",
+        "http.url": "http://testserver/api/v1/projects/proj-a857ec80/datasets",
+        "http.method": "POST",
+        "http.server_name": "testserver",
+        "http.user_agent": "testclient",
+        "net.peer.ip": "testclient",
+        "net.peer.port": 50000,
+        "http.route": "/api/v1/projects/{project_id}/datasets",
+        "http.status_code": 200
+    },
+    "events": [],
+    "links": [],
+    "resource": {
+        "attributes": {
+            "telemetry.sdk.language": "python",
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.version": "1.44.0",
+            "service.instance.id": "ab542306-a9f7-46b8-ab6e-eaddf4826d97",
+            "service.name": "AI Business Intelligence Platform"
+        },
+        "schema_url": ""
+    }
+}
+{
+    "name": "POST /api/v1/projects http receive",
+    "context": {
+        "trace_id": "0x6c6ecb88e38ba3062157b9d73919526f",
+        "span_id": "0xe7f6610ca52d306c",
+        "trace_state": "[]"
+    },
+    "kind": "SpanKind.INTERNAL",
+    "parent_id": "0xbf9d2c7ac714bbf0",
+    "start_time": "2026-08-29T19:34:54.283768Z",
+    "end_time": "2026-08-29T19:34:54.283808Z",
+    "status": {
+        "status_code": "UNSET"
+    },
+    "attributes": {
+        "asgi.event.type": "http.request"
+    },
+    "events": [],
+    "links": [],
+    "resource": {
+        "attributes": {
+            "telemetry.sdk.language": "python",
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.version": "1.44.0",
+            "service.instance.id": "ab542306-a9f7-46b8-ab6e-eaddf4826d97",
+            "service.name": "AI Business Intelligence Platform"
+        },
+        "schema_url": ""
+    }
+}
+{
+    "name": "POST /api/v1/projects http send",
+    "context": {
+        "trace_id": "0x6c6ecb88e38ba3062157b9d73919526f",
+        "span_id": "0x7adb4f6c85015508",
+        "trace_state": "[]"
+    },
+    "kind": "SpanKind.INTERNAL",
+    "parent_id": "0xbf9d2c7ac714bbf0",
+    "start_time": "2026-08-29T19:34:54.306556Z",
+    "end_time": "2026-08-29T19:34:54.306637Z",
+    "status": {
+        "status_code": "UNSET"
+    },
+    "attributes": {
+        "asgi.event.type": "http.response.start",
+        "http.status_code": 201
+    },
+    "events": [],
+    "links": [],
+    "resource": {
+        "attributes": {
+            "telemetry.sdk.language": "python",
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.version": "1.44.0",
+            "service.instance.id": "ab542306-a9f7-46b8-ab6e-eaddf4826d97",
+            "service.name": "AI Business Intelligence Platform"
+        },
+        "schema_url": ""
+    }
+}
+{
+    "name": "POST /api/v1/projects http send",
+    "context": {
+        "trace_id": "0x6c6ecb88e38ba3062157b9d73919526f",
+        "span_id": "0xa429bcbef09c28c4",
+        "trace_state": "[]"
+    },
+    "kind": "SpanKind.INTERNAL",
+    "parent_id": "0xbf9d2c7ac714bbf0",
+    "start_time": "2026-08-29T19:34:54.306944Z",
+    "end_time": "2026-08-29T19:34:54.306981Z",
+    "status": {
+        "status_code": "UNSET"
+    },
+    "attributes": {
+        "asgi.event.type": "http.response.body"
+    },
+    "events": [],
+    "links": [],
+    "resource": {
+        "attributes": {
+            "telemetry.sdk.language": "python",
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.version": "1.44.0",
+            "service.instance.id": "ab542306-a9f7-46b8-ab6e-eaddf4826d97",
+            "service.name": "AI Business Intelligence Platform"
+        },
+        "schema_url": ""
+    }
+}
+{
+    "name": "POST /api/v1/projects http send",
+    "context": {
+        "trace_id": "0x6c6ecb88e38ba3062157b9d73919526f",
+        "span_id": "0x4884561f210c22bb",
+        "trace_state": "[]"
+    },
+    "kind": "SpanKind.INTERNAL",
+    "parent_id": "0xbf9d2c7ac714bbf0",
+    "start_time": "2026-08-29T19:34:54.307428Z",
+    "end_time": "2026-08-29T19:34:54.307481Z",
+    "status": {
+        "status_code": "UNSET"
+    },
+    "attributes": {
+        "asgi.event.type": "http.response.body"
+    },
+    "events": [],
+    "links": [],
+    "resource": {
+        "attributes": {
+            "telemetry.sdk.language": "python",
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.version": "1.44.0",
+            "service.instance.id": "ab542306-a9f7-46b8-ab6e-eaddf4826d97",
+            "service.name": "AI Business Intelligence Platform"
+        },
+        "schema_url": ""
+    }
+}
+{
+    "name": "POST /api/v1/projects",
+    "context": {
+        "trace_id": "0x6c6ecb88e38ba3062157b9d73919526f",
+        "span_id": "0xbf9d2c7ac714bbf0",
+        "trace_state": "[]"
+    },
+    "kind": "SpanKind.SERVER",
+    "parent_id": null,
+    "start_time": "2026-08-29T19:34:54.282995Z",
+    "end_time": "2026-08-29T19:34:54.307532Z",
+    "status": {
+        "status_code": "UNSET"
+    },
+    "attributes": {
+        "http.scheme": "http",
+        "http.host": "testserver",
+        "net.host.port": 80,
+        "http.flavor": "1.1",
+        "http.target": "/api/v1/projects",
+        "http.url": "http://testserver/api/v1/projects",
+        "http.method": "POST",
+        "http.server_name": "testserver",
+        "http.user_agent": "testclient",
+        "net.peer.ip": "testclient",
+        "net.peer.port": 50000,
+        "http.route": "/api/v1/projects",
+        "http.status_code": 201
+    },
+    "events": [],
+    "links": [],
+    "resource": {
+        "attributes": {
+            "telemetry.sdk.language": "python",
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.version": "1.44.0",
+            "service.instance.id": "ab542306-a9f7-46b8-ab6e-eaddf4826d97",
+            "service.name": "AI Business Intelligence Platform"
+        },
+        "schema_url": ""
+    }
+}
+{
+    "name": "POST /api/v1/projects/{project_id}/datasets http receive",
+    "context": {
+        "trace_id": "0xf6d0d1de736bac182d3a491bad0526b5",
+        "span_id": "0x9a6609f61114780f",
+        "trace_state": "[]"
+    },
+    "kind": "SpanKind.INTERNAL",
+    "parent_id": "0xd9c9af8b5bcce920",
+    "start_time": "2026-08-29T19:34:54.336382Z",
+    "end_time": "2026-08-29T19:34:54.336516Z",
+    "status": {
+        "status_code": "UNSET"
+    },
+    "attributes": {
+        "asgi.event.type": "http.request"
+    },
+    "events": [],
+    "links": [],
+    "resource": {
+        "attributes": {
+            "telemetry.sdk.language": "python",
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.version": "1.44.0",
+            "service.instance.id": "ab542306-a9f7-46b8-ab6e-eaddf4826d97",
+            "service.name": "AI Business Intelligence Platform"
+        },
+        "schema_url": ""
+    }
+}
+{
+    "name": "POST /api/v1/projects/{project_id}/datasets http send",
+    "context": {
+        "trace_id": "0xf6d0d1de736bac182d3a491bad0526b5",
+        "span_id": "0x6eb00e2ecde077c4",
+        "trace_state": "[]"
+    },
+    "kind": "SpanKind.INTERNAL",
+    "parent_id": "0xd9c9af8b5bcce920",
+    "start_time": "2026-08-29T19:34:54.602556Z",
+    "end_time": "2026-08-29T19:34:54.602644Z",
+    "status": {
+        "status_code": "UNSET"
+    },
+    "attributes": {
+        "asgi.event.type": "http.response.start",
+        "http.status_code": 200
+    },
+    "events": [],
+    "links": [],
+    "resource": {
+        "attributes": {
+            "telemetry.sdk.language": "python",
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.version": "1.44.0",
+            "service.instance.id": "ab542306-a9f7-46b8-ab6e-eaddf4826d97",
+            "service.name": "AI Business Intelligence Platform"
+        },
+        "schema_url": ""
+    }
+}
+{
+    "name": "POST /api/v1/projects/{project_id}/datasets http send",
+    "context": {
+        "trace_id": "0xf6d0d1de736bac182d3a491bad0526b5",
+        "span_id": "0x6b5db72e54e58ba5",
+        "trace_state": "[]"
+    },
+    "kind": "SpanKind.INTERNAL",
+    "parent_id": "0xd9c9af8b5bcce920",
+    "start_time": "2026-08-29T19:34:54.603142Z",
+    "end_time": "2026-08-29T19:34:54.603179Z",
+    "status": {
+        "status_code": "UNSET"
+    },
+    "attributes": {
+        "asgi.event.type": "http.response.body"
+    },
+    "events": [],
+    "links": [],
+    "resource": {
+        "attributes": {
+            "telemetry.sdk.language": "python",
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.version": "1.44.0",
+            "service.instance.id": "ab542306-a9f7-46b8-ab6e-eaddf4826d97",
+            "service.name": "AI Business Intelligence Platform"
+        },
+        "schema_url": ""
+    }
+}
+{
+    "name": "POST /api/v1/projects/{project_id}/datasets http send",
+    "context": {
+        "trace_id": "0xf6d0d1de736bac182d3a491bad0526b5",
+        "span_id": "0x3deb34d88f15ff84",
+        "trace_state": "[]"
+    },
+    "kind": "SpanKind.INTERNAL",
+    "parent_id": "0xd9c9af8b5bcce920",
+    "start_time": "2026-08-29T19:34:54.603290Z",
+    "end_time": "2026-08-29T19:34:54.603438Z",
+    "status": {
+        "status_code": "UNSET"
+    },
+    "attributes": {
+        "asgi.event.type": "http.response.body"
+    },
+    "events": [],
+    "links": [],
+    "resource": {
+        "attributes": {
+            "telemetry.sdk.language": "python",
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.version": "1.44.0",
+            "service.instance.id": "ab542306-a9f7-46b8-ab6e-eaddf4826d97",
+            "service.name": "AI Business Intelligence Platform"
+        },
+        "schema_url": ""
+    }
+}
+{
+    "name": "POST /api/v1/projects/{project_id}/datasets",
+    "context": {
+        "trace_id": "0xf6d0d1de736bac182d3a491bad0526b5",
+        "span_id": "0xd9c9af8b5bcce920",
+        "trace_state": "[]"
+    },
+    "kind": "SpanKind.SERVER",
+    "parent_id": null,
+    "start_time": "2026-08-29T19:34:54.334396Z",
+    "end_time": "2026-08-29T19:34:54.603489Z",
+    "status": {
+        "status_code": "UNSET"
+    },
+    "attributes": {
+        "http.scheme": "http",
+        "http.host": "testserver",
+        "net.host.port": 80,
+        "http.flavor": "1.1",
+        "http.target": "/api/v1/projects/proj-94aed951/datasets",
+        "http.url": "http://testserver/api/v1/projects/proj-94aed951/datasets",
+        "http.method": "POST",
+        "http.server_name": "testserver",
+        "http.user_agent": "testclient",
+        "net.peer.ip": "testclient",
+        "net.peer.port": 50000,
+        "http.route": "/api/v1/projects/{project_id}/datasets",
+        "http.status_code": 200
+    },
+    "events": [],
+    "links": [],
+    "resource": {
+        "attributes": {
+            "telemetry.sdk.language": "python",
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.version": "1.44.0",
+            "service.instance.id": "ab542306-a9f7-46b8-ab6e-eaddf4826d97",
+            "service.name": "AI Business Intelligence Platform"
+        },
+        "schema_url": ""
+    }
+}
+{
+    "name": "POST /api/v1/projects http receive",
+    "context": {
+        "trace_id": "0x833f8a310994d68e5465acdb43d6dc93",
+        "span_id": "0xfb25d087b25bf53f",
+        "trace_state": "[]"
+    },
+    "kind": "SpanKind.INTERNAL",
+    "parent_id": "0x4f0112de59011bc6",
+    "start_time": "2026-08-29T19:34:54.631503Z",
+    "end_time": "2026-08-29T19:34:54.631554Z",
+    "status": {
+        "status_code": "UNSET"
+    },
+    "attributes": {
+        "asgi.event.type": "http.request"
+    },
+    "events": [],
+    "links": [],
+    "resource": {
+        "attributes": {
+            "telemetry.sdk.language": "python",
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.version": "1.44.0",
+            "service.instance.id": "ab542306-a9f7-46b8-ab6e-eaddf4826d97",
+            "service.name": "AI Business Intelligence Platform"
+        },
+        "schema_url": ""
+    }
+}
+{
+    "name": "POST /api/v1/projects http send",
+    "context": {
+        "trace_id": "0x833f8a310994d68e5465acdb43d6dc93",
+        "span_id": "0xfbaae8a3e13f94c9",
+        "trace_state": "[]"
+    },
+    "kind": "SpanKind.INTERNAL",
+    "parent_id": "0x4f0112de59011bc6",
+    "start_time": "2026-08-29T19:34:54.655435Z",
+    "end_time": "2026-08-29T19:34:54.655524Z",
+    "status": {
+        "status_code": "UNSET"
+    },
+    "attributes": {
+        "asgi.event.type": "http.response.start",
+        "http.status_code": 201
+    },
+    "events": [],
+    "links": [],
+    "resource": {
+        "attributes": {
+            "telemetry.sdk.language": "python",
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.version": "1.44.0",
+            "service.instance.id": "ab542306-a9f7-46b8-ab6e-eaddf4826d97",
+            "service.name": "AI Business Intelligence Platform"
+        },
+        "schema_url": ""
+    }
+}
+{
+    "name": "POST /api/v1/projects http send",
+    "context": {
+        "trace_id": "0x833f8a310994d68e5465acdb43d6dc93",
+        "span_id": "0xe69b7869b19d65b8",
+        "trace_state": "[]"
+    },
+    "kind": "SpanKind.INTERNAL",
+    "parent_id": "0x4f0112de59011bc6",
+    "start_time": "2026-08-29T19:34:54.655841Z",
+    "end_time": "2026-08-29T19:34:54.655875Z",
+    "status": {
+        "status_code": "UNSET"
+    },
+    "attributes": {
+        "asgi.event.type": "http.response.body"
+    },
+    "events": [],
+    "links": [],
+    "resource": {
+        "attributes": {
+            "telemetry.sdk.language": "python",
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.version": "1.44.0",
+            "service.instance.id": "ab542306-a9f7-46b8-ab6e-eaddf4826d97",
+            "service.name": "AI Business Intelligence Platform"
+        },
+        "schema_url": ""
+    }
+}
+{
+    "name": "POST /api/v1/projects http send",
+    "context": {
+        "trace_id": "0x833f8a310994d68e5465acdb43d6dc93",
+        "span_id": "0xe483e5b6ac2250c6",
+        "trace_state": "[]"
+    },
+    "kind": "SpanKind.INTERNAL",
+    "parent_id": "0x4f0112de59011bc6",
+    "start_time": "2026-08-29T19:34:54.655981Z",
+    "end_time": "2026-08-29T19:34:54.656009Z",
+    "status": {
+        "status_code": "UNSET"
+    },
+    "attributes": {
+        "asgi.event.type": "http.response.body"
+    },
+    "events": [],
+    "links": [],
+    "resource": {
+        "attributes": {
+            "telemetry.sdk.language": "python",
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.version": "1.44.0",
+            "service.instance.id": "ab542306-a9f7-46b8-ab6e-eaddf4826d97",
+            "service.name": "AI Business Intelligence Platform"
+        },
+        "schema_url": ""
+    }
+}
+{
+    "name": "POST /api/v1/projects",
+    "context": {
+        "trace_id": "0x833f8a310994d68e5465acdb43d6dc93",
+        "span_id": "0x4f0112de59011bc6",
+        "trace_state": "[]"
+    },
+    "kind": "SpanKind.SERVER",
+    "parent_id": null,
+    "start_time": "2026-08-29T19:34:54.630223Z",
+    "end_time": "2026-08-29T19:34:54.656039Z",
+    "status": {
+        "status_code": "UNSET"
+    },
+    "attributes": {
+        "http.scheme": "http",
+        "http.host": "testserver",
+        "net.host.port": 80,
+        "http.flavor": "1.1",
+        "http.target": "/api/v1/projects",
+        "http.url": "http://testserver/api/v1/projects",
+        "http.method": "POST",
+        "http.server_name": "testserver",
+        "http.user_agent": "testclient",
+        "net.peer.ip": "testclient",
+        "net.peer.port": 50000,
+        "http.route": "/api/v1/projects",
+        "http.status_code": 201
+    },
+    "events": [],
+    "links": [],
+    "resource": {
+        "attributes": {
+            "telemetry.sdk.language": "python",
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.version": "1.44.0",
+            "service.instance.id": "ab542306-a9f7-46b8-ab6e-eaddf4826d97",
+            "service.name": "AI Business Intelligence Platform"
+        },
+        "schema_url": ""
+    }
+}
+Generated CSV size: 11.75 MB, rows: 100000
+{"timestamp": "2026-08-30 00:35:04", "name": "app.core.middleware", "level": "INFO", "message": "Request started: POST /api/v1/projects/proj-183c76d2/datasets [ID: 5a08d7b0-9a50-42e4-ba39-ee0aaa314ab6]
+Request Payload: --5749f0aaaf8b337f213baecc3a893731
+Content-Disposition: form-data; name="tableName"
+
+ecommerce_customer_reviews_100k
+--5749f0aaaf8b337f213baecc3a893731
+Content-Disposition: form-data; name="file"; filename="E-commerce Customer Reviews 100K.csv"
+Content-Type: text/csv
+
+review_id,product_id,customer_id,rating,review_text,review_date,helpful_votes,verified_purchase,price
+REV-100000,PROD-667,CUST-9371,1.0,"Great product! ""Highly"" recommended, fast delivery.",2025-04-13 00:00:00,280,True,19.99
+REV-100001,PROD-231,CUST-2787,5.0,"Terrible quality <br/> broken on arrival, refund please!",2025-12-15 00:00:00,176,False,
+REV-100002,PROD-480,CUST-2564,5.0,"Average product... works ok, but cost $45.99 is high.",2025-09-28 00:00:00,115,False,49.99
+REV-100003,PROD-392,CUST-9537,4.0,Amazing! 10/10 rating. Would buy again from E-Commerce store.,2025-04-17 00:00:00,192,True,
+REV-100004,PROD-957,CUST-8239,5.0,,2025-03-13 00:00:00,160,False,99.99
+REV-100005,PROD-984,CUST-3020,,"Special chars: & # @ ! % * ( ) _ + = { } [ ] | : ; ' "" < > ? / \",2025-07-08 00:00:00,473,True,
+REV-100006,PROD-389,CUST-9829,3.0,"Review with newline
+Second line of review with comma, and quotes ""hello""",2025-01-21 00:00:00,310,True,
+REV-100007,PROD-435,CUST-7049,5.0,"Great product! ""Highly"" recommended, fast delivery.",2025-04-13 00:00:00,483,True,99.99
+REV-100008,PROD-716,CUST-3493,1.0,"Terrible quality <br/> broken on arrival, refund please!",2025-05-02 00:00:00,34,True,49.99
+REV-100009,PROD-1"}
+{"timestamp": "2026-08-30 00:35:04", "name": "app.features.projects.router", "level": "INFO", "message": "DATASET_UPLOAD_STARTED: dataset_id=62880fab-4dc5-4fb5-bb90-a1fdb1755680 project_id=proj-183c76d2 user_id=dev_user filename='E-commerce Customer Reviews 100K.csv'"}
+{"timestamp": "2026-08-30 00:35:04", "name": "app.features.projects.router", "level": "INFO", "message": "duckdb_ingestion_started: dataset_id=62880fab-4dc5-4fb5-bb90-a1fdb1755680 path=d:\AI Business Intelligence Platform\backend\app\uploads\f7267c5b-4865-4c89-9462-0eefe1e7aa3d_E-commerce Customer Reviews 100K.csv"}
+{
+    "name": "POST /api/v1/projects/{project_id}/datasets http receive",
+    "context": {
+        "trace_id": "0xee62677a68ec0ffe2d2150b3363e118e",
+        "span_id": "0x950c5d9bbb864958",
+        "trace_state": "[]"
+    },
+    "kind": "SpanKind.INTERNAL",
+    "parent_id": "0xf30dcaefc213c596",
+    "start_time": "2026-08-29T19:35:04.754557Z",
+    "end_time": "2026-08-29T19:35:04.761857Z",
+    "status": {
+        "status_code": "UNSET"
+    },
+    "attributes": {
+        "asgi.event.type": "http.request"
+    },
+    "events": [],
+    "links": [],
+    "resource": {
+        "attributes": {
+            "telemetry.sdk.language": "python",
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.version": "1.44.0",
+            "service.instance.id": "ab542306-a9f7-46b8-ab6e-eaddf4826d97",
+            "service.name": "AI Business Intelligence Platform"
+        },
+        "schema_url": ""
+    }
+}
+{"timestamp": "2026-08-30 00:35:12", "name": "app.features.projects.router", "level": "INFO", "message": "duckdb_ingestion_completed: dataset_id=62880fab-4dc5-4fb5-bb90-a1fdb1755680 rows=100000"}
+{"timestamp": "2026-08-30 00:35:12", "name": "app.features.projects.router", "level": "INFO", "message": "DATASET_UPLOAD_SUCCESS: dataset_id=62880fab-4dc5-4fb5-bb90-a1fdb1755680 project_id=proj-183c76d2 user_id=dev_user duration=7.4324s"}
+{"timestamp": "2026-08-30 00:35:12", "name": "app.core.middleware", "level": "INFO", "message": "Request finished: POST /api/v1/projects/proj-183c76d2/datasets Status: 200 in 7.5359s [ID: 5a08d7b0-9a50-42e4-ba39-ee0aaa314ab6]"}
+{"timestamp": "2026-08-30 00:35:12", "name": "httpx", "level": "INFO", "message": "HTTP Request: POST http://testserver/api/v1/projects/proj-183c76d2/datasets "HTTP/1.1 200 OK""}
+Dataset 3 upload status: 200
+Dataset 3 upload success: 62880fab-4dc5-4fb5-bb90-a1fdb1755680 rows: 100000
+{
+    "name": "POST /api/v1/projects/{project_id}/datasets http send",
+    "context": {
+        "trace_id": "0xee62677a68ec0ffe2d2150b3363e118e",
+        "span_id": "0xa763079523cda3b8",
+        "trace_state": "[]"
+    },
+    "kind": "SpanKind.INTERNAL",
+    "parent_id": "0xf30dcaefc213c596",
+    "start_time": "2026-08-29T19:35:12.290993Z",
+    "end_time": "2026-08-29T19:35:12.291029Z",
+    "status": {
+        "status_code": "UNSET"
+    },
+    "attributes": {
+        "asgi.event.type": "http.response.start",
+        "http.status_code": 200
+    },
+    "events": [],
+    "links": [],
+    "resource": {
+        "attributes": {
+            "telemetry.sdk.language": "python",
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.version": "1.44.0",
+            "service.instance.id": "ab542306-a9f7-46b8-ab6e-eaddf4826d97",
+            "service.name": "AI Business Intelligence Platform"
+        },
+        "schema_url": ""
+    }
+}
+{
+    "name": "POST /api/v1/projects/{project_id}/datasets http send",
+    "context": {
+        "trace_id": "0xee62677a68ec0ffe2d2150b3363e118e",
+        "span_id": "0xe302a97672556574",
+        "trace_state": "[]"
+    },
+    "kind": "SpanKind.INTERNAL",
+    "parent_id": "0xf30dcaefc213c596",
+    "start_time": "2026-08-29T19:35:12.291165Z",
+    "end_time": "2026-08-29T19:35:12.291177Z",
+    "status": {
+        "status_code": "UNSET"
+    },
+    "attributes": {
+        "asgi.event.type": "http.response.body"
+    },
+    "events": [],
+    "links": [],
+    "resource": {
+        "attributes": {
+            "telemetry.sdk.language": "python",
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.version": "1.44.0",
+            "service.instance.id": "ab542306-a9f7-46b8-ab6e-eaddf4826d97",
+            "service.name": "AI Business Intelligence Platform"
+        },
+        "schema_url": ""
+    }
+}
+{
+    "name": "POST /api/v1/projects/{project_id}/datasets http send",
+    "context": {
+        "trace_id": "0xee62677a68ec0ffe2d2150b3363e118e",
+        "span_id": "0xfb75afcec16316c8",
+        "trace_state": "[]"
+    },
+    "kind": "SpanKind.INTERNAL",
+    "parent_id": "0xf30dcaefc213c596",
+    "start_time": "2026-08-29T19:35:12.291215Z",
+    "end_time": "2026-08-29T19:35:12.291223Z",
+    "status": {
+        "status_code": "UNSET"
+    },
+    "attributes": {
+        "asgi.event.type": "http.response.body"
+    },
+    "events": [],
+    "links": [],
+    "resource": {
+        "attributes": {
+            "telemetry.sdk.language": "python",
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.version": "1.44.0",
+            "service.instance.id": "ab542306-a9f7-46b8-ab6e-eaddf4826d97",
+            "service.name": "AI Business Intelligence Platform"
+        },
+        "schema_url": ""
+    }
+}
+{
+    "name": "POST /api/v1/projects/{project_id}/datasets",
+    "context": {
+        "trace_id": "0xee62677a68ec0ffe2d2150b3363e118e",
+        "span_id": "0xf30dcaefc213c596",
+        "trace_state": "[]"
+    },
+    "kind": "SpanKind.SERVER",
+    "parent_id": null,
+    "start_time": "2026-08-29T19:35:04.753347Z",
+    "end_time": "2026-08-29T19:35:12.291233Z",
+    "status": {
+        "status_code": "UNSET"
+    },
+    "attributes": {
+        "http.scheme": "http",
+        "http.host": "testserver",
+        "net.host.port": 80,
+        "http.flavor": "1.1",
+        "http.target": "/api/v1/projects/proj-183c76d2/datasets",
+        "http.url": "http://testserver/api/v1/projects/proj-183c76d2/datasets",
+        "http.method": "POST",
+        "http.server_name": "testserver",
+        "http.user_agent": "testclient",
+        "net.peer.ip": "testclient",
+        "net.peer.port": 50000,
+        "http.route": "/api/v1/projects/{project_id}/datasets",
+        "http.status_code": 200
+    },
+    "events": [],
+    "links": [],
+    "resource": {
+        "attributes": {
+            "telemetry.sdk.language": "python",
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.version": "1.44.0",
+            "service.instance.id": "ab542306-a9f7-46b8-ab6e-eaddf4826d97",
+            "service.name": "AI Business Intelligence Platform"
+        },
+        "schema_url": ""
+    }
+}

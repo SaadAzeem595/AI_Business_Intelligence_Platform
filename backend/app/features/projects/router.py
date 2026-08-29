@@ -63,11 +63,31 @@ async def create_project(
     import time
     start_time = time.perf_counter()
     project_id = f"proj-{uuid.uuid4().hex[:8]}"
-    logger.info(f"PROJECT_CREATE_STARTED: project_id={project_id} user_id={current_user.id} name='{payload.name}'")
+    name = (payload.name or "").strip()
+    logger.info(f"PROJECT_CREATE_STARTED: project_id={project_id} user_id={current_user.id} name='{name}'")
     
+    if not name or len(name) < 2 or len(name) > 100:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Project name must be between 2 and 100 characters."
+        )
+
     try:
         logger.info(f"PROJECT_CREATE_AUTHENTICATED: user_id={current_user.id} role={current_user.role}")
         
+        # Check for duplicate project name for this user
+        from sqlalchemy import func
+        dup_stmt = select(Project).where(
+            Project.owner_id == current_user.id,
+            func.lower(Project.name) == name.lower()
+        )
+        dup_res = await db.execute(dup_stmt)
+        if dup_res.scalars().first():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"A project named '{name}' already exists. Please choose a different name."
+            )
+
         # 1. Ensure user record exists in database (prevents foreign key owner_id failure)
         from app.features.auth.models import User
         stmt = select(User).where(User.id == current_user.id)
@@ -88,8 +108,8 @@ async def create_project(
         # 2. Insert project record into database
         project_data = {
             "id": project_id,
-            "name": payload.name,
-            "description": payload.description,
+            "name": name,
+            "description": payload.description.strip() if payload.description else None,
             "owner_id": current_user.id,
             "status": payload.status or "Active",
             "created_at": datetime.now(),
@@ -120,6 +140,9 @@ async def create_project(
             dataset_count=0,
             status=db_item.status
         )
+    except HTTPException:
+        await db.rollback()
+        raise
     except Exception as e:
         duration = time.perf_counter() - start_time
         logger.error(f"PROJECT_CREATE_FAILED: project_id={project_id} user_id={current_user.id} duration={duration:.4f}s error='{str(e)}'")
@@ -128,7 +151,7 @@ async def create_project(
         except Exception:
             pass
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Failed to create project: {str(e)}"
         )
 
@@ -350,11 +373,11 @@ async def upload_project_dataset(
         # Save file to disk
         content = await file.read()
         
-        # Max file size: 50MB
-        if len(content) > 50 * 1024 * 1024:
+        # Max file size: 500MB
+        if len(content) > 500 * 1024 * 1024:
             raise HTTPException(
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                detail="File size exceeds the maximum limit of 50MB."
+                detail="File size exceeds the maximum limit of 500MB."
             )
             
         file_path = DatasetService.save_uploaded_file(filename, content)
@@ -377,7 +400,20 @@ async def upload_project_dataset(
         health_score = int(total_completeness / len(schema)) if schema else 100
         
         display_name = tableName.strip() if tableName else os.path.splitext(filename)[0]
-        clean_table_name = sanitize_table_name(project_id, display_name)
+        base_table_name = sanitize_table_name(project_id, display_name)
+        clean_table_name = base_table_name
+        
+        # Handle duplicate dataset table names per project gracefully
+        suffix = 1
+        while True:
+            existing_ds = await db.execute(
+                select(Dataset).where(Dataset.project_id == project_id, Dataset.duckdb_table == clean_table_name)
+            )
+            if not existing_ds.scalars().first():
+                break
+            suffix += 1
+            clean_table_name = f"{base_table_name}_{suffix}"
+
         from app.core.json_utils import safe_json_dumps
         
         dataset_data = {
@@ -448,16 +484,16 @@ async def upload_project_dataset(
             created_at=db_item.created_at,
             updated_at=db_item.updated_at
         )
+    except HTTPException:
+        await db.rollback()
+        raise
     except Exception as e:
         duration = time.perf_counter() - start_time
         logger.error(f"DATASET_UPLOAD_FAILED: dataset_id={dataset_id} project_id={project_id} user_id={current_user.id} duration={duration:.4f}s error='{str(e)}'")
-        # Save fail state to DB if possible to prevent orphan files/failed parsing mapping
         try:
-            # Cleanup saved file if it exists
-            pass
+            await db.rollback()
         except Exception:
             pass
-            
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Ingestion failed: {str(e)}"

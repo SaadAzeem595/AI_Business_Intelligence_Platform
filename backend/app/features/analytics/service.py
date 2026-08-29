@@ -67,19 +67,20 @@ def register_all_datasets_in_duckdb(conn: duckdb.DuckDBPyConnection, project_id:
         clean_v = "".join(c for c in clean_v if c.isalnum() or c == "_")
         if not clean_v:
             return
+        clean_path = file_path.replace("\\", "/")
         try:
-            if file_path.endswith('.csv'):
-                conn.execute(f"CREATE OR REPLACE TEMP VIEW \"{clean_v}\" AS SELECT * FROM read_csv_auto('{file_path}')")
-            elif file_path.endswith(('.xlsx', '.xls')):
+            if clean_path.endswith('.csv'):
+                conn.execute(f"CREATE OR REPLACE TEMP VIEW \"{clean_v}\" AS SELECT * FROM read_csv_auto('{clean_path}')")
+            elif clean_path.endswith(('.xlsx', '.xls')):
                 import pandas as pd
                 df = pd.read_excel(file_path)
                 conn.register(clean_v, df)
-            elif file_path.endswith('.json'):
+            elif clean_path.endswith('.json'):
                 import pandas as pd
                 df = pd.read_json(file_path)
                 conn.register(clean_v, df)
-            elif file_path.endswith('.parquet'):
-                conn.execute(f"CREATE OR REPLACE TEMP VIEW \"{clean_v}\" AS SELECT * FROM read_parquet('{file_path}')")
+            elif clean_path.endswith('.parquet'):
+                conn.execute(f"CREATE OR REPLACE TEMP VIEW \"{clean_v}\" AS SELECT * FROM read_parquet('{clean_path}')")
         except Exception as e:
             logger.warning(f"Failed to register view '{clean_v}' in DuckDB: {str(e)}")
 

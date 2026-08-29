@@ -37,71 +37,86 @@ class DatasetService:
 
         conn = next(get_duckdb_conn())
         file_ext = os.path.splitext(file_path.lower())[1]
+        clean_path = file_path.replace("\\", "/")
 
         try:
             if file_ext == '.csv':
-                rows_count = conn.execute(f"SELECT COUNT(*) FROM read_csv_auto('{file_path}')").fetchone()[0]
-                cols_info = conn.execute(f"DESCRIBE SELECT * FROM read_csv_auto('{file_path}')").fetchall()
-                cols_count = len(cols_info)
-                
-                schema_list: List[DatasetSchemaColumn] = []
-                for col in cols_info:
-                    col_name = col[0]
-                    col_type = col[1]
-                    distinct_cnt = conn.execute(
-                        f"SELECT COUNT(DISTINCT \"{col_name}\") FROM read_csv_auto('{file_path}')"
-                    ).fetchone()[0]
-                    schema_list.append(
-                        DatasetSchemaColumn(
-                            name=col_name,
-                            type=str(col_type),
-                            completeness=100.0,
-                            distinctValues=distinct_cnt,
+                read_expr = f"read_csv_auto('{clean_path}')"
+                conn.execute(f"CREATE TEMP VIEW _analysis_temp AS SELECT * FROM {read_expr}")
+                try:
+                    rows_count = conn.execute("SELECT COUNT(*) FROM _analysis_temp").fetchone()[0]
+                    cols_info = conn.execute("DESCRIBE SELECT * FROM _analysis_temp").fetchall()
+                    cols_count = len(cols_info)
+                    
+                    schema_list: List[DatasetSchemaColumn] = []
+                    for col in cols_info:
+                        col_name = col[0]
+                        col_type = col[1]
+                        safe_col = col_name.replace('"', '""')
+                        distinct_cnt = conn.execute(
+                            f'SELECT COUNT(DISTINCT "{safe_col}") FROM _analysis_temp'
+                        ).fetchone()[0]
+                        schema_list.append(
+                            DatasetSchemaColumn(
+                                name=col_name,
+                                type=str(col_type),
+                                completeness=100.0,
+                                distinctValues=distinct_cnt,
+                            )
                         )
-                    )
 
-                preview_res = conn.execute(
-                    f"SELECT * FROM read_csv_auto('{file_path}') LIMIT 5"
-                )
-                columns = [desc[0] for desc in preview_res.description]
-                preview_rows = []
-                for row in preview_res.fetchall():
-                    row_dict = {}
-                    for idx, col_name in enumerate(columns):
-                        row_dict[col_name] = row[idx]
-                    preview_rows.append(row_dict)
+                    preview_res = conn.execute("SELECT * FROM _analysis_temp LIMIT 5")
+                    columns = [desc[0] for desc in preview_res.description]
+                    preview_rows = []
+                    for row in preview_res.fetchall():
+                        row_dict = {}
+                        for idx, col_name in enumerate(columns):
+                            row_dict[col_name] = row[idx]
+                        preview_rows.append(row_dict)
+                finally:
+                    try:
+                        conn.execute("DROP VIEW IF EXISTS _analysis_temp")
+                    except Exception:
+                        pass
 
             elif file_ext == '.parquet':
-                rows_count = conn.execute(f"SELECT COUNT(*) FROM read_parquet('{file_path}')").fetchone()[0]
-                cols_info = conn.execute(f"DESCRIBE SELECT * FROM read_parquet('{file_path}')").fetchall()
-                cols_count = len(cols_info)
-                
-                schema_list = []
-                for col in cols_info:
-                    col_name = col[0]
-                    col_type = col[1]
-                    distinct_cnt = conn.execute(
-                        f"SELECT COUNT(DISTINCT \"{col_name}\") FROM read_parquet('{file_path}')"
-                    ).fetchone()[0]
-                    schema_list.append(
-                        DatasetSchemaColumn(
-                            name=col_name,
-                            type=str(col_type),
-                            completeness=100.0,
-                            distinctValues=distinct_cnt,
+                read_expr = f"read_parquet('{clean_path}')"
+                conn.execute(f"CREATE TEMP VIEW _analysis_temp AS SELECT * FROM {read_expr}")
+                try:
+                    rows_count = conn.execute("SELECT COUNT(*) FROM _analysis_temp").fetchone()[0]
+                    cols_info = conn.execute("DESCRIBE SELECT * FROM _analysis_temp").fetchall()
+                    cols_count = len(cols_info)
+                    
+                    schema_list = []
+                    for col in cols_info:
+                        col_name = col[0]
+                        col_type = col[1]
+                        safe_col = col_name.replace('"', '""')
+                        distinct_cnt = conn.execute(
+                            f'SELECT COUNT(DISTINCT "{safe_col}") FROM _analysis_temp'
+                        ).fetchone()[0]
+                        schema_list.append(
+                            DatasetSchemaColumn(
+                                name=col_name,
+                                type=str(col_type),
+                                completeness=100.0,
+                                distinctValues=distinct_cnt,
+                            )
                         )
-                    )
 
-                preview_res = conn.execute(
-                    f"SELECT * FROM read_parquet('{file_path}') LIMIT 5"
-                )
-                columns = [desc[0] for desc in preview_res.description]
-                preview_rows = []
-                for row in preview_res.fetchall():
-                    row_dict = {}
-                    for idx, col_name in enumerate(columns):
-                        row_dict[col_name] = row[idx]
-                    preview_rows.append(row_dict)
+                    preview_res = conn.execute("SELECT * FROM _analysis_temp LIMIT 5")
+                    columns = [desc[0] for desc in preview_res.description]
+                    preview_rows = []
+                    for row in preview_res.fetchall():
+                        row_dict = {}
+                        for idx, col_name in enumerate(columns):
+                            row_dict[col_name] = row[idx]
+                        preview_rows.append(row_dict)
+                finally:
+                    try:
+                        conn.execute("DROP VIEW IF EXISTS _analysis_temp")
+                    except Exception:
+                        pass
 
             elif file_ext in ('.xlsx', '.xls', '.json'):
                 import pandas as pd
@@ -169,3 +184,8 @@ class DatasetService:
                     {"id": 105, "customer_name": "Alice Brown", "transaction_date": "2026-07-30", "amount": 320.0, "region": "South", "status": "Refunded"},
                 ],
             )
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass

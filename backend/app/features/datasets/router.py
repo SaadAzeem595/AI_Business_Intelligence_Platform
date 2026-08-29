@@ -30,78 +30,89 @@ def analyze_file_schema(file_path: str, file_type: str):
     gen = get_duckdb_conn()
     conn = next(gen)
     try:
+        clean_path = file_path.replace("\\", "/")
         file_ext = os.path.splitext(file_path.lower())[1]
         
         # Determine read expression
         read_expr = None
         if file_type == "CSV" or file_ext == ".csv":
-            read_expr = f"read_csv_auto('{file_path}')"
+            read_expr = f"read_csv_auto('{clean_path}')"
         elif file_type == "PARQUET" or file_ext == ".parquet":
-            read_expr = f"read_parquet('{file_path}')"
+            read_expr = f"read_parquet('{clean_path}')"
             
         if read_expr:
-            # Row count
-            rows_count = conn.execute(f"SELECT COUNT(*) FROM {read_expr}").fetchone()[0]
-            # Column definitions
-            cols_info = conn.execute(f"DESCRIBE SELECT * FROM {read_expr}").fetchall()
-            columns = [c[0] for c in cols_info]
-            
-            schema = {}
-            for col in cols_info:
-                col_name = col[0]
-                col_type = str(col[1])
+            conn.execute(f"CREATE TEMP VIEW _ingest_temp AS SELECT * FROM {read_expr}")
+            try:
+                rows_count = conn.execute("SELECT COUNT(*) FROM _ingest_temp").fetchone()[0]
+                cols_info = conn.execute("DESCRIBE SELECT * FROM _ingest_temp").fetchall()
+                columns = [c[0] for c in cols_info]
                 
-                # Missing values count
-                null_count = conn.execute(f"SELECT COUNT(*) - COUNT(\"{col_name}\") FROM {read_expr}").fetchone()[0]
-                completeness = 100.0 if rows_count == 0 else float((rows_count - null_count) / rows_count * 100.0)
-                
-                # Distinct count
-                distinct_count = conn.execute(f"SELECT COUNT(DISTINCT \"{col_name}\") FROM {read_expr}").fetchone()[0]
-                
-                # Max and Min (if numeric/date)
-                min_val = None
-                max_val = None
-                is_numeric = any(t in col_type.upper() for t in ["INT", "DOUBLE", "FLOAT", "DECIMAL", "NUMERIC"])
-                is_date = any(t in col_type.upper() for t in ["DATE", "TIME", "TIMESTAMP"])
-                
-                if (is_numeric or is_date) and rows_count > 0:
-                    try:
-                        min_res = conn.execute(f"SELECT MIN(\"{col_name}\"), MAX(\"{col_name}\") FROM {read_expr}").fetchone()
-                        if min_res:
-                            min_val = str(make_json_serializable(min_res[0])) if min_res[0] is not None else None
-                            max_val = str(make_json_serializable(min_res[1])) if min_res[1] is not None else None
-                    except Exception:
-                        pass
-                
-                # Sample values
-                sample_values = []
-                if rows_count > 0:
-                    try:
-                        sample_res = conn.execute(f"SELECT DISTINCT \"{col_name}\" FROM {read_expr} WHERE \"{col_name}\" IS NOT NULL LIMIT 5").fetchall()
-                        sample_values = [make_json_serializable(r[0]) for r in sample_res]
-                    except Exception:
-                        pass
-                
-                # Categorical determination
-                is_categorical = False
-                if not is_numeric and not is_date and distinct_count < 100:
-                    is_categorical = True
+                schema = {}
+                for col in cols_info:
+                    col_name = col[0]
+                    col_type = str(col[1])
+                    safe_col = col_name.replace('"', '""')
                     
-                schema[col_name] = {
-                    "type": col_type,
-                    "nullable": col[2] == "YES",
-                    "completeness": completeness,
-                    "missing_count": null_count,
-                    "unique_count": distinct_count,
-                    "min": min_val,
-                    "max": max_val,
-                    "sample_values": sample_values,
-                    "is_categorical": is_categorical,
-                    "is_date": is_date,
-                    "is_numeric": is_numeric
-                }
-                
-            return int(rows_count), make_json_serializable(columns), make_json_serializable(schema)
+                    is_numeric = any(t in col_type.upper() for t in ["INT", "DOUBLE", "FLOAT", "DECIMAL", "NUMERIC", "HUGEINT", "TINYINT", "SMALLINT", "BIGINT", "UBIGINT"])
+                    is_date = any(t in col_type.upper() for t in ["DATE", "TIME", "TIMESTAMP"])
+                    
+                    try:
+                        stats_res = conn.execute(
+                            f'SELECT COUNT(*) - COUNT("{safe_col}"), COUNT(DISTINCT "{safe_col}") FROM _ingest_temp'
+                        ).fetchone()
+                        null_count = stats_res[0] if stats_res else 0
+                        distinct_count = stats_res[1] if stats_res else 0
+                    except Exception:
+                        null_count = 0
+                        distinct_count = 0
+                        
+                    completeness = 100.0 if rows_count == 0 else float((rows_count - null_count) / rows_count * 100.0)
+                    
+                    min_val = None
+                    max_val = None
+                    if (is_numeric or is_date) and rows_count > 0:
+                        try:
+                            mm_res = conn.execute(f'SELECT MIN("{safe_col}"), MAX("{safe_col}") FROM _ingest_temp').fetchone()
+                            if mm_res:
+                                min_val = str(make_json_serializable(mm_res[0])) if mm_res[0] is not None else None
+                                max_val = str(make_json_serializable(mm_res[1])) if mm_res[1] is not None else None
+                        except Exception:
+                            pass
+                            
+                    sample_values = []
+                    if rows_count > 0:
+                        try:
+                            sample_res = conn.execute(
+                                f'SELECT DISTINCT "{safe_col}" FROM _ingest_temp WHERE "{safe_col}" IS NOT NULL LIMIT 5'
+                            ).fetchall()
+                            sample_values = [make_json_serializable(r[0]) for r in sample_res]
+                        except Exception:
+                            pass
+                            
+                    is_categorical = False
+                    if not is_numeric and not is_date and distinct_count < 100:
+                        is_categorical = True
+                        
+                    schema[col_name] = {
+                        "type": col_type,
+                        "nullable": col[2] == "YES",
+                        "completeness": completeness,
+                        "missing_count": null_count,
+                        "unique_count": distinct_count,
+                        "min": min_val,
+                        "max": max_val,
+                        "sample_values": sample_values,
+                        "is_categorical": is_categorical,
+                        "is_date": is_date,
+                        "is_numeric": is_numeric
+                    }
+                    
+                return int(rows_count), make_json_serializable(columns), make_json_serializable(schema)
+            finally:
+                try:
+                    conn.execute("DROP VIEW IF EXISTS _ingest_temp")
+                except Exception:
+                    pass
             
         elif file_type in ("EXCEL", "XLSX", "XLS") or file_ext in (".xlsx", ".xls"):
             import pandas as pd
@@ -179,7 +190,7 @@ def analyze_file_schema(file_path: str, file_type: str):
         logger.error(f"Error in analyze_file_schema: {e}")
     finally:
         try:
-            gen.close()
+            conn.close()
         except Exception:
             pass
     return 0, [], {}

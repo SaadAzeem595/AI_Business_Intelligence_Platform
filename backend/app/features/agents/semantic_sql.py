@@ -542,12 +542,12 @@ def validate_semantic_sql(sql_query: Optional[str], user_query: str, catalog: Li
         if re.search(r'\b' + re.escape(kw) + r'\b', sql_upper):
             return False, f"Forbidden SQL operation '{kw}' detected. Only read-only SELECT queries are allowed."
 
-    # Rule 1: Never allow un-aggregated SELECT * FROM table without ORDER BY, GROUP BY, or LIMIT for analytical queries
+    # Rule 1: Never allow un-aggregated SELECT * FROM table for analytical queries
     if is_analytical_query(user_query):
-        has_agg_or_ordering = any(k in sql_upper for k in ["GROUP BY", "ORDER BY", "COUNT", "SUM", "AVG", "MAX", "MIN", "LIMIT"])
-        if re.search(r'SELECT\s+\*\s+FROM', sql_upper) and "ORDER BY" not in sql_upper and "GROUP BY" not in sql_upper and "LIMIT" not in sql_upper:
-            return False, "Query uses un-aggregated 'SELECT *' without ordering or limit for an analytical request."
-        if not has_agg_or_ordering:
+        has_aggregation = any(k in sql_upper for k in ["GROUP BY", "COUNT", "SUM", "AVG", "MAX", "MIN"])
+        if re.search(r'SELECT\s+\*\s+FROM', sql_upper) and not has_aggregation:
+            return False, "Query uses un-aggregated 'SELECT *' without aggregation for an analytical request."
+        if not has_aggregation and "ORDER BY" not in sql_upper and "LIMIT" not in sql_upper:
             return False, "Query lacks required aggregation, ordering, or limit clause for an analytical request."
 
     # Rule 2: Verify table names and column names exist in catalog

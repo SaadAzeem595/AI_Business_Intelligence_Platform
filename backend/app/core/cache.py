@@ -143,14 +143,21 @@ def run_async_as_sync(coro):
     from concurrent.futures import Future
 
     try:
-        # If no loop is running, we can use asyncio.run
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
     except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-    if loop.is_running():
-        # Execute in a separate thread to avoid nested loops runtime errors
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = None
+
+    if loop and loop.is_running():
+        try:
+            import nest_asyncio
+            nest_asyncio.apply(loop)
+            return loop.run_until_complete(coro)
+        except Exception:
+            pass
+
         future = Future()
 
         def start_loop():
@@ -169,5 +176,7 @@ def run_async_as_sync(coro):
         t.join()
         return future.result()
     else:
+        if loop is None:
+            return asyncio.run(coro)
         return loop.run_until_complete(coro)
 

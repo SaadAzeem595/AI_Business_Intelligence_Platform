@@ -8,7 +8,7 @@ from typing import Any
 def make_json_serializable(obj: Any) -> Any:
     """
     Recursively converts dates, datetimes, numpy/pandas types, Decimals, UUIDs,
-    and NaNs into JSON-serializable Python primitives.
+    bytes, NaTs, and NaNs into JSON-serializable Python primitives.
     """
     if obj is None:
         return None
@@ -16,6 +16,13 @@ def make_json_serializable(obj: Any) -> Any:
     # Standard Primitives
     if isinstance(obj, (int, str, bool)):
         return obj
+
+    # Bytes / Bytearray
+    if isinstance(obj, (bytes, bytearray)):
+        try:
+            return obj.decode("utf-8", errors="replace")
+        except Exception:
+            return str(obj)
 
     # Date and Time types
     if isinstance(obj, (datetime.datetime, datetime.date, datetime.time)):
@@ -60,6 +67,8 @@ def make_json_serializable(obj: Any) -> Any:
         if isinstance(obj, np.datetime64):
             try:
                 import pandas as pd
+                if pd.isna(obj):
+                    return None
                 return pd.Timestamp(obj).isoformat()
             except Exception:
                 return str(obj)
@@ -69,7 +78,11 @@ def make_json_serializable(obj: Any) -> Any:
     # Pandas type checks (scalar)
     try:
         import pandas as pd
+        if obj is pd.NaT or type(obj).__name__ == "NaTType":
+            return None
         if isinstance(obj, pd.Timestamp):
+            if pd.isna(obj):
+                return None
             return obj.isoformat()
         if isinstance(obj, pd.Timedelta):
             return str(obj)

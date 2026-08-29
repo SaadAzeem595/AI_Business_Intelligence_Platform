@@ -230,3 +230,65 @@ def test_nonexistent_project_detail_and_multi_project():
     app.dependency_overrides.clear()
 
 
+def test_large_dataset_upload_and_validation_errors():
+    """Tests 400 validation for duplicate project names, invalid names, and ingesting 100K row CSV with quotes and NaNs."""
+    client = TestClient(app)
+    set_active_user("user_large_test", role="Admin")
+
+    # 1. Create project
+    res1 = client.post("/api/v1/projects", json={"name": "E-commerce Customer Reviews 100K"})
+    assert res1.status_code == 201
+    project_id = res1.json()["id"]
+
+    # 2. Duplicate project name check -> 400 Bad Request
+    res_dup = client.post("/api/v1/projects", json={"name": "E-commerce Customer Reviews 100K"})
+    assert res_dup.status_code == 400
+    assert "already exists" in res_dup.json()["detail"]
+
+    # 3. Invalid project name check -> 400 Bad Request
+    res_short = client.post("/api/v1/projects", json={"name": "a"})
+    assert res_short.status_code == 400
+    assert "between 2 and 100" in res_short.json()["detail"]
+
+    # 4. Generate 100,000 row CSV data in memory
+    import time
+    headers = 'review_id,user "name",rating,review_date,comment\n'
+    rows = []
+    for i in range(1, 100001):
+        r_id = i
+        u_name = f'User "{i}"'
+        rating = 4.5 if i % 2 == 0 else ""
+        r_date = "2026-08-30"
+        comment = f"Great product #{i}!"
+        rows.append(f'{r_id},"{u_name}",{rating},{r_date},"{comment}"')
+    
+    csv_str = headers + "\n".join(rows)
+    csv_bytes = csv_str.encode("utf-8")
+    csv_file = io.BytesIO(csv_bytes)
+
+    files = {"file": ("ecommerce_reviews_100k.csv", csv_file, "text/csv")}
+    data = {"tableName": "ecommerce_reviews"}
+
+    start_upload = time.perf_counter()
+    res_upload = client.post(f"/api/v1/projects/{project_id}/datasets", files=files, data=data)
+    upload_duration = time.perf_counter() - start_upload
+
+    assert res_upload.status_code == 200
+    upload_json = res_upload.json()
+    assert upload_json["rows"] == 100000
+    assert upload_json["project_id"] == project_id
+    assert upload_duration < 10.0  # Processing 100k rows takes under 10 seconds
+
+    # 5. Query 100K table in DuckDB
+    sql_payload = {
+        "query": f"SELECT COUNT(*) as total_reviews FROM {upload_json['duckdb_table']}",
+        "project_id": project_id
+    }
+    res_sql = client.post("/api/v1/sql/run", json=sql_payload)
+    assert res_sql.status_code == 200
+    assert res_sql.json()["rows"][0]["total_reviews"] == 100000
+
+    app.dependency_overrides.clear()
+
+
+
