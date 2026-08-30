@@ -36,9 +36,7 @@ export default function proxy(req: NextRequest, event: any) {
 
 export const config = {
   matcher: [
-    // Skip Next.js internals and all static files
-    "/((?!_next|[^?]*\\.[\\w]+$).*)",
-    // Always run for API routes
-    "/(api|trpc)(.*)",
+    // Skip Next.js internals, static files, and backend API routes (handled by FastAPI)
+    "/((?!_next|api/v1|[^?]*\\.[\\w]+$).*)",
   ],
 };

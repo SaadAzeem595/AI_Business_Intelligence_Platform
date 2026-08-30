@@ -13,13 +13,11 @@ if (isProduction && process.env.NEXT_PUBLIC_DEV_AUTH_BYPASS === "true") {
 }
 
 const nextConfig: NextConfig = {
-  async rewrites() {
-    return [
-      {
-        source: "/api/v1/:path*",
-        destination: "http://127.0.0.1:8000/api/v1/:path*",
-      },
-    ];
+  middlewareClientMaxBodySize: "500mb",
+  experimental: {
+    serverActions: {
+      bodySizeLimit: "500mb",
+    },
   },
 };
 
