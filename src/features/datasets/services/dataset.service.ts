@@ -62,12 +62,15 @@ export const DatasetService = {
       headers: {
         "Content-Type": "multipart/form-data",
       },
+      timeout: 300000,
     });
     return response.data;
   },
 
   async clean(id: string, actions: string[]): Promise<DatasetDetails> {
-    const response = await apiClient.post<DatasetDetails>(API_ENDPOINTS.DATASETS.CLEAN(id), { actions });
+    const response = await apiClient.post<DatasetDetails>(API_ENDPOINTS.DATASETS.CLEAN(id), { actions }, {
+      timeout: 300000,
+    });
     return response.data;
   },
 

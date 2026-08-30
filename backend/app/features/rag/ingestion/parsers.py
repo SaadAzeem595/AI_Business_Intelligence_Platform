@@ -99,9 +99,10 @@ class CsvParser(BaseParser):
         
         header_block = f"[TABULAR_DATA: {filename}{sheet_info}]\n[SCHEMA: {cols_str}]"
         
+        records = df.to_dict(orient="records")
         rows_formatted = []
-        for idx, row in df.iterrows():
-            row_kvs = [f"{col}: {row[col]}" for col in cols if pd.notna(row[col])]
+        for idx, rec in enumerate(records):
+            row_kvs = [f"{col}: {rec[col]}" for col in cols if col in rec and pd.notna(rec[col])]
             row_str = f"Row {idx + 1} -> " + " | ".join(row_kvs)
             rows_formatted.append(row_str)
             

@@ -64,12 +64,14 @@ async def ingest_document(
         doc_id = str(uuid.uuid4())
         chunks_to_insert = []
         
-        # 4. Generate embeddings and create Chunk objects
+        # 4. Batch generate embeddings and create Chunk objects
+        chunk_texts = [cd["text"] for cd in chunk_dicts]
+        chunk_embeddings = embeddings.get_embeddings(chunk_texts)
+        
         for i, cd in enumerate(chunk_dicts):
             chunk_text = cd["text"]
             heading = cd["heading"]
-            
-            chunk_embedding = embeddings.get_embedding(chunk_text)
+            chunk_embedding = chunk_embeddings[i]
             
             meta = DocumentMetadata(
                 filename=filename,
@@ -228,11 +230,14 @@ async def reindex_rag_document(
         clean_text = TextCleaner.normalize_text(full_text)
         chunk_dicts = chunker_svc.chunk_by_heading(clean_text)
 
+        chunk_texts = [cd["text"] for cd in chunk_dicts]
+        chunk_embeddings = embeddings.get_embeddings(chunk_texts)
+
         chunks_to_insert = []
         for i, cd in enumerate(chunk_dicts):
             chunk_text = cd["text"]
             heading = cd["heading"]
-            chunk_embedding = embeddings.get_embedding(chunk_text)
+            chunk_embedding = chunk_embeddings[i]
 
             meta = DocumentMetadata(
                 filename=filename,

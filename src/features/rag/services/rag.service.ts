@@ -70,6 +70,7 @@ export const RAGService = {
       headers: {
         "Content-Type": "multipart/form-data",
       },
+      timeout: 300000,
     });
     return response.data;
   },
@@ -100,7 +101,9 @@ export const RAGService = {
   async reindexDocument(docId: string, projectId: string): Promise<any> {
     const formData = new FormData();
     formData.append("workspace", projectId);
-    const response = await apiClient.post(`/rag/reindex/${docId}`, formData);
+    const response = await apiClient.post(`/rag/reindex/${docId}`, formData, {
+      timeout: 300000,
+    });
     return response.data;
   },
 };

@@ -32,7 +32,7 @@ const getBaseURL = () => {
 
 export const apiClient = axios.create({
   baseURL: getBaseURL(),
-  timeout: 60000,
+  timeout: 300000,
   headers: {
     "Content-Type": "application/json",
   },
@@ -43,16 +43,35 @@ export const apiClient = axios.create({
 // ==========================================
 const getAccessToken = async () => {
   if (typeof window !== "undefined") {
-    const Clerk = (window as any).Clerk;
+    let Clerk = (window as any).Clerk;
+    if (!Clerk) {
+      // If Clerk script/SDK is still mounting on initial window load, wait up to 1500ms for window.Clerk
+      await new Promise((resolve) => {
+        const timeoutId = setTimeout(() => {
+          clearInterval(intervalId);
+          resolve(null);
+        }, 1500);
+
+        const intervalId = setInterval(() => {
+          if ((window as any).Clerk) {
+            clearInterval(intervalId);
+            clearTimeout(timeoutId);
+            Clerk = (window as any).Clerk;
+            resolve(null);
+          }
+        }, 50);
+      });
+    }
+
     if (Clerk) {
       if (!Clerk.isReady) {
         // Wait for Clerk to be ready with a safety timeout to prevent hanging requests
         await new Promise((resolve) => {
           const timeoutId = setTimeout(() => {
             clearInterval(intervalId);
-            console.warn("[API Client] Clerk initialization timed out after 1000ms. Continuing without token.");
+            console.warn("[API Client] Clerk initialization timed out after 2000ms. Continuing without token.");
             resolve(null);
-          }, 1000);
+          }, 2000);
 
           const intervalId = setInterval(() => {
             if (Clerk.isReady) {

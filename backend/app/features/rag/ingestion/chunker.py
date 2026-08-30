@@ -27,7 +27,7 @@ class ChunkerService:
                 break
         return chunks
 
-    def _chunk_tabular_text(self, text: str, max_rows_per_chunk: int = 10) -> List[Dict[str, Any]]:
+    def _chunk_tabular_text(self, text: str, max_rows_per_chunk: int = 50) -> List[Dict[str, Any]]:
         """
         Processes structured tabular data ([TABULAR_DATA: ...], [SCHEMA: ...])
         into human-readable chunks containing Markdown tables and explicit row context.

@@ -11,6 +11,8 @@ export function useProjects(id?: string) {
     queryFn: ProjectService.getList,
     enabled: !id,
     staleTime: 30 * 1000,
+    retry: 2,
+    retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 3000),
   });
 
   const detailQuery = useQuery({
@@ -18,7 +20,8 @@ export function useProjects(id?: string) {
     queryFn: () => ProjectService.get(id!),
     enabled: !!id,
     staleTime: 5 * 60 * 1000,
-    retry: false,
+    retry: 2,
+    retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 3000),
   });
 
   const createMutation = useMutation({

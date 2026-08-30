@@ -8,6 +8,7 @@ export interface Dataset {
   status: "Active" | "Processing" | "Failed";
   date: string;
   duckdb_table?: string;
+  display_name?: string;
   owner_id?: string;
   project_id?: string;
 }

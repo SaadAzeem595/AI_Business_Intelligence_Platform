@@ -13,7 +13,6 @@ if (isProduction && process.env.NEXT_PUBLIC_DEV_AUTH_BYPASS === "true") {
 }
 
 const nextConfig: NextConfig = {
-  middlewareClientMaxBodySize: "500mb",
   experimental: {
     serverActions: {
       bodySizeLimit: "500mb",
