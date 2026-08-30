@@ -2,7 +2,7 @@ import io
 import json
 import logging
 from abc import ABC, abstractmethod
-from typing import Dict, Type
+from typing import Dict, Type, Optional
 import pandas as pd
 from pypdf import PdfReader
 from docx import Document as DocxDocument
@@ -15,23 +15,23 @@ logger = logging.getLogger(__name__)
 
 class BaseParser(ABC):
     @abstractmethod
-    def parse(self, file_bytes: bytes, filename: str, ocr_provider: BaseOCRProvider) -> str:
+    def parse(self, file_bytes: bytes, filename: str, ocr_provider: Optional[BaseOCRProvider] = None) -> str:
         """Parses document bytes and extracts raw text."""
         pass
 
 
 class TextParser(BaseParser):
-    def parse(self, file_bytes: bytes, filename: str, ocr_provider: BaseOCRProvider) -> str:
+    def parse(self, file_bytes: bytes, filename: str, ocr_provider: Optional[BaseOCRProvider] = None) -> str:
         return file_bytes.decode("utf-8", errors="ignore")
 
 
 class MarkdownParser(BaseParser):
-    def parse(self, file_bytes: bytes, filename: str, ocr_provider: BaseOCRProvider) -> str:
+    def parse(self, file_bytes: bytes, filename: str, ocr_provider: Optional[BaseOCRProvider] = None) -> str:
         return file_bytes.decode("utf-8", errors="ignore")
 
 
 class PDFParser(BaseParser):
-    def parse(self, file_bytes: bytes, filename: str, ocr_provider: BaseOCRProvider) -> str:
+    def parse(self, file_bytes: bytes, filename: str, ocr_provider: Optional[BaseOCRProvider] = None) -> str:
         pdf_file = io.BytesIO(file_bytes)
         reader = PdfReader(pdf_file)
         text_parts = []
@@ -52,7 +52,7 @@ class PDFParser(BaseParser):
 
 
 class DocxParser(BaseParser):
-    def parse(self, file_bytes: bytes, filename: str, ocr_provider: BaseOCRProvider) -> str:
+    def parse(self, file_bytes: bytes, filename: str, ocr_provider: Optional[BaseOCRProvider] = None) -> str:
         doc = DocxDocument(io.BytesIO(file_bytes))
         text_parts = []
         for paragraph in doc.paragraphs:
@@ -67,7 +67,7 @@ class DocxParser(BaseParser):
 
 
 class PptxParser(BaseParser):
-    def parse(self, file_bytes: bytes, filename: str, ocr_provider: BaseOCRProvider) -> str:
+    def parse(self, file_bytes: bytes, filename: str, ocr_provider: Optional[BaseOCRProvider] = None) -> str:
         prs = PptxPresentation(io.BytesIO(file_bytes))
         text_parts = []
         for i, slide in enumerate(prs.slides):
@@ -79,7 +79,7 @@ class PptxParser(BaseParser):
 
 
 class HtmlParser(BaseParser):
-    def parse(self, file_bytes: bytes, filename: str, ocr_provider: BaseOCRProvider) -> str:
+    def parse(self, file_bytes: bytes, filename: str, ocr_provider: Optional[BaseOCRProvider] = None) -> str:
         soup = BeautifulSoup(file_bytes, "html.parser")
         # Remove script and style elements
         for script in soup(["script", "style"]):
@@ -88,25 +88,45 @@ class HtmlParser(BaseParser):
 
 
 class CsvParser(BaseParser):
-    def parse(self, file_bytes: bytes, filename: str, ocr_provider: BaseOCRProvider) -> str:
+    @staticmethod
+    def format_dataframe(df: pd.DataFrame, filename: str, sheet_name: str = None) -> str:
+        if df.empty:
+            return ""
+            
+        cols = [str(c).strip() for c in df.columns]
+        cols_str = " | ".join(cols)
+        sheet_info = f" (Sheet: {sheet_name})" if sheet_name else ""
+        
+        header_block = f"[TABULAR_DATA: {filename}{sheet_info}]\n[SCHEMA: {cols_str}]"
+        
+        rows_formatted = []
+        for idx, row in df.iterrows():
+            row_kvs = [f"{col}: {row[col]}" for col in cols if pd.notna(row[col])]
+            row_str = f"Row {idx + 1} -> " + " | ".join(row_kvs)
+            rows_formatted.append(row_str)
+            
+        return header_block + "\n" + "\n".join(rows_formatted)
+
+    def parse(self, file_bytes: bytes, filename: str, ocr_provider: Optional[BaseOCRProvider] = None) -> str:
         df = pd.read_csv(io.BytesIO(file_bytes))
-        return df.to_string(index=False)
+        return self.format_dataframe(df, filename)
 
 
 class ExcelParser(BaseParser):
-    def parse(self, file_bytes: bytes, filename: str, ocr_provider: BaseOCRProvider) -> str:
+    def parse(self, file_bytes: bytes, filename: str, ocr_provider: Optional[BaseOCRProvider] = None) -> str:
         # Load excel file (handles xls and xlsx)
         xls = pd.ExcelFile(io.BytesIO(file_bytes))
         text_parts = []
         for sheet_name in xls.sheet_names:
-            text_parts.append(f"--- Sheet: {sheet_name} ---")
             df = pd.read_excel(xls, sheet_name=sheet_name)
-            text_parts.append(df.to_string(index=False))
-        return "\n".join(text_parts)
+            formatted = CsvParser.format_dataframe(df, filename, sheet_name=sheet_name)
+            if formatted:
+                text_parts.append(formatted)
+        return "\n\n".join(text_parts)
 
 
 class JsonParser(BaseParser):
-    def parse(self, file_bytes: bytes, filename: str, ocr_provider: BaseOCRProvider) -> str:
+    def parse(self, file_bytes: bytes, filename: str, ocr_provider: Optional[BaseOCRProvider] = None) -> str:
         data = json.loads(file_bytes.decode("utf-8", errors="ignore"))
         return json.dumps(data, indent=2)
 

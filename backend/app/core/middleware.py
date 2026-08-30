@@ -44,15 +44,24 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
         # Read and restore request body to log payload details without hanging ASGI downstream
         body_str = ""
+        content_type = request.headers.get("content-type", "").lower()
+        is_upload = (
+            "multipart/form-data" in content_type
+            or "application/octet-stream" in content_type
+            or any(path in request.url.path for path in ["/datasets", "/upload", "/ingest"])
+        )
         if request.method in ["POST", "PUT", "PATCH"]:
-            try:
-                body = await request.body()
-                async def receive():
-                    return {"type": "http.request", "body": body, "more_body": False}
-                request._receive = receive
-                body_str = body.decode("utf-8", errors="ignore")
-            except Exception as e:
-                body_str = f"<Could not read body: {str(e)}>"
+            if is_upload:
+                body_str = "<Multipart file upload payload>"
+            else:
+                try:
+                    body = await request.body()
+                    async def receive():
+                        return {"type": "http.request", "body": body, "more_body": False}
+                    request._receive = receive
+                    body_str = body.decode("utf-8", errors="ignore")
+                except Exception as e:
+                    body_str = f"<Could not read body: {str(e)}>"
 
         log_payload = f"\nRequest Payload: {body_str[:1500]}" if body_str else ""
         logger.info(

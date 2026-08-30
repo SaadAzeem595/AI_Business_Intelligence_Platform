@@ -28,6 +28,60 @@ class DatasetService:
             f.write(content)
         return file_path
 
+    @classmethod
+    async def save_uploaded_file_stream(cls, file, filename: str, max_size_bytes: int = 500 * 1024 * 1024) -> str:
+        """Streams uploaded file chunks to disk without loading full payload into memory."""
+        from fastapi import HTTPException, status
+        upload_dir = cls.get_upload_dir()
+        unique_name = f"{uuid.uuid4()}_{filename}"
+        file_path = os.path.join(upload_dir, unique_name)
+        
+        chunk_size = 1024 * 1024  # 1MB chunks
+        total_written = 0
+        try:
+            with open(file_path, "wb") as f:
+                while True:
+                    chunk = await file.read(chunk_size)
+                    if not chunk:
+                        break
+                    total_written += len(chunk)
+                    if total_written > max_size_bytes:
+                        raise HTTPException(
+                            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                            detail=f"File size exceeds the maximum limit of {max_size_bytes // (1024 * 1024)}MB."
+                        )
+                    f.write(chunk)
+        except HTTPException:
+            if os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except Exception:
+                    pass
+            raise
+        except Exception as err:
+            if os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except Exception:
+                    pass
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to write uploaded file to storage: {str(err)}"
+            )
+
+        if total_written == 0:
+            if os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except Exception:
+                    pass
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Uploaded file is empty (0 bytes)."
+            )
+
+        return file_path
+
     @staticmethod
     def get_csv_duckdb_analysis(file_path: str, dataset_id: str, filename: str) -> DatasetDetailsResponse:
         """Connects to the DuckDB engine to parse file schema structures and preview data rows."""

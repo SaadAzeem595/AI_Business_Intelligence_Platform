@@ -36,12 +36,12 @@ def analyze_file_schema(file_path: str, file_type: str):
         # Determine read expression
         read_expr = None
         if file_type == "CSV" or file_ext == ".csv":
-            read_expr = f"read_csv_auto('{clean_path}')"
+            read_expr = f"read_csv_auto('{clean_path}', ignore_errors=true)"
         elif file_type == "PARQUET" or file_ext == ".parquet":
             read_expr = f"read_parquet('{clean_path}')"
             
         if read_expr:
-            conn.execute(f"CREATE TEMP VIEW _ingest_temp AS SELECT * FROM {read_expr}")
+            conn.execute(f"CREATE TEMP TABLE _ingest_temp AS SELECT * FROM {read_expr}")
             try:
                 rows_count = conn.execute("SELECT COUNT(*) FROM _ingest_temp").fetchone()[0]
                 cols_info = conn.execute("DESCRIBE SELECT * FROM _ingest_temp").fetchall()
@@ -110,7 +110,7 @@ def analyze_file_schema(file_path: str, file_type: str):
                 return int(rows_count), make_json_serializable(columns), make_json_serializable(schema)
             finally:
                 try:
-                    conn.execute("DROP VIEW IF EXISTS _ingest_temp")
+                    conn.execute("DROP TABLE IF EXISTS _ingest_temp")
                 except Exception:
                     pass
             
@@ -258,11 +258,11 @@ async def upload_dataset(
         import json
         from app.features.datasets.repository import dataset_repo
         
-        content = await file.read()
-        file_path = DatasetService.save_uploaded_file(file.filename, content)
+        file_path = await DatasetService.save_uploaded_file_stream(file, file.filename or "uploaded_file")
         dataset_id = str(uuid.uuid4())
         
-        file_size_kb = len(content) / 1024
+        file_size_bytes = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+        file_size_kb = file_size_bytes / 1024
         size_str = f"{file_size_kb:.1f} KB" if file_size_kb < 1024 else f"{(file_size_kb/1024):.1f} MB"
         
         file_type = file.filename.split(".")[-1].upper()

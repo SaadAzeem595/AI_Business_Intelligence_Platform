@@ -21,16 +21,55 @@ class BaseReranker(ABC):
 
 
 class MockReranker(BaseReranker):
+    MONTH_ALIASES = {
+        "january": "jan", "february": "feb", "march": "mar", "april": "apr",
+        "june": "jun", "july": "jul", "august": "aug", "september": "sep",
+        "october": "oct", "november": "nov", "december": "dec"
+    }
+    STOP_WORDS = {"what", "was", "the", "in", "which", "had", "do", "show", "over", "time", "a", "an", "is", "are", "of", "to", "for", "with"}
+
     def rerank(self, query: str, chunks: List[Chunk]) -> List[Tuple[Chunk, float]]:
-        """Computes Jaccard word-overlap coefficient as a semantic-proxy score."""
-        logger.info("Executing MockReranker (Jaccard overlap coefficient)...")
-        q_words = set(query.lower().split())
+        """Computes query coverage and semantic density relevance score (0.0 to 1.0)."""
+        logger.info("Executing MockReranker (query coverage + semantic density)...")
+        q_clean = query.lower()
+        all_words = [w.strip("?,.!") for w in q_clean.split() if len(w.strip("?,.!")) > 1]
+        
+        # Filter content words
+        content_words = [w for w in all_words if w not in self.STOP_WORDS]
+        target_words = content_words if content_words else all_words
+        
         results = []
         for chunk in chunks:
-            c_words = set(chunk.text.lower().split())
-            union_len = len(q_words.union(c_words))
-            score = len(q_words.intersection(c_words)) / union_len if union_len > 0 else 0.0
-            results.append((chunk, float(score)))
+            c_text_lower = chunk.text.lower()
+            c_words_set = set(c_text_lower.split())
+            
+            if not target_words:
+                score = 0.0
+            else:
+                matches = 0
+                for w in target_words:
+                    alias = self.MONTH_ALIASES.get(w, w)
+                    if w in c_words_set or alias in c_words_set or w in c_text_lower or alias in c_text_lower:
+                        matches += 1
+                        
+                query_coverage = matches / len(target_words)
+                
+                # Jaccard overlap
+                q_set = set(target_words)
+                union_len = len(q_set.union(c_words_set))
+                jaccard = len(q_set.intersection(c_words_set)) / union_len if union_len > 0 else 0.0
+                
+                # Combined score
+                raw_score = 0.75 * query_coverage + 0.25 * jaccard
+                
+                if query_coverage >= 0.75:
+                    raw_score += 0.15
+                elif query_coverage >= 0.50:
+                    raw_score += 0.10
+                    
+                score = min(1.0, max(0.0, float(raw_score)))
+                
+            results.append((chunk, score))
             
         return sorted(results, key=lambda x: x[1], reverse=True)
 
@@ -55,7 +94,8 @@ class CrossEncoderReranker(BaseReranker):
         
         results = []
         for idx, score in enumerate(scores):
-            results.append((chunks[idx], float(score)))
+            norm_score = 1.0 / (1.0 + float(np.exp(-score))) if isinstance(score, (int, float, np.number)) else float(score)
+            results.append((chunks[idx], float(norm_score)))
             
         return sorted(results, key=lambda x: x[1], reverse=True)
 
@@ -162,15 +202,21 @@ class RetrievalService:
         else:
             candidate_tuples = self.reciprocal_rank_fusion(vector_res, keyword_res)
             
-        # Extract candidate chunks
-        chunks = [item[0] for item in candidate_tuples]
+        # Deduplicate candidates by chunk ID and content
+        seen_ids = set()
+        dedup_candidates = []
+        for chunk, score in candidate_tuples:
+            if chunk.id not in seen_ids:
+                seen_ids.add(chunk.id)
+                dedup_candidates.append((chunk, score))
+                
+        chunks = [item[0] for item in dedup_candidates]
         
-        # 4. Optional Reranking
+        # 4. Optional Reranking or default score calculation
         if enable_rerank and chunks:
             ranked_tuples = self.reranker.rerank(query, chunks)
         else:
-            # Map score mappings from candidates
-            ranked_tuples = candidate_tuples
+            ranked_tuples = dedup_candidates
             
         # Slice to limit
         top_tuples = ranked_tuples[:limit]
@@ -190,7 +236,7 @@ class RetrievalService:
                     chunk_id=chunk.id,
                     doc_id=chunk.doc_id,
                     text=chunk.text,
-                    score=score,
+                    score=round(float(score), 4),
                     citation=citation
                 )
             )

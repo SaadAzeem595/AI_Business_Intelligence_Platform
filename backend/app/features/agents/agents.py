@@ -966,6 +966,9 @@ def rag_agent(state: AgentState) -> Dict[str, Any]:
     
     try:
         results = rag_retrieval_svc.retrieve(query=query, limit=3, filters=filters)
+        from app.features.rag.retrieval.context_builder import ContextBuilder
+        grounded_info = ContextBuilder.generate_grounded_answer(query, results)
+        
         rag_data = [
             {
                 "chunk_id": res.chunk_id,
@@ -985,6 +988,7 @@ def rag_agent(state: AgentState) -> Dict[str, Any]:
             details += f" and dataset '{resolved['filename']}'."
     except Exception as e:
         rag_data = []
+        grounded_info = {"answer": None, "sources": []}
         status = "success"
         details = f"RAG retrieval skipped or returned empty: {str(e)}"
         
@@ -998,6 +1002,7 @@ def rag_agent(state: AgentState) -> Dict[str, Any]:
     
     return {
         "rag_result": rag_data,
+        "grounded_answer": grounded_info.get("answer"),
         "completed_steps": completed,
         "execution_logs": logs,
         "reasoning_path": reasoning

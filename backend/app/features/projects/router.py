@@ -370,19 +370,11 @@ async def upload_project_dataset(
     logger.info(f"DATASET_UPLOAD_STARTED: dataset_id={dataset_id} project_id={project_id} user_id={current_user.id} filename='{filename}'")
     
     try:
-        # Save file to disk
-        content = await file.read()
+        # Save file to disk via stream with 500MB size limit check
+        file_path = await DatasetService.save_uploaded_file_stream(file, filename, max_size_bytes=500 * 1024 * 1024)
         
-        # Max file size: 500MB
-        if len(content) > 500 * 1024 * 1024:
-            raise HTTPException(
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                detail="File size exceeds the maximum limit of 500MB."
-            )
-            
-        file_path = DatasetService.save_uploaded_file(filename, content)
-        
-        file_size_kb = len(content) / 1024
+        file_size_bytes = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+        file_size_kb = file_size_bytes / 1024
         size_str = f"{file_size_kb:.1f} KB" if file_size_kb < 1024 else f"{(file_size_kb/1024):.1f} MB"
         
         file_type = file_ext.upper()
