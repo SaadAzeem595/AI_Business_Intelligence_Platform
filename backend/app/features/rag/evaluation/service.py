@@ -1,5 +1,5 @@
 import time
-from typing import List
+from typing import List, Optional, Dict, Any
 from app.features.rag.schemas import EvaluationMetrics, GroundTruthItem
 from app.features.rag.retrieval.service import RetrievalService
 
@@ -9,7 +9,8 @@ class RAGEvaluationService:
         retrieval_service: RetrievalService,
         ground_truth: List[GroundTruthItem],
         limit: int = 5,
-        hybrid_alpha: float = 0.5
+        hybrid_alpha: float = 0.5,
+        filters: Optional[Dict[str, Any]] = None
     ) -> EvaluationMetrics:
         """
         Benchmarks retrieval performance by calculating Hit Rate, Mean Reciprocal Rank (MRR),
@@ -35,6 +36,7 @@ class RAGEvaluationService:
             results = retrieval_service.retrieve(
                 query=item.query, 
                 limit=limit, 
+                filters=filters,
                 hybrid_alpha=hybrid_alpha,
                 enable_rerank=False
             )

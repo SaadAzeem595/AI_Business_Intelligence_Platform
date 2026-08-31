@@ -62,7 +62,50 @@ class ChunkerService:
                     
             cols_joined = " | ".join(schema_cols) if schema_cols else "Columns"
 
-            # 1. Generate Schema Chunk
+            # 1. Batch rows into row-group chunks first
+            if row_lines:
+                for i in range(0, len(row_lines), max_rows_per_chunk):
+                    batch = row_lines[i:i + max_rows_per_chunk]
+                    start_row = i + 1
+                    end_row = i + len(batch)
+                    
+                    heading_name = f"{title_line} (Rows {start_row}-{end_row})"
+                    
+                    # Build Markdown table representation
+                    md_table_lines = [
+                        f"### Dataset: {title_line} (Rows {start_row}-{end_row})",
+                        f"Schema: {cols_joined}",
+                        "",
+                        f"| {' | '.join(schema_cols)} |" if schema_cols else "| Data |",
+                        f"| {' | '.join(['---'] * len(schema_cols))} |" if schema_cols else "| --- |"
+                    ]
+                    
+                    # Convert `Row X -> Col1: Val1 | Col2: Val2` to markdown table row
+                    for r_str in batch:
+                        if " -> " in r_str:
+                            kv_part = r_str.split(" -> ")[1]
+                            kvs = dict(item.split(": ", 1) for item in kv_part.split(" | ") if ": " in item)
+                            row_vals = [str(kvs.get(col, "")).strip() for col in schema_cols]
+                            md_table_lines.append(f"| {' | '.join(row_vals)} |")
+                        else:
+                            md_table_lines.append(f"| {r_str} |")
+                            
+                    md_table_lines.append("")
+                    md_table_lines.append("Row Context:")
+                    md_table_lines.extend(batch)
+                    
+                    chunk_text = "\n".join(md_table_lines)
+                    chunks.append({
+                        "text": chunk_text,
+                        "heading": heading_name,
+                        "chunk_type": "table_rows",
+                        "row_start": start_row,
+                        "row_end": end_row,
+                        "columns": schema_cols,
+                        "table_name": title_line
+                    })
+
+            # 2. Generate Schema Chunk
             schema_text_lines = [
                 f"### Dataset Schema: {title_line}",
                 f"Columns ({len(schema_cols)}): {cols_joined}"
@@ -80,7 +123,7 @@ class ChunkerService:
                 "table_name": title_line
             })
 
-            # 2. Generate Dataset Summary Chunk (if available)
+            # 3. Generate Dataset Summary Chunk (if available)
             if dataset_summary_str:
                 summary_chunk_text = f"### Dataset Summary: {title_line}\n{dataset_summary_str}"
                 chunks.append({
@@ -89,51 +132,6 @@ class ChunkerService:
                     "chunk_type": "dataset_summary",
                     "row_start": None,
                     "row_end": None,
-                    "columns": schema_cols,
-                    "table_name": title_line
-                })
-
-            if not row_lines:
-                continue
-            
-            # 3. Batch rows into row-group chunks
-            for i in range(0, len(row_lines), max_rows_per_chunk):
-                batch = row_lines[i:i + max_rows_per_chunk]
-                start_row = i + 1
-                end_row = i + len(batch)
-                
-                heading_name = f"{title_line} (Rows {start_row}-{end_row})"
-                
-                # Build Markdown table representation
-                md_table_lines = [
-                    f"### Dataset: {title_line} (Rows {start_row}-{end_row})",
-                    f"Schema: {cols_joined}",
-                    "",
-                    f"| {' | '.join(schema_cols)} |" if schema_cols else "| Data |",
-                    f"| {' | '.join(['---'] * len(schema_cols))} |" if schema_cols else "| --- |"
-                ]
-                
-                # Convert `Row X -> Col1: Val1 | Col2: Val2` to markdown table row
-                for r_str in batch:
-                    if " -> " in r_str:
-                        kv_part = r_str.split(" -> ")[1]
-                        kvs = dict(item.split(": ", 1) for item in kv_part.split(" | ") if ": " in item)
-                        row_vals = [str(kvs.get(col, "")).strip() for col in schema_cols]
-                        md_table_lines.append(f"| {' | '.join(row_vals)} |")
-                    else:
-                        md_table_lines.append(f"| {r_str} |")
-                        
-                md_table_lines.append("")
-                md_table_lines.append("Row Context:")
-                md_table_lines.extend(batch)
-                
-                chunk_text = "\n".join(md_table_lines)
-                chunks.append({
-                    "text": chunk_text,
-                    "heading": heading_name,
-                    "chunk_type": "table_rows",
-                    "row_start": start_row,
-                    "row_end": end_row,
                     "columns": schema_cols,
                     "table_name": title_line
                 })

@@ -252,15 +252,19 @@ async def retrieve_context(
 @router.post("/evaluate", response_model=EvaluationMetrics)
 async def evaluate_rag_retrieval(
     payload: EvaluationPayload,
+    workspace: Optional[str] = None,
     current_user: MockUser = Depends(get_current_user)
 ) -> EvaluationMetrics:
     """Evaluates retrieval quality (Hit Rate, MRR, Precision@K) and average latency."""
     try:
+        target_ws = workspace.strip() if (workspace and workspace.strip()) else current_user.workspace_id
+        filters = {"workspace": target_ws} if target_ws else None
         metrics = RAGEvaluationService.evaluate_retrieval(
             retrieval_service=retrieval_svc,
             ground_truth=payload.benchmark_dataset,
             limit=payload.limit,
-            hybrid_alpha=payload.hybrid_alpha
+            hybrid_alpha=payload.hybrid_alpha,
+            filters=filters
         )
         return metrics
     except Exception as e:

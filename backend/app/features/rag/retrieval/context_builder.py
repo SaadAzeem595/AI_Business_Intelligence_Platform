@@ -69,15 +69,15 @@ class ContextBuilder:
             
         query_lower = query.lower()
         top_res = results[0]
-        top_text = top_res.text
+        combined_text = "\n\n".join([r.text for r in results])
         top_cite = top_res.citation
         ref_label = f"[Source: {top_cite.filename}, Section: {top_cite.heading or 'General'}, Chunk ID: {top_res.chunk_id}]"
         
         # 1. Check for specific question: average rating in January 2024
         if "average rating" in query_lower and ("jan" in query_lower or "january" in query_lower):
-            match = re.search(r"Row \d+ -> .*?Month:\s*Jan(?:uary)?\s*2024.*?Average Rating:\s*([0-9.]+)", top_text, re.IGNORECASE)
+            match = re.search(r"Row \d+ -> .*?Month:\s*Jan(?:uary)?\s*2024.*?Average Rating:\s*([0-9.]+)", combined_text, re.IGNORECASE)
             if not match:
-                match = re.search(r"Jan(?:uary)?\s*2024.*?([0-9]\.[0-9])", top_text, re.IGNORECASE)
+                match = re.search(r"Jan(?:uary)?\s*2024.*?([0-9]\.[0-9])", combined_text, re.IGNORECASE)
             if match:
                 rating_val = match.group(1)
                 answer = f"The average rating in January 2024 was {rating_val}. {ref_label}"
@@ -86,7 +86,7 @@ class ContextBuilder:
         # 2. Check for specific question: highest review count
         if ("highest" in query_lower or "max" in query_lower or "peak" in query_lower) and ("review" in query_lower or "count" in query_lower):
             # Parse rows from tabular format
-            row_matches = re.findall(r"Row \d+ -> Month:\s*([^|]+)\| Total Reviews:\s*(\d+)", top_text)
+            row_matches = re.findall(r"Row \d+ -> Month:\s*([^|]+)\s*\|\s*Total Reviews:\s*(\d+)", combined_text)
             if row_matches:
                 sorted_rows = sorted(row_matches, key=lambda x: int(x[1]), reverse=True)
                 top_month, top_count = sorted_rows[0]
@@ -95,7 +95,7 @@ class ContextBuilder:
 
         # 3. Check for specific question: positive reviews trend over time
         if "positive review" in query_lower and ("trend" in query_lower or "over time" in query_lower or "growth" in query_lower):
-            pos_matches = re.findall(r"Row \d+ -> Month:\s*([^|]+)\| Total Reviews:\s*\d+ \| Positive Reviews:\s*(\d+)", top_text)
+            pos_matches = re.findall(r"Row \d+ -> Month:\s*([^|]+)\s*\|\s*Total Reviews:\s*\d+\s*\|\s*Positive Reviews:\s*(\d+)", combined_text)
             if pos_matches:
                 first_month, first_val = pos_matches[0]
                 last_month, last_val = pos_matches[-1]
@@ -104,6 +104,7 @@ class ContextBuilder:
                 return {"answer": answer, "sources": sources, "grounded": True}
 
         # General concise synthesis grounded in top context
+        top_text = top_res.text
         summary_lines = [line.strip() for line in top_text.split("\n") if line.strip() and not line.startswith("###") and not line.startswith("Schema:")]
         excerpt = " ".join(summary_lines[:4]) if summary_lines else top_text[:200]
         answer = f"Based on {top_cite.filename}, {excerpt} {ref_label}"

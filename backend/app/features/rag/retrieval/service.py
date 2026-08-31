@@ -4,6 +4,7 @@ import logging
 import hashlib
 import json
 import time
+import re
 
 from app.features.rag.schemas import Chunk, RetrievalResult, Citation
 from app.features.rag.embeddings.providers import BaseEmbeddingProvider

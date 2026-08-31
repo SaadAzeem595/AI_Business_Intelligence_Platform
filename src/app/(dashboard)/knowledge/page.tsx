@@ -40,6 +40,8 @@ import {
   Info,
   Database,
   Tag,
+  Calculator,
+  Table,
 } from "lucide-react";
 
 const ALLOWED_EXTENSIONS = [
@@ -729,6 +731,43 @@ export default function KnowledgeBasePage() {
                   </div>
                 ) : hasSearched && searchResults ? (
                   <div className="space-y-3 pt-2">
+                    {/* Analytical SQL Answer Card */}
+                    {searchResults.analytical_answer && (
+                      <Card className="border-brand-indigo/50 bg-brand-indigo/5 shadow-xs animate-in fade-in">
+                        <CardHeader className="p-3.5 pb-2 border-b border-brand-indigo/20 flex flex-row items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <div className="p-1.5 rounded bg-brand-indigo/20 text-brand-indigo">
+                              <Calculator className="h-4 w-4" />
+                            </div>
+                            <div>
+                              <CardTitle className="text-xs font-bold text-foreground flex items-center gap-2">
+                                Exact Analytical Answer (DuckDB SQL Engine)
+                              </CardTitle>
+                              <CardDescription className="text-[10px] text-muted-foreground">
+                                Calculated directly from structured dataset
+                              </CardDescription>
+                            </div>
+                          </div>
+                          <Badge variant="outline" className="text-[9px] bg-brand-indigo/10 text-brand-indigo border-brand-indigo/30">
+                            SQL Calculated
+                          </Badge>
+                        </CardHeader>
+                        <CardContent className="p-3.5 space-y-2 text-xs">
+                          <div className="text-lg font-extrabold text-foreground tracking-tight">
+                            {searchResults.analytical_answer.calculated_value}
+                          </div>
+                          <p className="text-[11px] text-muted-foreground leading-relaxed">
+                            {searchResults.analytical_answer.explanation}
+                          </p>
+                          {searchResults.analytical_answer.sql_query && (
+                            <div className="p-2 rounded bg-black/40 border border-border/40 font-mono text-[10px] text-cyan-300 overflow-x-auto select-all">
+                              {searchResults.analytical_answer.sql_query}
+                            </div>
+                          )}
+                        </CardContent>
+                      </Card>
+                    )}
+
                     <div className="flex items-center justify-between text-xs text-muted-foreground">
                       <span className="font-semibold text-foreground">
                         Matched Chunks ({searchResults.results.length})
@@ -748,38 +787,64 @@ export default function KnowledgeBasePage() {
                       <div className="space-y-3 max-h-[500px] overflow-y-auto pr-1">
                         {searchResults.results.map((res, idx) => {
                           const matchPct = Math.round(res.score * 100);
+                          const relLabel = res.relevance_label || (matchPct >= 75 ? "Highly Relevant" : matchPct >= 50 ? "Relevant" : matchPct >= 30 ? "Moderately Relevant" : "Low Relevance");
                           const scoreColor =
-                            matchPct >= 80
+                            matchPct >= 75
                               ? "text-emerald-400 border-emerald-500/30 bg-emerald-500/10"
                               : matchPct >= 50
                               ? "text-blue-400 border-blue-500/30 bg-blue-500/10"
-                              : "text-amber-400 border-amber-500/30 bg-amber-500/10";
+                              : matchPct >= 30
+                              ? "text-amber-400 border-amber-500/30 bg-amber-500/10"
+                              : "text-slate-400 border-slate-500/30 bg-slate-500/10";
+
+                          const chunkType = res.chunk_type || res.citation.chunk_type || "text";
+                          let chunkBadge = { label: "Passage", bg: "bg-muted text-muted-foreground border-border/40" };
+                          if (chunkType === "dataset_schema") {
+                            chunkBadge = { label: "Dataset Schema", bg: "bg-purple-500/10 text-purple-400 border-purple-500/20" };
+                          } else if (chunkType === "dataset_summary") {
+                            chunkBadge = { label: "Dataset Summary", bg: "bg-cyan-500/10 text-cyan-400 border-cyan-500/20" };
+                          } else if (chunkType === "table_rows") {
+                            const rRange = res.row_range || (res.citation.row_start ? `Rows ${res.citation.row_start}–${res.citation.row_end}` : "Table Rows");
+                            chunkBadge = { label: rRange, bg: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" };
+                          }
 
                           return (
                             <Card
                               key={idx}
-                              className="border-border/80 hover:border-brand-indigo/40 transition-all bg-card/80"
+                              className="border-border/80 hover:border-brand-indigo/40 transition-all bg-card/80 space-y-0"
                             >
-                              <CardHeader className="p-3 pb-1 flex flex-row items-center justify-between">
+                              <CardHeader className="p-3 pb-1 flex flex-row items-center justify-between gap-2">
                                 <div className="flex items-center gap-2 min-w-0">
                                   {getFormatIcon(res.citation.document_type)}
                                   <CardTitle className="text-xs font-bold text-foreground truncate">
                                     {res.citation.filename}
                                   </CardTitle>
+                                  <Badge variant="outline" className={`text-[9px] px-1.5 py-0 shrink-0 ${chunkBadge.bg}`}>
+                                    {chunkBadge.label}
+                                  </Badge>
                                 </div>
-                                <Badge variant="outline" className={`text-[10px] shrink-0 ${scoreColor}`}>
-                                  Match: {matchPct}%
-                                </Badge>
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                  <Badge variant="outline" className={`text-[10px] ${scoreColor}`}>
+                                    {relLabel} ({matchPct}%)
+                                  </Badge>
+                                </div>
                               </CardHeader>
                               <CardContent className="p-3 pt-1.5 space-y-2 text-xs">
-                                <p className="text-foreground/90 whitespace-pre-wrap leading-relaxed text-[11px] font-sans bg-muted/20 p-2.5 rounded-md border border-border/30">
-                                  {res.text}
-                                </p>
+                                {res.explanation && (
+                                  <div className="text-[10px] text-muted-foreground bg-muted/20 px-2 py-1 rounded border border-border/30 flex items-center gap-1.5">
+                                    <Info className="h-3 w-3 text-brand-indigo shrink-0" />
+                                    <span className="truncate">{res.explanation}</span>
+                                  </div>
+                                )}
 
-                                <div className="flex items-center justify-between text-[10px] text-muted-foreground pt-1">
-                                  <div className="flex items-center gap-2">
+                                <div className="text-foreground/90 leading-relaxed text-[11px] font-sans bg-muted/20 p-2.5 rounded-md border border-border/30 max-h-48 overflow-y-auto whitespace-pre-wrap">
+                                  {res.text}
+                                </div>
+
+                                <div className="flex items-center justify-between text-[10px] text-muted-foreground pt-1 border-t border-border/20">
+                                  <div className="flex items-center gap-2 truncate">
                                     {res.citation.heading && (
-                                      <span className="truncate max-w-[140px] text-brand-indigo">
+                                      <span className="truncate max-w-[140px] text-brand-indigo font-medium">
                                         #{res.citation.heading}
                                       </span>
                                     )}
@@ -791,7 +856,7 @@ export default function KnowledgeBasePage() {
                                       const foundDoc = rawDocuments.find((d) => d.doc_id === res.doc_id);
                                       if (foundDoc) setSelectedDocMetadata(foundDoc);
                                     }}
-                                    className="text-brand-indigo hover:underline flex items-center gap-1 font-medium"
+                                    className="text-brand-indigo hover:underline flex items-center gap-1 font-medium shrink-0"
                                   >
                                     View Metadata <ArrowRight className="h-3 w-3" />
                                   </button>
