@@ -19,6 +19,10 @@ export interface Citation {
   page?: number;
   heading?: string;
   workspace: string;
+  chunk_type?: string;
+  row_start?: number;
+  row_end?: number;
+  columns?: string[];
 }
 
 export interface RetrievalResult {
@@ -26,13 +30,28 @@ export interface RetrievalResult {
   doc_id: string;
   text: string;
   score: number;
+  relevance_label?: string;
+  explanation?: string;
+  chunk_type?: string;
+  row_range?: string;
+  matched_columns?: string[];
   citation: Citation;
+}
+
+export interface AnalyticalAnswer {
+  is_analytical: boolean;
+  question: string;
+  calculated_value: string;
+  explanation: string;
+  sql_query?: string;
+  dataset_name?: string;
 }
 
 export interface ContextResponse {
   context_text: string;
   results: RetrievalResult[];
   token_count: number;
+  analytical_answer?: AnalyticalAnswer;
 }
 
 export interface IngestResponse {

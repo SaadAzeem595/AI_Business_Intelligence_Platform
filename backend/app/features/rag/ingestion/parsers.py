@@ -96,8 +96,49 @@ class CsvParser(BaseParser):
         cols = [str(c).strip() for c in df.columns]
         cols_str = " | ".join(cols)
         sheet_info = f" (Sheet: {sheet_name})" if sheet_name else ""
+
+        # Build detailed column data types and missing counts
+        col_details = []
+        for c in cols:
+            dtype_str = str(df[c].dtype)
+            null_cnt = int(df[c].isnull().sum())
+            col_details.append(f"{c} ({dtype_str}, missing: {null_cnt})")
+        col_details_str = " ; ".join(col_details)
+
+        # Build statistical summary
+        summary_parts = [
+            f"Dataset '{filename}{sheet_info}' contains {len(df)} rows and {len(cols)} columns.",
+            f"Columns: {', '.join(cols)}."
+        ]
+
+        num_cols = df.select_dtypes(include=["number"]).columns
+        if len(num_cols) > 0:
+            num_summaries = []
+            for nc in num_cols[:8]:
+                s_min = df[nc].min()
+                s_max = df[nc].max()
+                s_mean = round(float(df[nc].mean()), 2) if pd.notnull(df[nc].mean()) else "N/A"
+                num_summaries.append(f"{nc} (min: {s_min}, max: {s_max}, mean: {s_mean})")
+            summary_parts.append("Numeric Fields: " + " | ".join(num_summaries))
+
+        cat_cols = df.select_dtypes(include=["object", "category", "string"]).columns
+        if len(cat_cols) > 0:
+            cat_summaries = []
+            for cc in cat_cols[:8]:
+                n_uniq = df[cc].nunique()
+                top_vals = df[cc].value_counts().head(3).index.tolist()
+                top_str = ", ".join([str(v) for v in top_vals])
+                cat_summaries.append(f"{cc} ({n_uniq} unique, top: [{top_str}])")
+            summary_parts.append("Categorical Fields: " + " | ".join(cat_summaries))
+
+        summary_block = " ".join(summary_parts)
         
-        header_block = f"[TABULAR_DATA: {filename}{sheet_info}]\n[SCHEMA: {cols_str}]"
+        header_block = (
+            f"[TABULAR_DATA: {filename}{sheet_info}]\n"
+            f"[SCHEMA: {cols_str}]\n"
+            f"[DATASET_SCHEMA_DETAILS: {col_details_str}]\n"
+            f"[DATASET_SUMMARY: {summary_block}]"
+        )
         
         records = df.to_dict(orient="records")
         rows_formatted = []

@@ -159,13 +159,26 @@ class DuckDBVectorRepository(BaseVectorRepository):
                 heading VARCHAR,
                 tags VARCHAR,       -- Comma-separated list
                 document_type VARCHAR,
-                file_size INTEGER DEFAULT 0
+                file_size INTEGER DEFAULT 0,
+                chunk_type VARCHAR DEFAULT 'text',
+                row_start INTEGER,
+                row_end INTEGER,
+                columns VARCHAR,
+                table_name VARCHAR
             )
         """)
-        try:
-            conn.execute("ALTER TABLE rag_chunks ADD COLUMN file_size INTEGER DEFAULT 0")
-        except Exception:
-            pass
+        for col_def in [
+            "file_size INTEGER DEFAULT 0",
+            "chunk_type VARCHAR DEFAULT 'text'",
+            "row_start INTEGER",
+            "row_end INTEGER",
+            "columns VARCHAR",
+            "table_name VARCHAR"
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE rag_chunks ADD COLUMN {col_def}")
+            except Exception:
+                pass
 
     def _get_connection(self):
         if self.db_path == ":memory:":
@@ -204,10 +217,11 @@ class DuckDBVectorRepository(BaseVectorRepository):
             for chunk in chunks:
                 emb_str = json.dumps(chunk.embedding) if chunk.embedding else None
                 tags_str = ",".join(chunk.metadata.tags)
+                cols_str = json.dumps(chunk.metadata.columns) if getattr(chunk.metadata, "columns", None) else None
                 conn.execute("""
                     INSERT OR REPLACE INTO rag_chunks (
-                        id, doc_id, text, embedding, filename, author, upload_date, workspace, page, heading, tags, document_type, file_size
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        id, doc_id, text, embedding, filename, author, upload_date, workspace, page, heading, tags, document_type, file_size, chunk_type, row_start, row_end, columns, table_name
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     chunk.id,
                     chunk.doc_id,
@@ -221,7 +235,12 @@ class DuckDBVectorRepository(BaseVectorRepository):
                     chunk.metadata.heading,
                     tags_str,
                     chunk.metadata.document_type,
-                    getattr(chunk.metadata, "file_size", 0) or 0
+                    getattr(chunk.metadata, "file_size", 0) or 0,
+                    getattr(chunk.metadata, "chunk_type", "text") or "text",
+                    getattr(chunk.metadata, "row_start", None),
+                    getattr(chunk.metadata, "row_end", None),
+                    cols_str,
+                    getattr(chunk.metadata, "table_name", None)
                 ))
         finally:
             self._close_conn(conn)
@@ -244,9 +263,21 @@ class DuckDBVectorRepository(BaseVectorRepository):
 
     def _row_to_chunk(self, row: tuple) -> Chunk:
         # Columns mapping:
-        # 0: id, 1: doc_id, 2: text, 3: embedding, 4: filename, 5: author, 6: upload_date, 7: workspace, 8: page, 9: heading, 10: tags, 11: document_type, 12: file_size
+        # 0: id, 1: doc_id, 2: text, 3: embedding, 4: filename, 5: author, 6: upload_date, 7: workspace, 8: page, 9: heading, 10: tags, 11: document_type, 12: file_size, 13: chunk_type, 14: row_start, 15: row_end, 16: columns, 17: table_name
         tags = row[10].split(",") if row[10] else []
         file_sz = row[12] if len(row) > 12 and row[12] is not None else 0
+        chunk_tp = row[13] if len(row) > 13 and row[13] is not None else "text"
+        r_start = row[14] if len(row) > 14 else None
+        r_end = row[15] if len(row) > 15 else None
+        cols_val = row[16] if len(row) > 16 and row[16] else None
+        cols_list = []
+        if cols_val:
+            try:
+                cols_list = json.loads(cols_val)
+            except Exception:
+                cols_list = [c.strip() for c in cols_val.split(",") if c.strip()]
+        t_name = row[17] if len(row) > 17 else None
+
         meta = DocumentMetadata(
             filename=row[4],
             author=row[5],
@@ -256,7 +287,12 @@ class DuckDBVectorRepository(BaseVectorRepository):
             heading=row[9],
             tags=tags,
             document_type=row[11],
-            file_size=file_sz
+            file_size=file_sz,
+            chunk_type=chunk_tp,
+            row_start=r_start,
+            row_end=r_end,
+            columns=cols_list,
+            table_name=t_name
         )
         emb = json.loads(row[3]) if row[3] else None
         return Chunk(

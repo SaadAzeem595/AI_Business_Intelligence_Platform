@@ -12,6 +12,11 @@ class DocumentMetadata(BaseModel):
     tags: List[str] = Field(default_factory=list)
     document_type: str  # PDF, DOCX, PPTX, TXT, MD, HTML, CSV, XLSX, JSON
     file_size: Optional[int] = 0
+    chunk_type: Optional[str] = "text"  # text, dataset_schema, dataset_summary, table_rows
+    row_start: Optional[int] = None
+    row_end: Optional[int] = None
+    columns: List[str] = Field(default_factory=list)
+    table_name: Optional[str] = None
 
 class Document(BaseModel):
     id: str
@@ -38,18 +43,36 @@ class Citation(BaseModel):
     page: Optional[int] = None
     heading: Optional[str] = None
     workspace: str = "default"
+    chunk_type: Optional[str] = "text"
+    row_start: Optional[int] = None
+    row_end: Optional[int] = None
+    columns: List[str] = Field(default_factory=list)
 
 class RetrievalResult(BaseModel):
     chunk_id: str
     doc_id: str
     text: str
     score: float
+    relevance_label: str = "Relevant"  # Highly Relevant, Relevant, Moderately Relevant, Low Relevance
+    explanation: Optional[str] = None
+    chunk_type: Optional[str] = "text"
+    row_range: Optional[str] = None
+    matched_columns: List[str] = Field(default_factory=list)
     citation: Citation
+
+class AnalyticalAnswer(BaseModel):
+    is_analytical: bool = True
+    question: str
+    calculated_value: str
+    explanation: str
+    sql_query: Optional[str] = None
+    dataset_name: Optional[str] = None
 
 class ContextResponse(BaseModel):
     context_text: str
     results: List[RetrievalResult]
     token_count: int
+    analytical_answer: Optional[AnalyticalAnswer] = None
 
 class GroundTruthItem(BaseModel):
     query: str

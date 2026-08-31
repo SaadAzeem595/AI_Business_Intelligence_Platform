@@ -30,7 +30,8 @@ class ChunkerService:
     def _chunk_tabular_text(self, text: str, max_rows_per_chunk: int = 50) -> List[Dict[str, Any]]:
         """
         Processes structured tabular data ([TABULAR_DATA: ...], [SCHEMA: ...])
-        into human-readable chunks containing Markdown tables and explicit row context.
+        into human-readable chunks containing Schema metadata, Dataset Summaries,
+        and Markdown tables with explicit row context.
         """
         chunks = []
         table_blocks = text.split("[TABULAR_DATA:")
@@ -43,6 +44,8 @@ class ChunkerService:
             title_line = lines[0].split("]")[0].strip() if "]" in lines[0] else "Tabular Dataset"
             
             schema_cols = []
+            schema_details_str = ""
+            dataset_summary_str = ""
             row_lines = []
             
             for line in lines[1:]:
@@ -50,15 +53,50 @@ class ChunkerService:
                 if line_str.startswith("[SCHEMA:"):
                     cols_raw = line_str.replace("[SCHEMA:", "").rstrip("]").strip()
                     schema_cols = [c.strip() for c in cols_raw.split("|") if c.strip()]
+                elif line_str.startswith("[DATASET_SCHEMA_DETAILS:"):
+                    schema_details_str = line_str.replace("[DATASET_SCHEMA_DETAILS:", "").rstrip("]").strip()
+                elif line_str.startswith("[DATASET_SUMMARY:"):
+                    dataset_summary_str = line_str.replace("[DATASET_SUMMARY:", "").rstrip("]").strip()
                 elif line_str.startswith("Row "):
                     row_lines.append(line_str)
                     
+            cols_joined = " | ".join(schema_cols) if schema_cols else "Columns"
+
+            # 1. Generate Schema Chunk
+            schema_text_lines = [
+                f"### Dataset Schema: {title_line}",
+                f"Columns ({len(schema_cols)}): {cols_joined}"
+            ]
+            if schema_details_str:
+                schema_text_lines.append(f"Field Types & Missing Counts: {schema_details_str}")
+            schema_chunk_text = "\n".join(schema_text_lines)
+            chunks.append({
+                "text": schema_chunk_text,
+                "heading": f"Dataset Schema: {title_line}",
+                "chunk_type": "dataset_schema",
+                "row_start": None,
+                "row_end": None,
+                "columns": schema_cols,
+                "table_name": title_line
+            })
+
+            # 2. Generate Dataset Summary Chunk (if available)
+            if dataset_summary_str:
+                summary_chunk_text = f"### Dataset Summary: {title_line}\n{dataset_summary_str}"
+                chunks.append({
+                    "text": summary_chunk_text,
+                    "heading": f"Dataset Summary: {title_line}",
+                    "chunk_type": "dataset_summary",
+                    "row_start": None,
+                    "row_end": None,
+                    "columns": schema_cols,
+                    "table_name": title_line
+                })
+
             if not row_lines:
                 continue
-                
-            cols_joined = " | ".join(schema_cols) if schema_cols else "Columns"
             
-            # Batch rows into chunks
+            # 3. Batch rows into row-group chunks
             for i in range(0, len(row_lines), max_rows_per_chunk):
                 batch = row_lines[i:i + max_rows_per_chunk]
                 start_row = i + 1
@@ -92,7 +130,12 @@ class ChunkerService:
                 chunk_text = "\n".join(md_table_lines)
                 chunks.append({
                     "text": chunk_text,
-                    "heading": heading_name
+                    "heading": heading_name,
+                    "chunk_type": "table_rows",
+                    "row_start": start_row,
+                    "row_end": end_row,
+                    "columns": schema_cols,
+                    "table_name": title_line
                 })
                 
         return chunks

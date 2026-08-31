@@ -9,7 +9,9 @@ from app.features.rag.schemas import (
     ContextResponse, 
     EvaluationPayload, 
     EvaluationMetrics,
-    DocumentMetadata
+    DocumentMetadata,
+    AnalyticalAnswer,
+    RetrievalResult
 )
 from app.features.rag.ingestion.ocr import MockOCRProvider
 from app.features.rag.ingestion.parsers import DocumentParserService
@@ -31,6 +33,86 @@ embeddings = MockEmbeddingProvider()
 retrieval_svc = RetrievalService(vector_repo=db_repo, embedding_provider=embeddings)
 parser_svc = DocumentParserService(ocr_provider=MockOCRProvider())
 chunker_svc = ChunkerService()
+
+
+def check_and_execute_analytical_routing(query: str, project_id: str, results: List[RetrievalResult]) -> Optional[AnalyticalAnswer]:
+    """
+    Detects if query requires exact numerical calculation (percentages, averages, counts).
+    If structured tabular datasets exist, routes calculation to DuckDB SQL analytics engine.
+    """
+    q_lower = query.lower()
+    analytical_keywords = ["average", "mean", "percentage", "percent", "pct", "total", "sum", "count", "fake", "rating", "how many"]
+    if not any(k in q_lower for k in analytical_keywords):
+        return None
+
+    # Find tabular chunks in search results to identify dataset filename
+    tabular_results = [r for r in results if r.chunk_type in ("dataset_schema", "dataset_summary", "table_rows") or r.citation.document_type in ("CSV", "XLSX", "XLS")]
+    if not tabular_results:
+        return None
+
+    target_filename = tabular_results[0].citation.filename
+    table_name = target_filename.split(".")[0].lower().replace(" ", "_").replace("-", "_")
+
+    try:
+        from app.features.agents.tools import execute_duckdb_query
+        
+        # Scenario A: Fake review percentage question
+        if "fake" in q_lower and ("percent" in q_lower or "percentage" in q_lower or "%" in q_lower or "rate" in q_lower or "how many" in q_lower):
+            sql = f'SELECT COUNT(*) as total, COUNT(CASE WHEN LOWER(CAST(is_fake_review AS VARCHAR)) IN (\'1\', \'true\', \'yes\') THEN 1 END) as fake_count FROM "{table_name}"'
+            res = execute_duckdb_query(sql, project_id=project_id)
+            if res and res.get("rows") and len(res["rows"]) > 0:
+                row = res["rows"][0]
+                total = row.get("total", 0) or 0
+                fake_count = row.get("fake_count", 0) or 0
+                if total > 0:
+                    pct = round((fake_count / total) * 100.0, 1)
+                    return AnalyticalAnswer(
+                        is_analytical=True,
+                        question=query,
+                        calculated_value=f"{pct}% ({fake_count:,} fake out of {total:,} total reviews)",
+                        explanation=f"Calculated exact fake review percentage via DuckDB SQL query on dataset '{target_filename}' (field: 'is_fake_review').",
+                        sql_query=sql,
+                        dataset_name=target_filename
+                    )
+
+        # Scenario B: Average rating question
+        if "average" in q_lower or "mean" in q_lower or "rating" in q_lower:
+            sql = f'SELECT AVG(CAST(star_rating AS DOUBLE)) as avg_rating, COUNT(*) as total FROM "{table_name}" WHERE star_rating IS NOT NULL'
+            res = execute_duckdb_query(sql, project_id=project_id)
+            if res and res.get("rows") and len(res["rows"]) > 0:
+                row = res["rows"][0]
+                avg_val = row.get("avg_rating")
+                total = row.get("total", 0)
+                if avg_val is not None:
+                    return AnalyticalAnswer(
+                        is_analytical=True,
+                        question=query,
+                        calculated_value=f"{round(float(avg_val), 2)} / 5.0 (across {total:,} rated entries)",
+                        explanation=f"Calculated exact average star rating via DuckDB SQL query on dataset '{target_filename}' (field: 'star_rating').",
+                        sql_query=sql,
+                        dataset_name=target_filename
+                    )
+
+        # Scenario C: General count / total question
+        if "count" in q_lower or "total" in q_lower or "how many" in q_lower:
+            sql = f'SELECT COUNT(*) as total FROM "{table_name}"'
+            res = execute_duckdb_query(sql, project_id=project_id)
+            if res and res.get("rows") and len(res["rows"]) > 0:
+                total = res["rows"][0].get("total", 0)
+                return AnalyticalAnswer(
+                    is_analytical=True,
+                    question=query,
+                    calculated_value=f"{total:,} total records",
+                    explanation=f"Calculated total record count via DuckDB SQL query on dataset '{target_filename}'.",
+                    sql_query=sql,
+                    dataset_name=target_filename
+                )
+
+    except Exception as err:
+        pass
+
+    return None
+
 
 @router.post("/ingest", status_code=status.HTTP_201_CREATED)
 async def ingest_document(
@@ -55,7 +137,7 @@ async def ingest_document(
         if not clean_text:
             raise ValueError("Document did not contain any extractable text.")
             
-        # 3. Chunk text (heading-aware)
+        # 3. Chunk text (heading & tabular aware)
         chunk_dicts = chunker_svc.chunk_by_heading(clean_text)
         
         # Parse tags
@@ -68,6 +150,7 @@ async def ingest_document(
         chunk_texts = [cd["text"] for cd in chunk_dicts]
         chunk_embeddings = embeddings.get_embeddings(chunk_texts)
         
+        doc_ext = filename.split(".")[-1].upper() if "." in filename else "TXT"
         for i, cd in enumerate(chunk_dicts):
             chunk_text = cd["text"]
             heading = cd["heading"]
@@ -81,8 +164,13 @@ async def ingest_document(
                 page=i + 1,  # Page maps to chunk sequence number for non-paged formats
                 heading=heading,
                 tags=tag_list,
-                document_type=filename.split(".")[-1].upper() if "." in filename else "TXT",
-                file_size=file_size
+                document_type=doc_ext,
+                file_size=file_size,
+                chunk_type=cd.get("chunk_type", "text"),
+                row_start=cd.get("row_start"),
+                row_end=cd.get("row_end"),
+                columns=cd.get("columns", []),
+                table_name=cd.get("table_name")
             )
             
             chunk_obj = Chunk(
@@ -107,12 +195,17 @@ async def ingest_document(
             "chunks_count": len(chunks_to_insert),
             "file_size": file_size,
             "workspace": target_ws,
-            "message": f"Successfully parsed and indexed {len(chunks_to_insert)} chunks."
+            "message": f"Successfully parsed and indexed {len(chunks_to_insert)} chunks into project '{target_ws}'."
         }
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Document ingestion failed: {str(e)}"
+            detail={
+                "error": "DOCUMENT_INDEXING_FAILED",
+                "message": f"Document ingestion failed: {str(e)}",
+                "filename": file.filename if file else "unknown",
+                "workspace": workspace or "default"
+            }
         )
 
 @router.post("/retrieve", response_model=ContextResponse)
@@ -137,10 +230,18 @@ async def retrieve_context(
         # Build prompt context
         context_text, token_count = ContextBuilder.build_context(results)
         
+        # Check for analytical calculation routing
+        analytical_ans = check_and_execute_analytical_routing(
+            query=payload.query,
+            project_id=filters.get("workspace", current_user.workspace_id),
+            results=results
+        )
+        
         return ContextResponse(
             context_text=context_text,
             results=results,
-            token_count=token_count
+            token_count=token_count,
+            analytical_answer=analytical_ans
         )
     except Exception as e:
         raise HTTPException(
@@ -248,7 +349,12 @@ async def reindex_rag_document(
                 heading=heading,
                 tags=tag_list,
                 document_type=document_type,
-                file_size=file_size
+                file_size=file_size,
+                chunk_type=cd.get("chunk_type", "text"),
+                row_start=cd.get("row_start"),
+                row_end=cd.get("row_end"),
+                columns=cd.get("columns", []),
+                table_name=cd.get("table_name")
             )
 
             chunk_obj = Chunk(

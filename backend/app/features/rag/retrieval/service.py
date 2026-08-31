@@ -215,28 +215,95 @@ class RetrievalService:
         # 4. Optional Reranking or default score calculation
         if enable_rerank and chunks:
             ranked_tuples = self.reranker.rerank(query, chunks)
+            scoring_mode = "rerank"
         else:
             ranked_tuples = dedup_candidates
+            if hybrid_alpha == 1.0:
+                scoring_mode = "dense"
+            elif hybrid_alpha == 0.0:
+                scoring_mode = "keyword"
+            else:
+                scoring_mode = "rrf"
             
         # Slice to limit
         top_tuples = ranked_tuples[:limit]
+        max_raw = max([t[1] for t in top_tuples], default=1.0)
         
         # 5. Format into RetrievalResult schemas
         formatted_results = []
-        for chunk, score in top_tuples:
+        q_words = set(re.findall(r'\w+', query.lower())) - {"what", "is", "the", "in", "a", "an", "for", "of", "to", "with", "show", "find", "list", "are"}
+
+        for chunk, raw_score in top_tuples:
+            # Score normalization
+            if scoring_mode == "rrf":
+                max_rrf = 2.0 / 61.0
+                norm_score = min(1.0, max(0.15, float(raw_score / max_rrf)))
+            elif scoring_mode in ("dense", "keyword") and max_raw > 0 and max_raw < 0.4:
+                norm_score = min(1.0, max(0.15, float(raw_score / max_raw)))
+            else:
+                norm_score = min(1.0, max(0.15, float(raw_score)))
+                
+            norm_score = round(norm_score, 4)
+            
+            # Relevance label assignment
+            if norm_score >= 0.75:
+                rel_label = "Highly Relevant"
+            elif norm_score >= 0.50:
+                rel_label = "Relevant"
+            elif norm_score >= 0.30:
+                rel_label = "Moderately Relevant"
+            else:
+                rel_label = "Low Relevance"
+                
+            # Match explanation generation
+            c_type = getattr(chunk.metadata, "chunk_type", "text") or "text"
+            c_text_lower = chunk.text.lower()
+            matched_terms = [w for w in q_words if w in c_text_lower]
+            chunk_cols = getattr(chunk.metadata, "columns", []) or []
+            matched_cols = [c for c in chunk_cols if any(qw in c.lower() for qw in q_words)]
+            fn = chunk.metadata.filename
+            
+            if c_type == "dataset_schema":
+                expl = f"Matched dataset schema context for '{fn}'. Fields: {', '.join(matched_cols[:4]) if matched_cols else 'table schema'}."
+            elif c_type == "dataset_summary":
+                expl = f"Matched statistical summary for dataset '{fn}'."
+            elif c_type == "table_rows":
+                r_range = f"Rows {chunk.metadata.row_start}–{chunk.metadata.row_end}" if getattr(chunk.metadata, "row_start", None) else "row records"
+                if matched_terms:
+                    expl = f"Matched query terms ({', '.join(matched_terms[:3])}) in {r_range} of '{fn}'."
+                else:
+                    expl = f"Relevant row record match ({r_range}) in '{fn}'."
+            else:
+                if matched_terms:
+                    expl = f"Semantic match on key terms: {', '.join(matched_terms[:3])}."
+                else:
+                    expl = f"Semantic text passage match in '{fn}'."
+
+            row_rng = f"{chunk.metadata.row_start}–{chunk.metadata.row_end}" if getattr(chunk.metadata, "row_start", None) else None
+
             citation = Citation(
                 filename=chunk.metadata.filename,
                 document_type=chunk.metadata.document_type,
                 page=chunk.metadata.page,
                 heading=chunk.metadata.heading,
-                workspace=chunk.metadata.workspace or "default"
+                workspace=chunk.metadata.workspace or "default",
+                chunk_type=c_type,
+                row_start=getattr(chunk.metadata, "row_start", None),
+                row_end=getattr(chunk.metadata, "row_end", None),
+                columns=chunk_cols
             )
+            
             formatted_results.append(
                 RetrievalResult(
                     chunk_id=chunk.id,
                     doc_id=chunk.doc_id,
                     text=chunk.text,
-                    score=round(float(score), 4),
+                    score=norm_score,
+                    relevance_label=rel_label,
+                    explanation=expl,
+                    chunk_type=c_type,
+                    row_range=row_rng,
+                    matched_columns=matched_cols,
                     citation=citation
                 )
             )
@@ -248,21 +315,7 @@ class RetrievalService:
         
         # Save to cache
         try:
-            cache_payload = []
-            for item in formatted_results:
-                cache_payload.append({
-                    "chunk_id": item.chunk_id,
-                    "doc_id": item.doc_id,
-                    "text": item.text,
-                    "score": item.score,
-                    "citation": {
-                        "filename": item.citation.filename,
-                        "document_type": item.citation.document_type,
-                        "page": item.citation.page,
-                        "heading": item.citation.heading,
-                        "workspace": item.citation.workspace
-                    }
-                })
+            cache_payload = [item.model_dump() for item in formatted_results]
             run_async_as_sync(cache_client.set(cache_key, cache_payload, ttl=300))
         except Exception:
             pass
