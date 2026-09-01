@@ -314,23 +314,16 @@ async def reindex_rag_document(
     """Re-chunks and re-embeds an existing indexed document."""
     try:
         target_ws = workspace.strip() if (workspace and workspace.strip()) else current_user.workspace_id
-        conn = db_repo._get_connection()
-        try:
-            res = conn.execute(
-                "SELECT text, filename, author, document_type, tags, file_size FROM rag_chunks WHERE doc_id = ?", 
-                (doc_id,)
-            ).fetchall()
-            if not res:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
-            full_text = "\n\n".join([row[0] for row in res if row[0]])
-            filename = res[0][1]
-            author = res[0][2]
-            document_type = res[0][3]
-            tags_str = res[0][4]
-            file_size = res[0][5] or 0
-            tag_list = [t.strip() for t in tags_str.split(",") if t.strip()] if tags_str else []
-        finally:
-            conn.close()
+        raw_chunks = db_repo.get_document_chunks_raw(doc_id)
+        if not raw_chunks:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+        full_text = "\n\n".join([row["text"] for row in raw_chunks if row.get("text")])
+        filename = raw_chunks[0]["filename"]
+        author = raw_chunks[0]["author"]
+        document_type = raw_chunks[0]["document_type"]
+        tags_str = raw_chunks[0]["tags"]
+        file_size = raw_chunks[0]["file_size"] or 0
+        tag_list = [t.strip() for t in tags_str.split(",") if t.strip()] if tags_str else []
 
         clean_text = TextCleaner.normalize_text(full_text)
         chunk_dicts = chunker_svc.chunk_by_heading(clean_text)

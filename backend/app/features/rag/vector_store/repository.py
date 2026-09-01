@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import threading
 
 logger = logging.getLogger(__name__)
 import numpy as np
@@ -46,6 +47,11 @@ class BaseVectorRepository(ABC):
     @abstractmethod
     def list_documents(self, workspace: str = "default") -> List[Dict[str, Any]]:
         """Lists metadata of all ingested documents in a workspace."""
+        pass
+
+    @abstractmethod
+    def get_document_chunks_raw(self, doc_id: str) -> List[Dict[str, Any]]:
+        """Retrieves raw chunk fields for document re-indexing."""
         pass
 
 
@@ -137,11 +143,26 @@ class InMemoryVectorRepository(BaseVectorRepository):
                 }
         return list(docs.values())
 
+    def get_document_chunks_raw(self, doc_id: str) -> List[Dict[str, Any]]:
+        res = [c for c in self.chunks if c.doc_id == doc_id]
+        return [
+            {
+                "text": c.text,
+                "filename": c.metadata.filename,
+                "author": c.metadata.author,
+                "document_type": c.metadata.document_type,
+                "tags": ",".join(c.metadata.tags) if c.metadata.tags else "",
+                "file_size": getattr(c.metadata, "file_size", 0) or 0
+            }
+            for c in res
+        ]
+
 
 class DuckDBVectorRepository(BaseVectorRepository):
     def __init__(self, db_path: str = "rag_vector.db"):
         self.db_path = db_path
-        self._mem_conn = None
+        self._lock = threading.RLock()
+        self._conn = None
         self._init_db()
 
     def _create_chunks_table(self, conn):
@@ -181,69 +202,78 @@ class DuckDBVectorRepository(BaseVectorRepository):
                 pass
 
     def _get_connection(self):
-        if self.db_path == ":memory:":
-            if self._mem_conn is None:
-                self._mem_conn = duckdb.connect(":memory:")
-                self._create_chunks_table(self._mem_conn)
-            return self._mem_conn
+        with self._lock:
+            if self._conn is not None:
+                return self._conn
 
-        try:
-            conn = duckdb.connect(self.db_path)
-            self._create_chunks_table(conn)
-            return conn
-        except (duckdb.IOException, duckdb.ConnectionException, Exception) as e:
-            logger.warning(f"DuckDB lock contention on '{self.db_path}'. Falling back to ':memory:': {e}")
-            self.db_path = ":memory:"
-            self._mem_conn = duckdb.connect(self.db_path)
-            self._create_chunks_table(self._mem_conn)
-            return self._mem_conn
+            if self.db_path == ":memory:":
+                self._conn = duckdb.connect(":memory:")
+                self._create_chunks_table(self._conn)
+                return self._conn
+
+            try:
+                self._conn = duckdb.connect(self.db_path)
+                self._create_chunks_table(self._conn)
+                return self._conn
+            except (duckdb.IOException, duckdb.ConnectionException, Exception) as e:
+                logger.warning(f"DuckDB lock contention or error on '{self.db_path}'. Falling back to ':memory:': {e}")
+                self.db_path = ":memory:"
+                self._conn = duckdb.connect(self.db_path)
+                self._create_chunks_table(self._conn)
+                return self._conn
 
     def _init_db(self):
-        # Initialize DuckDB table
-        conn = self._get_connection()
-        if self.db_path != ":memory:":
-            conn.close()
+        with self._lock:
+            self._get_connection()
 
-    def _close_conn(self, conn):
-        if self.db_path != ":memory:" and conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
+    def _close_conn(self, conn=None):
+        # Do not close persistent connection on every operation to avoid WAL checkpoint lock contention
+        pass
+
+    def close(self):
+        with self._lock:
+            if self._conn and self.db_path != ":memory:":
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+                self._conn = None
 
     def insert_chunks(self, chunks: List[Chunk]) -> None:
-        conn = self._get_connection()
-        try:
-            for chunk in chunks:
-                emb_str = json.dumps(chunk.embedding) if chunk.embedding else None
-                tags_str = ",".join(chunk.metadata.tags)
-                cols_str = json.dumps(chunk.metadata.columns) if getattr(chunk.metadata, "columns", None) else None
-                conn.execute("""
-                    INSERT OR REPLACE INTO rag_chunks (
-                        id, doc_id, text, embedding, filename, author, upload_date, workspace, page, heading, tags, document_type, file_size, chunk_type, row_start, row_end, columns, table_name
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    chunk.id,
-                    chunk.doc_id,
-                    chunk.text,
-                    emb_str,
-                    chunk.metadata.filename,
-                    chunk.metadata.author,
-                    chunk.metadata.upload_date,
-                    chunk.metadata.workspace,
-                    chunk.metadata.page,
-                    chunk.metadata.heading,
-                    tags_str,
-                    chunk.metadata.document_type,
-                    getattr(chunk.metadata, "file_size", 0) or 0,
-                    getattr(chunk.metadata, "chunk_type", "text") or "text",
-                    getattr(chunk.metadata, "row_start", None),
-                    getattr(chunk.metadata, "row_end", None),
-                    cols_str,
-                    getattr(chunk.metadata, "table_name", None)
-                ))
-        finally:
-            self._close_conn(conn)
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                for chunk in chunks:
+                    emb_str = json.dumps(chunk.embedding) if chunk.embedding else None
+                    tags_str = ",".join(chunk.metadata.tags)
+                    cols_str = json.dumps(chunk.metadata.columns) if getattr(chunk.metadata, "columns", None) else None
+                    conn.execute("""
+                        INSERT OR REPLACE INTO rag_chunks (
+                            id, doc_id, text, embedding, filename, author, upload_date, workspace, page, heading, tags, document_type, file_size, chunk_type, row_start, row_end, columns, table_name
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        chunk.id,
+                        chunk.doc_id,
+                        chunk.text,
+                        emb_str,
+                        chunk.metadata.filename,
+                        chunk.metadata.author,
+                        chunk.metadata.upload_date,
+                        chunk.metadata.workspace,
+                        chunk.metadata.page,
+                        chunk.metadata.heading,
+                        tags_str,
+                        chunk.metadata.document_type,
+                        getattr(chunk.metadata, "file_size", 0) or 0,
+                        getattr(chunk.metadata, "chunk_type", "text") or "text",
+                        getattr(chunk.metadata, "row_start", None),
+                        getattr(chunk.metadata, "row_end", None),
+                        cols_str,
+                        getattr(chunk.metadata, "table_name", None)
+                    ))
+            except Exception as e:
+                logger.error(f"Error inserting chunks into DuckDBVectorRepository: {e}")
+                raise
 
     def _build_filter_clause(self, filters: Optional[Dict[str, Any]]) -> Tuple[str, List[Any]]:
         if not filters:
@@ -262,8 +292,6 @@ class DuckDBVectorRepository(BaseVectorRepository):
         return "WHERE " + " AND ".join(clauses), args
 
     def _row_to_chunk(self, row: tuple) -> Chunk:
-        # Columns mapping:
-        # 0: id, 1: doc_id, 2: text, 3: embedding, 4: filename, 5: author, 6: upload_date, 7: workspace, 8: page, 9: heading, 10: tags, 11: document_type, 12: file_size, 13: chunk_type, 14: row_start, 15: row_end, 16: columns, 17: table_name
         tags = row[10].split(",") if row[10] else []
         file_sz = row[12] if len(row) > 12 and row[12] is not None else 0
         chunk_tp = row[13] if len(row) > 13 and row[13] is not None else "text"
@@ -310,9 +338,8 @@ class DuckDBVectorRepository(BaseVectorRepository):
         filters: Optional[Dict[str, Any]] = None
     ) -> List[Tuple[Chunk, float]]:
         filter_clause, args = self._build_filter_clause(filters)
-        conn = self._get_connection()
-        try:
-            # Query all chunks matching metadata filters first
+        with self._lock:
+            conn = self._get_connection()
             res = conn.execute(f"SELECT * FROM rag_chunks {filter_clause}", args).fetchall()
             if not res:
                 return []
@@ -332,8 +359,6 @@ class DuckDBVectorRepository(BaseVectorRepository):
                 
             results = sorted(results, key=lambda x: x[1], reverse=True)
             return results[:limit]
-        finally:
-            self._close_conn(conn)
 
     def keyword_search(
         self, 
@@ -342,8 +367,8 @@ class DuckDBVectorRepository(BaseVectorRepository):
         filters: Optional[Dict[str, Any]] = None
     ) -> List[Tuple[Chunk, float]]:
         filter_clause, args = self._build_filter_clause(filters)
-        conn = self._get_connection()
-        try:
+        with self._lock:
+            conn = self._get_connection()
             res = conn.execute(f"SELECT * FROM rag_chunks {filter_clause}", args).fetchall()
             if not res or not query_text.strip():
                 return []
@@ -372,19 +397,15 @@ class DuckDBVectorRepository(BaseVectorRepository):
                         results.append((c, float(matches / len(query_text.split()))))
                 results = sorted(results, key=lambda x: x[1], reverse=True)
                 return results[:limit]
-        finally:
-            self._close_conn(conn)
 
     def delete_by_document(self, doc_id: str) -> None:
-        conn = self._get_connection()
-        try:
+        with self._lock:
+            conn = self._get_connection()
             conn.execute("DELETE FROM rag_chunks WHERE doc_id = ?", (doc_id,))
-        finally:
-            self._close_conn(conn)
 
     def list_documents(self, workspace: str = "default") -> List[Dict[str, Any]]:
-        conn = self._get_connection()
-        try:
+        with self._lock:
+            conn = self._get_connection()
             res = conn.execute("""
                 SELECT 
                     doc_id, 
@@ -416,6 +437,24 @@ class DuckDBVectorRepository(BaseVectorRepository):
                 }
                 for row in res
             ]
-        finally:
-            self._close_conn(conn)
+
+    def get_document_chunks_raw(self, doc_id: str) -> List[Dict[str, Any]]:
+        with self._lock:
+            conn = self._get_connection()
+            res = conn.execute(
+                "SELECT text, filename, author, document_type, tags, file_size FROM rag_chunks WHERE doc_id = ?", 
+                (doc_id,)
+            ).fetchall()
+            return [
+                {
+                    "text": row[0],
+                    "filename": row[1],
+                    "author": row[2],
+                    "document_type": row[3],
+                    "tags": row[4],
+                    "file_size": row[5] or 0
+                }
+                for row in res
+            ]
+
 
