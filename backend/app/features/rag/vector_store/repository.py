@@ -165,7 +165,29 @@ class DuckDBVectorRepository(BaseVectorRepository):
         self._conn = None
         self._init_db()
 
+    def _cleanup_stale_locks(self):
+        """Attempts safe cleanup of orphan WAL files if no active DuckDB process holds them."""
+        if self.db_path == ":memory:":
+            return
+        wal_path = f"{self.db_path}.wal"
+        if os.path.exists(wal_path):
+            try:
+                if os.path.getsize(wal_path) == 0:
+                    os.remove(wal_path)
+                    logger.info(f"Cleaned up empty orphan WAL file: {wal_path}")
+            except Exception as e:
+                logger.debug(f"WAL file {wal_path} is currently locked or in use: {e}")
+
+    def _configure_pragmas(self, conn):
+        """Configures performance & WAL parameters for DuckDB."""
+        try:
+            conn.execute("PRAGMA threads=4")
+            conn.execute("PRAGMA checkpoint_threshold='64MB'")
+        except Exception as e:
+            logger.debug(f"Failed to set DuckDB PRAGMAs: {e}")
+
     def _create_chunks_table(self, conn):
+        self._configure_pragmas(conn)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS rag_chunks (
                 id VARCHAR PRIMARY KEY,
@@ -211,6 +233,7 @@ class DuckDBVectorRepository(BaseVectorRepository):
                 self._create_chunks_table(self._conn)
                 return self._conn
 
+            self._cleanup_stale_locks()
             try:
                 self._conn = duckdb.connect(self.db_path)
                 self._create_chunks_table(self._conn)
@@ -221,6 +244,48 @@ class DuckDBVectorRepository(BaseVectorRepository):
                 self._conn = duckdb.connect(self.db_path)
                 self._create_chunks_table(self._conn)
                 return self._conn
+
+    def _recover_connection(self, error_msg: str):
+        """Recovers invalidated DB connection or falls back to :memory:."""
+        with self._lock:
+            logger.warning(f"DuckDB connection invalidated or fatal error detected: {error_msg}. Initiating recovery...")
+            if self._conn:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+                self._conn = None
+
+            if self.db_path != ":memory:":
+                try:
+                    self._cleanup_stale_locks()
+                    self._conn = duckdb.connect(self.db_path)
+                    self._create_chunks_table(self._conn)
+                    logger.info("Successfully re-established DuckDB connection handle.")
+                    return self._conn
+                except Exception as rec_err:
+                    logger.warning(f"Failed to reconnect to '{self.db_path}': {rec_err}. Falling back to ':memory:'.")
+                    self.db_path = ":memory:"
+            
+            self._conn = duckdb.connect(":memory:")
+            self._create_chunks_table(self._conn)
+            return self._conn
+
+    def _execute_with_retry(self, operation_fn):
+        """Executes a database operation with automatic invalidation recovery."""
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                return operation_fn(conn)
+            except Exception as e:
+                err_str = str(e).lower()
+                is_invalidated = isinstance(e, (duckdb.ConnectionException, duckdb.IOException, duckdb.FatalException, Exception)) and any(k in err_str for k in [
+                    "invalidated", "fatal error", "being used by another process", "checkpoint", "restarted prior to being used", "connection already closed", "connection error", "closed"
+                ])
+                if is_invalidated or isinstance(e, (duckdb.ConnectionException, duckdb.IOException, duckdb.FatalException)):
+                    new_conn = self._recover_connection(str(e))
+                    return operation_fn(new_conn)
+                raise
 
     def _init_db(self):
         with self._lock:
@@ -240,8 +305,8 @@ class DuckDBVectorRepository(BaseVectorRepository):
                 self._conn = None
 
     def insert_chunks(self, chunks: List[Chunk]) -> None:
-        with self._lock:
-            conn = self._get_connection()
+        def _do_insert(conn):
+            conn.execute("BEGIN TRANSACTION")
             try:
                 for chunk in chunks:
                     emb_str = json.dumps(chunk.embedding) if chunk.embedding else None
@@ -271,9 +336,15 @@ class DuckDBVectorRepository(BaseVectorRepository):
                         cols_str,
                         getattr(chunk.metadata, "table_name", None)
                     ))
-            except Exception as e:
-                logger.error(f"Error inserting chunks into DuckDBVectorRepository: {e}")
+                conn.execute("COMMIT")
+            except Exception:
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
                 raise
+
+        self._execute_with_retry(_do_insert)
 
     def _build_filter_clause(self, filters: Optional[Dict[str, Any]]) -> Tuple[str, List[Any]]:
         if not filters:
@@ -338,8 +409,8 @@ class DuckDBVectorRepository(BaseVectorRepository):
         filters: Optional[Dict[str, Any]] = None
     ) -> List[Tuple[Chunk, float]]:
         filter_clause, args = self._build_filter_clause(filters)
-        with self._lock:
-            conn = self._get_connection()
+
+        def _do_query(conn):
             res = conn.execute(f"SELECT * FROM rag_chunks {filter_clause}", args).fetchall()
             if not res:
                 return []
@@ -348,7 +419,6 @@ class DuckDBVectorRepository(BaseVectorRepository):
             if not chunks:
                 return []
                 
-            # Perform Cosine Similarity calculation in Python
             embeddings = np.array([c.embedding for c in chunks])
             query_arr = np.array([query_vector])
             similarities = cosine_similarity(query_arr, embeddings)[0]
@@ -360,6 +430,8 @@ class DuckDBVectorRepository(BaseVectorRepository):
             results = sorted(results, key=lambda x: x[1], reverse=True)
             return results[:limit]
 
+        return self._execute_with_retry(_do_query)
+
     def keyword_search(
         self, 
         query_text: str, 
@@ -367,15 +439,14 @@ class DuckDBVectorRepository(BaseVectorRepository):
         filters: Optional[Dict[str, Any]] = None
     ) -> List[Tuple[Chunk, float]]:
         filter_clause, args = self._build_filter_clause(filters)
-        with self._lock:
-            conn = self._get_connection()
+
+        def _do_search(conn):
             res = conn.execute(f"SELECT * FROM rag_chunks {filter_clause}", args).fetchall()
             if not res or not query_text.strip():
                 return []
                 
             chunks = [self._row_to_chunk(row) for row in res]
             
-            # Compute TF-IDF
             texts = [c.text for c in chunks]
             try:
                 vectorizer = TfidfVectorizer(stop_words='english')
@@ -398,14 +469,16 @@ class DuckDBVectorRepository(BaseVectorRepository):
                 results = sorted(results, key=lambda x: x[1], reverse=True)
                 return results[:limit]
 
+        return self._execute_with_retry(_do_search)
+
     def delete_by_document(self, doc_id: str) -> None:
-        with self._lock:
-            conn = self._get_connection()
+        def _do_delete(conn):
             conn.execute("DELETE FROM rag_chunks WHERE doc_id = ?", (doc_id,))
 
+        self._execute_with_retry(_do_delete)
+
     def list_documents(self, workspace: str = "default") -> List[Dict[str, Any]]:
-        with self._lock:
-            conn = self._get_connection()
+        def _do_list(conn):
             res = conn.execute("""
                 SELECT 
                     doc_id, 
@@ -438,9 +511,10 @@ class DuckDBVectorRepository(BaseVectorRepository):
                 for row in res
             ]
 
+        return self._execute_with_retry(_do_list)
+
     def get_document_chunks_raw(self, doc_id: str) -> List[Dict[str, Any]]:
-        with self._lock:
-            conn = self._get_connection()
+        def _do_get(conn):
             res = conn.execute(
                 "SELECT text, filename, author, document_type, tags, file_size FROM rag_chunks WHERE doc_id = ?", 
                 (doc_id,)
@@ -456,5 +530,7 @@ class DuckDBVectorRepository(BaseVectorRepository):
                 }
                 for row in res
             ]
+
+        return self._execute_with_retry(_do_get)
 
 

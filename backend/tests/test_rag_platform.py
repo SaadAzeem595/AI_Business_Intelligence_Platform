@@ -130,7 +130,30 @@ def test_vector_repositories():
     # Delete doc
     duck_repo.delete_by_document("d1")
     assert len(duck_repo.list_documents("marketing")) == 0
+    duck_repo.close()
     
+    shutil.rmtree(temp_dir)
+
+def test_duckdb_connection_recovery():
+    temp_dir = tempfile.mkdtemp()
+    db_path = os.path.join(temp_dir, "recover_rag.db")
+    meta = DocumentMetadata(filename="test.txt", document_type="TXT", workspace="default")
+    chunks = [Chunk(id="r1", doc_id="rd1", text="Sample text", embedding=[0.5, 0.5], metadata=meta)]
+
+    repo = DuckDBVectorRepository(db_path=db_path)
+    repo.insert_chunks(chunks)
+
+    # Simulate database invalidation error by closing underlying connection manually
+    if repo._conn:
+        try:
+            repo._conn.close()
+        except Exception:
+            pass
+
+    # Verify that auto-recovery reconnects smoothly and performs query without exception
+    docs = repo.list_documents("default")
+    assert len(docs) == 1
+    repo.close()
     shutil.rmtree(temp_dir)
 
 # 6. Retrieval & Context Builder Unit Tests
