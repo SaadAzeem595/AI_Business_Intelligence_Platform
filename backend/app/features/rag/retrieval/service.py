@@ -6,7 +6,7 @@ import json
 import time
 import re
 
-from app.features.rag.schemas import Chunk, RetrievalResult, Citation
+from app.features.rag.schemas import Chunk, RetrievalResult, Citation, QueryIntent
 from app.features.rag.embeddings.providers import BaseEmbeddingProvider
 from app.features.rag.vector_store.repository import BaseVectorRepository
 from app.core.cache import cache_client, run_async_as_sync
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 class BaseReranker(ABC):
     @abstractmethod
-    def rerank(self, query: str, chunks: List[Chunk]) -> List[Tuple[Chunk, float]]:
+    def rerank(self, query: str, chunks: List[Chunk], intent: Optional[str] = None) -> List[Tuple[Chunk, float]]:
         """Reranks the retrieved chunks against the query and returns Tuple[Chunk, score]."""
         pass
 
@@ -27,13 +27,13 @@ class MockReranker(BaseReranker):
         "june": "jun", "july": "jul", "august": "aug", "september": "sep",
         "october": "oct", "november": "nov", "december": "dec"
     }
-    STOP_WORDS = {"what", "was", "the", "in", "which", "had", "do", "show", "over", "time", "a", "an", "is", "are", "of", "to", "for", "with"}
+    STOP_WORDS = {"what", "was", "the", "in", "which", "had", "do", "show", "over", "time", "a", "an", "is", "are", "of", "to", "for", "with", "me", "tell"}
 
-    def rerank(self, query: str, chunks: List[Chunk]) -> List[Tuple[Chunk, float]]:
-        """Computes query coverage and semantic density relevance score (0.0 to 1.0)."""
-        logger.info("Executing MockReranker (query coverage + semantic density)...")
+    def rerank(self, query: str, chunks: List[Chunk], intent: Optional[str] = None) -> List[Tuple[Chunk, float]]:
+        """Computes query coverage, column matching, and semantic density relevance score (0.0 to 1.0)."""
+        logger.info(f"Executing MockReranker (query coverage + semantic density, intent={intent})...")
         q_clean = query.lower()
-        all_words = [w.strip("?,.!") for w in q_clean.split() if len(w.strip("?,.!")) > 1]
+        all_words = [w.strip("?,.!\"'") for w in q_clean.split() if len(w.strip("?,.!\"'")) > 1]
         
         # Filter content words
         content_words = [w for w in all_words if w not in self.STOP_WORDS]
@@ -43,15 +43,22 @@ class MockReranker(BaseReranker):
         for chunk in chunks:
             c_text_lower = chunk.text.lower()
             c_words_set = set(c_text_lower.split())
+            c_type = getattr(chunk.metadata, "chunk_type", "text") or "text"
+            chunk_cols = [c.lower() for c in (getattr(chunk.metadata, "columns", []) or [])]
             
             if not target_words:
-                score = 0.0
+                score = 0.1
             else:
                 matches = 0
+                col_matches = 0
                 for w in target_words:
                     alias = self.MONTH_ALIASES.get(w, w)
-                    if w in c_words_set or alias in c_words_set or w in c_text_lower or alias in c_text_lower:
+                    matched_in_text = (w in c_words_set or alias in c_words_set or w in c_text_lower or alias in c_text_lower)
+                    matched_in_cols = any(w in col for col in chunk_cols)
+                    if matched_in_text or matched_in_cols:
                         matches += 1
+                    if matched_in_cols:
+                        col_matches += 1
                         
                 query_coverage = matches / len(target_words)
                 
@@ -60,15 +67,30 @@ class MockReranker(BaseReranker):
                 union_len = len(q_set.union(c_words_set))
                 jaccard = len(q_set.intersection(c_words_set)) / union_len if union_len > 0 else 0.0
                 
-                # Combined score
-                raw_score = 0.75 * query_coverage + 0.25 * jaccard
+                # Combined base score
+                raw_score = 0.70 * query_coverage + 0.30 * jaccard
                 
-                if query_coverage >= 0.75:
-                    raw_score += 0.15
-                elif query_coverage >= 0.50:
-                    raw_score += 0.10
+                # Boost schema chunk when query intent is SCHEMA_QUERY or questions ask for fields
+                if intent == QueryIntent.SCHEMA_QUERY:
+                    if c_type == "dataset_schema":
+                        raw_score += 0.35 + (0.10 * (col_matches / max(1, len(target_words))))
+                    elif c_type == "dataset_summary":
+                        raw_score += 0.15
+                    elif c_type == "table_rows":
+                        raw_score -= 0.15
+                elif intent == QueryIntent.AGGREGATION_QUERY:
+                    if c_type in ("dataset_summary", "dataset_schema"):
+                        raw_score += 0.15
+                else:
+                    if query_coverage >= 0.75:
+                        raw_score += 0.15
+                    elif query_coverage >= 0.50:
+                        raw_score += 0.10
+
+                if query_coverage == 0 and col_matches == 0:
+                    raw_score = 0.05
                     
-                score = min(1.0, max(0.0, float(raw_score)))
+                score = min(1.0, max(0.05, float(raw_score)))
                 
             results.append((chunk, score))
             
@@ -86,9 +108,9 @@ class CrossEncoderReranker(BaseReranker):
         except ImportError:
             logger.warning("sentence-transformers not installed. CrossEncoderReranker falling back to MockReranker.")
 
-    def rerank(self, query: str, chunks: List[Chunk]) -> List[Tuple[Chunk, float]]:
+    def rerank(self, query: str, chunks: List[Chunk], intent: Optional[str] = None) -> List[Tuple[Chunk, float]]:
         if not self._model:
-            return MockReranker().rerank(query, chunks)
+            return MockReranker().rerank(query, chunks, intent=intent)
             
         pairs = [[query, chunk.text] for chunk in chunks]
         scores = self._model.predict(pairs)
@@ -113,6 +135,48 @@ class RetrievalService:
         self.repo = vector_repo
         self.embeddings = embedding_provider
         self.reranker = reranker or MockReranker()
+
+    @staticmethod
+    def classify_intent(query: str) -> QueryIntent:
+        """Classifies user query into structured retrieval intent."""
+        q = query.lower().strip()
+        
+        # 1. Row lookup intent (specific filters, single records)
+        row_lookup_keywords = [
+            "show me rows", "show rows", "show records", "find records", 
+            "lookup row", "find reviews for", "show reviews for", "records where", 
+            "rows where", "where is_fake_review", "product p0", "is_fake_review = 1"
+        ]
+        if any(k in q for k in row_lookup_keywords):
+            return QueryIntent.ROW_LOOKUP
+            
+        # 2. Aggregation intent (numerical questions needing exact calculation)
+        analytical_keywords = [
+            "average", "mean", "percentage", "percent", "pct", "total count", 
+            "sum", "how many", "which category has the most", "highest count", 
+            "lowest count", "max rating", "min rating", "average rating"
+        ]
+        if any(k in q for k in analytical_keywords):
+            return QueryIntent.AGGREGATION_QUERY
+
+        # 3. Schema intent (fields, columns, schema structure)
+        schema_keywords = [
+            "field", "fields", "column", "columns", "schema", "which field", 
+            "what field", "which column", "what column", "what are the columns", 
+            "available fields", "attribute", "attributes", "data type", "data types"
+        ]
+        if any(k in q for k in schema_keywords):
+            return QueryIntent.SCHEMA_QUERY
+            
+        # 4. Summary intent
+        if any(k in q for k in ["summarize", "summary", "overview of dataset", "what is this dataset about"]):
+            return QueryIntent.SUMMARY_QUERY
+            
+        # 5. Relationship intent
+        if any(k in q for k in ["relationship", "correlat", "relate to customer"]):
+            return QueryIntent.RELATIONSHIP_QUERY
+            
+        return QueryIntent.DOCUMENT_FACT_QUERY
 
     def reciprocal_rank_fusion(
         self, 
@@ -166,7 +230,11 @@ class RetrievalService:
                         document_type=cit.get("document_type"),
                         page=cit.get("page"),
                         heading=cit.get("heading"),
-                        workspace=cit.get("workspace", "default")
+                        workspace=cit.get("workspace", "default"),
+                        chunk_type=cit.get("chunk_type", "text"),
+                        row_start=cit.get("row_start"),
+                        row_end=cit.get("row_end"),
+                        columns=cit.get("columns", [])
                     )
                     results.append(
                         RetrievalResult(
@@ -174,6 +242,11 @@ class RetrievalService:
                             doc_id=item.get("doc_id"),
                             text=item.get("text"),
                             score=item.get("score"),
+                            relevance_label=item.get("relevance_label", "Relevant"),
+                            explanation=item.get("explanation"),
+                            chunk_type=item.get("chunk_type"),
+                            row_range=item.get("row_range"),
+                            matched_columns=item.get("matched_columns", []),
                             citation=citation
                         )
                     )
@@ -181,19 +254,20 @@ class RetrievalService:
         except Exception:
             pass
 
-        logger.info(f"Retrieving for query: '{query}' (alpha={hybrid_alpha}, rerank={enable_rerank})")
+        intent = self.classify_intent(query)
+        logger.info(f"Retrieving for query: '{query}' (intent={intent}, alpha={hybrid_alpha}, rerank={enable_rerank})")
         
         # 1. Fetch vector results if alpha > 0
         vector_res = []
         if hybrid_alpha > 0.0:
             query_vec = self.embeddings.get_embedding(query)
             # Fetch a larger candidate pool to allow RRF merge and rerank
-            vector_res = self.repo.query_similarity(query_vec, limit=limit * 2, filters=filters)
+            vector_res = self.repo.query_similarity(query_vec, limit=limit * 3, filters=filters)
             
         # 2. Fetch keyword results if alpha < 1
         keyword_res = []
         if hybrid_alpha < 1.0:
-            keyword_res = self.repo.keyword_search(query, limit=limit * 2, filters=filters)
+            keyword_res = self.repo.keyword_search(query, limit=limit * 3, filters=filters)
             
         # 3. Merge results
         if hybrid_alpha == 1.0:
@@ -212,10 +286,10 @@ class RetrievalService:
                 dedup_candidates.append((chunk, score))
                 
         chunks = [item[0] for item in dedup_candidates]
-        
-        # 4. Optional Reranking or default score calculation
-        if enable_rerank and chunks:
-            ranked_tuples = self.reranker.rerank(query, chunks)
+
+        # 4. Reranking or default score calculation with intent prioritization
+        if (enable_rerank or intent == QueryIntent.SCHEMA_QUERY) and chunks:
+            ranked_tuples = self.reranker.rerank(query, chunks, intent=intent)
             scoring_mode = "rerank"
         else:
             ranked_tuples = dedup_candidates
@@ -225,6 +299,12 @@ class RetrievalService:
                 scoring_mode = "keyword"
             else:
                 scoring_mode = "rrf"
+
+        # If SCHEMA_QUERY, ensure schema chunks matching query appear first
+        if intent == QueryIntent.SCHEMA_QUERY and ranked_tuples:
+            schema_tuples = [t for t in ranked_tuples if getattr(t[0].metadata, "chunk_type", "") == "dataset_schema"]
+            other_tuples = [t for t in ranked_tuples if getattr(t[0].metadata, "chunk_type", "") != "dataset_schema"]
+            ranked_tuples = schema_tuples + other_tuples
             
         # Slice to limit
         top_tuples = ranked_tuples[:limit]
@@ -232,19 +312,43 @@ class RetrievalService:
         
         # 5. Format into RetrievalResult schemas
         formatted_results = []
-        q_words = set(re.findall(r'\w+', query.lower())) - {"what", "is", "the", "in", "a", "an", "for", "of", "to", "with", "show", "find", "list", "are"}
+        q_clean = query.lower()
+        all_q_words = [w.strip("?,.!\"'") for w in q_clean.split() if len(w.strip("?,.!\"'")) > 1]
+        stop_words = {"what", "is", "the", "in", "a", "an", "for", "of", "to", "with", "show", "find", "list", "are", "me", "tell", "from", "which"}
+        q_words = [w for w in all_q_words if w not in stop_words]
+        if not q_words:
+            q_words = all_q_words
 
         for chunk, raw_score in top_tuples:
-            # Score normalization
-            if scoring_mode == "rrf":
+            c_type = getattr(chunk.metadata, "chunk_type", "text") or "text"
+            c_text_lower = chunk.text.lower()
+            chunk_cols = getattr(chunk.metadata, "columns", []) or []
+            matched_terms = [w for w in q_words if w in c_text_lower]
+            matched_cols = [c for c in chunk_cols if any(qw in c.lower() for qw in q_words)]
+            
+            # Check if query had any genuine match with this chunk
+            has_term_match = len(matched_terms) > 0 or len(matched_cols) > 0
+
+            # Score normalization and calibration
+            if scoring_mode == "rerank":
+                norm_score = float(raw_score)
+            elif scoring_mode == "rrf":
                 max_rrf = 2.0 / 61.0
-                norm_score = min(1.0, max(0.15, float(raw_score / max_rrf)))
+                norm_score = float(raw_score / max_rrf)
             elif scoring_mode in ("dense", "keyword") and max_raw > 0 and max_raw < 0.4:
-                norm_score = min(1.0, max(0.15, float(raw_score / max_raw)))
+                norm_score = float(raw_score / max_raw)
             else:
-                norm_score = min(1.0, max(0.15, float(raw_score)))
-                
-            norm_score = round(norm_score, 4)
+                norm_score = float(raw_score)
+
+            if not has_term_match:
+                # No content words matched: calibrate strictly low
+                norm_score = min(0.20, norm_score * 0.25)
+            else:
+                # Direct schema match boost for schema queries
+                if intent == QueryIntent.SCHEMA_QUERY and c_type == "dataset_schema" and matched_cols:
+                    norm_score = max(0.85, norm_score)
+                    
+            norm_score = round(min(1.0, max(0.05, norm_score)), 2)
             
             # Relevance label assignment
             if norm_score >= 0.75:

@@ -68,11 +68,33 @@ class AnalyticalAnswer(BaseModel):
     sql_query: Optional[str] = None
     dataset_name: Optional[str] = None
 
+from enum import Enum
+
+class QueryIntent(str, Enum):
+    SCHEMA_QUERY = "SCHEMA_QUERY"
+    ROW_LOOKUP = "ROW_LOOKUP"
+    AGGREGATION_QUERY = "AGGREGATION_QUERY"
+    DOCUMENT_FACT_QUERY = "DOCUMENT_FACT_QUERY"
+    SUMMARY_QUERY = "SUMMARY_QUERY"
+    RELATIONSHIP_QUERY = "RELATIONSHIP_QUERY"
+
+class GroundedAnswer(BaseModel):
+    answer: str
+    grounded: bool = True
+    confidence_score: float = 1.0
+    evidence_status: str = "sufficient"  # sufficient, insufficient, analytical
+    sources: List[Dict[str, Any]] = Field(default_factory=list)
+    direct_facts: List[str] = Field(default_factory=list)
+    inferences: List[str] = Field(default_factory=list)
+    intent: Optional[str] = None
+
 class ContextResponse(BaseModel):
     context_text: str
     results: List[RetrievalResult]
     token_count: int
     analytical_answer: Optional[AnalyticalAnswer] = None
+    grounded_answer: Optional[GroundedAnswer] = None
+    query_intent: Optional[str] = None
 
 class GroundTruthItem(BaseModel):
     query: str

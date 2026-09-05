@@ -62,7 +62,7 @@ class ChunkerService:
                     
             cols_joined = " | ".join(schema_cols) if schema_cols else "Columns"
 
-            # 1. Batch rows into row-group chunks first
+            # 1. Batch rows into row-group chunks
             if row_lines:
                 for i in range(0, len(row_lines), max_rows_per_chunk):
                     batch = row_lines[i:i + max_rows_per_chunk]
@@ -71,28 +71,35 @@ class ChunkerService:
                     
                     heading_name = f"{title_line} (Rows {start_row}-{end_row})"
                     
-                    # Build Markdown table representation
+                    # Build Markdown table representation WITHOUT repeating full schema heading
                     md_table_lines = [
                         f"### Dataset: {title_line} (Rows {start_row}-{end_row})",
-                        f"Schema: {cols_joined}",
                         "",
                         f"| {' | '.join(schema_cols)} |" if schema_cols else "| Data |",
                         f"| {' | '.join(['---'] * len(schema_cols))} |" if schema_cols else "| --- |"
                     ]
                     
-                    # Convert `Row X -> Col1: Val1 | Col2: Val2` to markdown table row
+                    kv_records = []
+                    # Convert `Row X -> Col1: Val1 | Col2: Val2` to markdown table row and structured key-value format
                     for r_str in batch:
                         if " -> " in r_str:
                             kv_part = r_str.split(" -> ")[1]
                             kvs = dict(item.split(": ", 1) for item in kv_part.split(" | ") if ": " in item)
                             row_vals = [str(kvs.get(col, "")).strip() for col in schema_cols]
                             md_table_lines.append(f"| {' | '.join(row_vals)} |")
+                            # Also build key=value pair format: col=val
+                            formatted_kvs = [f"{col}={kvs.get(col, '')}" for col in schema_cols if col in kvs]
+                            kv_records.append(" | ".join(formatted_kvs))
                         else:
                             md_table_lines.append(f"| {r_str} |")
                             
                     md_table_lines.append("")
                     md_table_lines.append("Row Context:")
                     md_table_lines.extend(batch)
+                    if kv_records:
+                        md_table_lines.append("")
+                        md_table_lines.append("Structured Records (Key=Value):")
+                        md_table_lines.extend(kv_records[:15])
                     
                     chunk_text = "\n".join(md_table_lines)
                     chunks.append({
@@ -105,13 +112,38 @@ class ChunkerService:
                         "table_name": title_line
                     })
 
-            # 2. Generate Schema Chunk
+            # 2. Generate Rich Schema Chunk
             schema_text_lines = [
                 f"### Dataset Schema: {title_line}",
-                f"Columns ({len(schema_cols)}): {cols_joined}"
+                f"Filename: {title_line}",
+                f"Total Columns ({len(schema_cols)}): {cols_joined}",
+                "",
+                "Fields and Column Definitions:"
             ]
+            for col in schema_cols:
+                schema_text_lines.append(f"- Field `{col}`: column in {title_line}")
+
             if schema_details_str:
+                schema_text_lines.append("")
                 schema_text_lines.append(f"Field Types & Missing Counts: {schema_details_str}")
+
+            # Logical grouping of related fields
+            id_cols = [c for c in schema_cols if any(k in c.lower() for k in ["id", "date", "year", "month", "time"])]
+            quality_cols = [c for c in schema_cols if any(k in c.lower() for k in ["fake", "verified", "quality", "rating", "sentiment", "helpful", "reviewer", "readability", "caps", "exclamation"])]
+            product_cols = [c for c in schema_cols if any(k in c.lower() for k in ["product", "category", "price", "brand", "tier", "image", "title"])]
+            other_cols = [c for c in schema_cols if c not in id_cols and c not in quality_cols and c not in product_cols]
+
+            schema_text_lines.append("")
+            schema_text_lines.append("Logical Field Groups:")
+            if id_cols:
+                schema_text_lines.append(f"- Identifiers & Temporal: {', '.join(id_cols)}")
+            if quality_cols:
+                schema_text_lines.append(f"- Review Quality, Verification & Sentiment: {', '.join(quality_cols)}")
+            if product_cols:
+                schema_text_lines.append(f"- Product & Pricing Attributes: {', '.join(product_cols)}")
+            if other_cols:
+                schema_text_lines.append(f"- Additional Attributes: {', '.join(other_cols)}")
+
             schema_chunk_text = "\n".join(schema_text_lines)
             chunks.append({
                 "text": schema_chunk_text,
@@ -125,7 +157,11 @@ class ChunkerService:
 
             # 3. Generate Dataset Summary Chunk (if available)
             if dataset_summary_str:
-                summary_chunk_text = f"### Dataset Summary: {title_line}\n{dataset_summary_str}"
+                summary_chunk_text = (
+                    f"### Dataset Summary: {title_line}\n"
+                    f"{dataset_summary_str}\n\n"
+                    f"Columns: {cols_joined}"
+                )
                 chunks.append({
                     "text": summary_chunk_text,
                     "heading": f"Dataset Summary: {title_line}",

@@ -47,11 +47,34 @@ export interface AnalyticalAnswer {
   dataset_name?: string;
 }
 
+export interface GroundedAnswer {
+  answer: string;
+  grounded: boolean;
+  confidence_score: number;
+  evidence_status: "sufficient" | "insufficient" | "analytical" | string;
+  sources: Array<{
+    reference_num: number;
+    filename: string;
+    heading?: string;
+    page?: number;
+    chunk_id: string;
+    chunk_type?: string;
+    row_range?: string;
+    score: number;
+    source_label?: string;
+  }>;
+  direct_facts: string[];
+  inferences: string[];
+  intent?: string;
+}
+
 export interface ContextResponse {
   context_text: string;
   results: RetrievalResult[];
   token_count: number;
   analytical_answer?: AnalyticalAnswer;
+  grounded_answer?: GroundedAnswer;
+  query_intent?: string;
 }
 
 export interface IngestResponse {

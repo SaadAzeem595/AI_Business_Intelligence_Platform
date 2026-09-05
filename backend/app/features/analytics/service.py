@@ -124,6 +124,20 @@ def register_all_datasets_in_duckdb(conn: duckdb.DuckDBPyConnection, project_id:
         for view_name in view_names:
             create_duckdb_view(file_path, view_name)
 
+    # 3. Register from uploads directory
+    uploads_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
+    if os.path.exists(uploads_dir):
+        for f in os.listdir(uploads_dir):
+            if f.endswith(('.csv', '.xlsx', '.xls', '.json', '.parquet')):
+                file_path = os.path.join(uploads_dir, f)
+                if file_path in registered_paths:
+                    continue
+                # Extract clean view name (e.g. reviews from <uuid>_reviews.csv)
+                base_part = f.split("_", 1)[1] if "_" in f and len(f.split("_", 1)[0]) in (36, 32) else f
+                clean_name = os.path.splitext(base_part)[0].lower()
+                create_duckdb_view(file_path, clean_name)
+                create_duckdb_view(file_path, os.path.splitext(f)[0].lower())
+
     # Register sample files only if project_id is None AND no DB/cache datasets exist
     if not project_id and not db_items and not UPLOADED_PATHS_CACHE:
         sample_dir = os.path.join(root_dir, "sample_data")

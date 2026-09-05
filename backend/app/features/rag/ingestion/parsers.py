@@ -136,11 +136,15 @@ class CsvParser(BaseParser):
         header_block = (
             f"[TABULAR_DATA: {filename}{sheet_info}]\n"
             f"[SCHEMA: {cols_str}]\n"
+            f"[ROW_COUNT: {len(df)}]\n"
+            f"[COLUMN_COUNT: {len(cols)}]\n"
             f"[DATASET_SCHEMA_DETAILS: {col_details_str}]\n"
             f"[DATASET_SUMMARY: {summary_block}]"
         )
         
-        records = df.to_dict(orient="records")
+        # Sample representative rows (up to 100) to keep RAG indexing responsive and prevent huge context bloat
+        sample_df = df.head(100) if len(df) > 100 else df
+        records = sample_df.to_dict(orient="records")
         rows_formatted = []
         for idx, rec in enumerate(records):
             row_kvs = [f"{col}: {rec[col]}" for col in cols if col in rec and pd.notna(rec[col])]

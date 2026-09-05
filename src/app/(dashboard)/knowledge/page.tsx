@@ -731,46 +731,132 @@ export default function KnowledgeBasePage() {
                   </div>
                 ) : hasSearched && searchResults ? (
                   <div className="space-y-3 pt-2">
-                    {/* Analytical SQL Answer Card */}
-                    {searchResults.analytical_answer && (
-                      <Card className="border-brand-indigo/50 bg-brand-indigo/5 shadow-xs animate-in fade-in">
-                        <CardHeader className="p-3.5 pb-2 border-b border-brand-indigo/20 flex flex-row items-center justify-between">
+                    {/* Source-Grounded Answer Card */}
+                    {searchResults.grounded_answer && (
+                      <Card className={`border shadow-xs animate-in fade-in ${
+                        searchResults.grounded_answer.evidence_status === "insufficient"
+                          ? "border-amber-500/40 bg-amber-500/5"
+                          : searchResults.grounded_answer.evidence_status === "analytical"
+                          ? "border-brand-indigo/50 bg-brand-indigo/5"
+                          : "border-emerald-500/40 bg-emerald-500/5"
+                      }`}>
+                        <CardHeader className="p-3.5 pb-2 border-b border-border/30 flex flex-row items-center justify-between">
                           <div className="flex items-center gap-2">
-                            <div className="p-1.5 rounded bg-brand-indigo/20 text-brand-indigo">
-                              <Calculator className="h-4 w-4" />
+                            <div className={`p-1.5 rounded ${
+                              searchResults.grounded_answer.evidence_status === "insufficient"
+                                ? "bg-amber-500/20 text-amber-400"
+                                : searchResults.grounded_answer.evidence_status === "analytical"
+                                ? "bg-brand-indigo/20 text-brand-indigo"
+                                : "bg-emerald-500/20 text-emerald-400"
+                            }`}>
+                              {searchResults.grounded_answer.evidence_status === "insufficient" ? (
+                                <AlertCircle className="h-4 w-4" />
+                              ) : searchResults.grounded_answer.evidence_status === "analytical" ? (
+                                <Calculator className="h-4 w-4" />
+                              ) : (
+                                <CheckCircle2 className="h-4 w-4" />
+                              )}
                             </div>
                             <div>
                               <CardTitle className="text-xs font-bold text-foreground flex items-center gap-2">
-                                Exact Analytical Answer (DuckDB SQL Engine)
+                                {searchResults.grounded_answer.evidence_status === "insufficient"
+                                  ? "Insufficient Evidence"
+                                  : searchResults.grounded_answer.evidence_status === "analytical"
+                                  ? "Exact Analytical Answer (DuckDB SQL Engine)"
+                                  : "Source-Grounded Answer"}
                               </CardTitle>
                               <CardDescription className="text-[10px] text-muted-foreground">
-                                Calculated directly from structured dataset
+                                {searchResults.grounded_answer.evidence_status === "insufficient"
+                                  ? "Strict hallucination prevention: not enough evidence in indexed files"
+                                  : searchResults.grounded_answer.evidence_status === "analytical"
+                                  ? "Calculated dynamically via DuckDB SQL analytics"
+                                  : "Synthesized strictly from verified retrieved document context"}
                               </CardDescription>
                             </div>
                           </div>
-                          <Badge variant="outline" className="text-[9px] bg-brand-indigo/10 text-brand-indigo border-brand-indigo/30">
-                            SQL Calculated
+                          <Badge variant="outline" className={`text-[9px] ${
+                            searchResults.grounded_answer.evidence_status === "insufficient"
+                              ? "bg-amber-500/10 text-amber-400 border-amber-500/30"
+                              : searchResults.grounded_answer.evidence_status === "analytical"
+                              ? "bg-brand-indigo/10 text-brand-indigo border-brand-indigo/30"
+                              : "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
+                          }`}>
+                            {searchResults.grounded_answer.evidence_status === "insufficient"
+                              ? "No Unsupported Facts"
+                              : searchResults.grounded_answer.evidence_status === "analytical"
+                              ? "SQL Verified"
+                              : "Source Grounded"}
                           </Badge>
                         </CardHeader>
-                        <CardContent className="p-3.5 space-y-2 text-xs">
-                          <div className="text-lg font-extrabold text-foreground tracking-tight">
-                            {searchResults.analytical_answer.calculated_value}
-                          </div>
-                          <p className="text-[11px] text-muted-foreground leading-relaxed">
-                            {searchResults.analytical_answer.explanation}
-                          </p>
-                          {searchResults.analytical_answer.sql_query && (
-                            <div className="p-2 rounded bg-black/40 border border-border/40 font-mono text-[10px] text-cyan-300 overflow-x-auto select-all">
-                              {searchResults.analytical_answer.sql_query}
+                        <CardContent className="p-3.5 space-y-2.5 text-xs">
+                          {searchResults.analytical_answer && searchResults.grounded_answer.evidence_status === "analytical" ? (
+                            <div className="space-y-2">
+                              <div className="text-lg font-extrabold text-foreground tracking-tight">
+                                {searchResults.analytical_answer.calculated_value}
+                              </div>
+                              <p className="text-[11px] text-muted-foreground leading-relaxed">
+                                {searchResults.analytical_answer.explanation}
+                              </p>
+                              {searchResults.analytical_answer.sql_query && (
+                                <div className="p-2 rounded bg-black/40 border border-border/40 font-mono text-[10px] text-cyan-300 overflow-x-auto select-all">
+                                  {searchResults.analytical_answer.sql_query}
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <p className="text-foreground/90 leading-relaxed font-sans text-xs">
+                              {searchResults.grounded_answer.answer}
+                            </p>
+                          )}
+
+                          {/* Direct Facts vs Inference */}
+                          {searchResults.grounded_answer.direct_facts.length > 0 && searchResults.grounded_answer.evidence_status !== "insufficient" && (
+                            <div className="p-2 rounded bg-muted/20 border border-border/30 space-y-1 text-[11px]">
+                              <span className="font-semibold text-foreground/90 block text-[10px] uppercase tracking-wider">
+                                Direct Facts from Sources:
+                              </span>
+                              {searchResults.grounded_answer.direct_facts.map((df, dfIdx) => (
+                                <div key={dfIdx} className="flex items-start gap-1.5 text-muted-foreground">
+                                  <span className="text-emerald-400 font-bold">•</span>
+                                  <span>{df}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {searchResults.grounded_answer.inferences.length > 0 && (
+                            <div className="p-2 rounded bg-muted/20 border border-border/30 space-y-1 text-[11px]">
+                              <span className="font-semibold text-foreground/90 block text-[10px] uppercase tracking-wider">
+                                Inferred Context / Analysis:
+                              </span>
+                              {searchResults.grounded_answer.inferences.map((inf, infIdx) => (
+                                <div key={infIdx} className="flex items-start gap-1.5 text-muted-foreground">
+                                  <span className="text-brand-indigo font-bold">•</span>
+                                  <span>{inf}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Sources Cited */}
+                          {searchResults.grounded_answer.sources && searchResults.grounded_answer.sources.length > 0 && (
+                            <div className="pt-1.5 border-t border-border/20 text-[10px] text-muted-foreground flex flex-wrap items-center gap-1.5">
+                              <span className="font-semibold text-foreground/80">Cited Sources:</span>
+                              {searchResults.grounded_answer.sources.map((s, sIdx) => (
+                                <Badge key={sIdx} variant="secondary" className="text-[9px] px-1.5 py-0 font-normal">
+                                  {s.source_label || s.filename}
+                                </Badge>
+                              ))}
                             </div>
                           )}
                         </CardContent>
                       </Card>
                     )}
 
-                    <div className="flex items-center justify-between text-xs text-muted-foreground">
-                      <span className="font-semibold text-foreground">
-                        Matched Chunks ({searchResults.results.length})
+                    <div className="flex items-center justify-between text-xs text-muted-foreground pt-1">
+                      <span className="font-semibold text-foreground flex items-center gap-1.5">
+                        <Database className="h-3.5 w-3.5 text-brand-indigo" />
+                        Retrieval Evidence ({searchResults.results.length} Matched Chunks)
                       </span>
                       <span className="text-[10px]">Token Context: {searchResults.token_count}</span>
                     </div>
@@ -786,14 +872,13 @@ export default function KnowledgeBasePage() {
                     ) : (
                       <div className="space-y-3 max-h-[500px] overflow-y-auto pr-1">
                         {searchResults.results.map((res, idx) => {
-                          const matchPct = Math.round(res.score * 100);
-                          const relLabel = res.relevance_label || (matchPct >= 75 ? "Highly Relevant" : matchPct >= 50 ? "Relevant" : matchPct >= 30 ? "Moderately Relevant" : "Low Relevance");
+                          const relLabel = res.relevance_label || (res.score >= 0.75 ? "Highly Relevant" : res.score >= 0.50 ? "Relevant" : res.score >= 0.30 ? "Moderately Relevant" : "Low Relevance");
                           const scoreColor =
-                            matchPct >= 75
+                            res.score >= 0.75
                               ? "text-emerald-400 border-emerald-500/30 bg-emerald-500/10"
-                              : matchPct >= 50
+                              : res.score >= 0.50
                               ? "text-blue-400 border-blue-500/30 bg-blue-500/10"
-                              : matchPct >= 30
+                              : res.score >= 0.30
                               ? "text-amber-400 border-amber-500/30 bg-amber-500/10"
                               : "text-slate-400 border-slate-500/30 bg-slate-500/10";
 
@@ -824,8 +909,8 @@ export default function KnowledgeBasePage() {
                                   </Badge>
                                 </div>
                                 <div className="flex items-center gap-1.5 shrink-0">
-                                  <Badge variant="outline" className={`text-[10px] ${scoreColor}`}>
-                                    {relLabel} ({matchPct}%)
+                                  <Badge variant="outline" className={`text-[10px] ${scoreColor}`} title={`Calibrated relevance score: ${res.score.toFixed(2)}/1.00`}>
+                                    {relLabel} • Score: {res.score.toFixed(2)}
                                   </Badge>
                                 </div>
                               </CardHeader>
