@@ -130,41 +130,49 @@ class PowerPointReportGenerator:
         title2.text_frame.paragraphs[0].font.color.rgb = primary_color
         
         # Slide content list
-        takeaways = (data.get("executive_summary") or {}).get("key_takeaways", [
-            "Revenue is expanding along seasonal forecast targets.",
-            "Predictive models validate churn risks in active operational regions.",
-            "Recommendations indicate cohort discount campaigns prioritize West region users."
-        ])
+        raw_takeaways = data.get("executive_summary")
+        takeaways = []
+        if isinstance(raw_takeaways, list):
+            takeaways = raw_takeaways
+        elif isinstance(raw_takeaways, dict):
+            takeaways = raw_takeaways.get("key_takeaways", [])
+            
+        if not takeaways:
+            takeaways = [
+                "Revenue is expanding along seasonal forecast targets.",
+                "Predictive models validate churn risks in active operational regions.",
+                "Recommendations indicate cohort discount campaigns prioritize West region users."
+            ]
         
         content2 = slide2.shapes.add_textbox(Inches(1.0), Inches(1.8), Inches(11.3), Inches(4.5))
         content_tf = content2.text_frame
         content_tf.word_wrap = True
         
-        for idx, takeaway in enumerate(takeaways):
+        for idx, takeaway in enumerate(takeaways[:5]):
             p_c = content_tf.add_paragraph() if idx > 0 else content_tf.paragraphs[0]
             p_c.text = f"•  {takeaway}"
             p_c.font.name = "Arial"
-            p_c.font.size = Pt(18)
+            p_c.font.size = Pt(16)
             p_c.font.color.rgb = text_color
-            p_c.space_after = Pt(20)
+            p_c.space_after = Pt(14)
             
         # --- Slide 3: KPI OVERVIEW GRID ---
         slide3 = prs.slides.add_slide(blank_layout)
         
         title3 = slide3.shapes.add_textbox(Inches(1.0), Inches(0.5), Inches(11.3), Inches(0.8))
-        title3.text_frame.text = "Business Metric Indicators (KPIs)"
+        title3.text_frame.text = "Key Performance Indicators (KPIs)"
         title3.text_frame.paragraphs[0].font.size = Pt(28)
         title3.text_frame.paragraphs[0].font.bold = True
         title3.text_frame.paragraphs[0].font.color.rgb = primary_color
         
-        kpi_list = data.get("kpi_overview", [
+        kpi_list = data.get("kpi_overview") or [
             {"title": "Total Revenue", "value": "$1.24M", "change": "+14.2% MoM"},
             {"title": "Operating Cost", "value": "$320.5K", "change": "-2.1% MoM"},
-            {"title": "Churn Prediction", "value": "15.0%", "change": "+0.5% MoM"},
-            {"title": "RAG Score", "value": "94.0%", "change": "+1.8% MoM"}
-        ])
+            {"title": "Retention Rate", "value": "94.8%", "change": "+1.7% MoM"},
+            {"title": "CAC Efficiency", "value": "$142.50", "change": "-9.9% MoM"}
+        ]
         
-        # Grid variables: 4 columns.
+        # Grid variables: 4 columns
         left_margin = Inches(1.0)
         gap = Inches(0.4)
         card_w = Inches(2.5)
@@ -186,9 +194,13 @@ class PowerPointReportGenerator:
             card_tf = card_box.text_frame
             card_tf.word_wrap = True
             
+            title_txt = kpi.get("title") if isinstance(kpi, dict) else getattr(kpi, "title", "KPI")
+            val_txt = kpi.get("current_value", kpi.get("value", "$0")) if isinstance(kpi, dict) else getattr(kpi, "current_value", "$0")
+            chg_txt = kpi.get("change_pct", kpi.get("change", "0%")) if isinstance(kpi, dict) else getattr(kpi, "change_pct", "0%")
+            
             # Title
             p_t = card_tf.paragraphs[0]
-            p_t.text = kpi["title"]
+            p_t.text = title_txt
             p_t.font.name = "Arial"
             p_t.font.size = Pt(14)
             p_t.font.bold = True
@@ -198,9 +210,9 @@ class PowerPointReportGenerator:
             
             # Value
             p_v = card_tf.add_paragraph()
-            p_v.text = kpi["value"]
+            p_v.text = val_txt
             p_v.font.name = "Arial"
-            p_v.font.size = Pt(28)
+            p_v.font.size = Pt(26)
             p_v.font.bold = True
             p_v.font.color.rgb = primary_color
             p_v.alignment = PP_ALIGN.CENTER
@@ -208,11 +220,11 @@ class PowerPointReportGenerator:
             
             # Change
             p_ch = card_tf.add_paragraph()
-            p_ch.text = kpi["change"]
+            p_ch.text = chg_txt
             p_ch.font.name = "Arial"
             p_ch.font.size = Pt(13)
             p_ch.font.bold = True
-            is_positive = not kpi["change"].startswith("-") and not kpi["change"].startswith("0")
+            is_positive = not chg_txt.startswith("-") and not chg_txt.startswith("0")
             p_ch.font.color.rgb = RGBColor(16, 185, 129) if is_positive else RGBColor(239, 68, 68)
             p_ch.alignment = PP_ALIGN.CENTER
             
@@ -226,10 +238,8 @@ class PowerPointReportGenerator:
             title4.text_frame.paragraphs[0].font.bold = True
             title4.text_frame.paragraphs[0].font.color.rgb = primary_color
             
-            # Left column: chart image
             slide4.shapes.add_picture(snapshot_path, Inches(1.0), Inches(1.5), Inches(7.5), Inches(4.5))
             
-            # Right column: text highlights
             analysis_box = slide4.shapes.add_textbox(Inches(8.8), Inches(1.8), Inches(3.5), Inches(4.0))
             tf_a = analysis_box.text_frame
             tf_a.word_wrap = True
@@ -242,13 +252,13 @@ class PowerPointReportGenerator:
             p_a1.space_after = Pt(10)
             
             bullet_points = [
-                "Dashboard snapshots verify a steady growth pattern.",
-                "KPI aggregates display stable operational margins across all segments.",
-                "Forecasting models maintain positive Q4 trends with 95% confidence intervals."
+                "Dashboard snapshots verify stable growth patterns across metrics.",
+                "KPI aggregates display healthy margin performance.",
+                "Forecasting models maintain confidence interval alignment."
             ]
             for bp in bullet_points:
                 p_bp = tf_a.add_paragraph()
-                p_bp.text = f"- {bp}"
+                p_bp.text = f"• {bp}"
                 p_bp.font.size = Pt(12)
                 p_bp.font.color.rgb = text_color
                 p_bp.space_after = Pt(8)
@@ -263,23 +273,21 @@ class PowerPointReportGenerator:
         title5.text_frame.paragraphs[0].font.color.rgb = primary_color
         
         recs = data.get("recommendations") or [
-            {"insight": "Customer churn rates are stable at 15%. Recommend target discount campaigns on the West region.", "confidence_score": 0.88, "priority": "High"},
-            {"insight": "Q4 forecasts project a steady sales rise. Ensure warehouse supply matches the 5% margin increase.", "confidence_score": 0.92, "priority": "Medium"}
+            {"recommendation": "Investigate outlier transactions and reconcile billing logs.", "priority": "High", "suggested_owner": "Finance Operations"},
+            {"recommendation": "Initiate quarterly retention campaign for primary tier customer cohort.", "priority": "High", "suggested_owner": "Customer Success"},
+            {"recommendation": "Align operational staffing capacity with positive 30-day forecast trajectory.", "priority": "Medium", "suggested_owner": "Operations"}
         ]
         
-        # Add table: rows = len(recs) + 1 headers, cols = 3 (Insight, Priority, Confidence)
-        rows = len(recs) + 1
+        rows = min(5, len(recs)) + 1
         cols = 3
         table_shape = slide5.shapes.add_table(rows, cols, Inches(1.0), Inches(1.8), Inches(11.333), Inches(4.5))
         table = table_shape.table
         
-        # Column widths
         table.columns[0].width = Inches(7.5)
         table.columns[1].width = Inches(1.833)
         table.columns[2].width = Inches(2.0)
         
-        # Set Headers
-        headers = ["Strategic Recommendation / Insight", "Priority", "Confidence Score"]
+        headers = ["Strategic Action / Recommendation", "Priority", "Owner / Team"]
         for col_idx, text in enumerate(headers):
             cell = table.cell(0, col_idx)
             cell.text = text
@@ -291,27 +299,26 @@ class PowerPointReportGenerator:
                 p.font.size = Pt(14)
                 p.alignment = PP_ALIGN.CENTER if col_idx > 0 else PP_ALIGN.LEFT
                 
-        # Fill table rows
-        for row_idx, rec in enumerate(recs):
-            # Insight
+        for row_idx, rec in enumerate(recs[:min(5, len(recs))]):
+            rec_text = rec.get("recommendation", rec.get("insight", "")) if isinstance(rec, dict) else getattr(rec, "recommendation", "")
+            prio = rec.get("priority", "Medium") if isinstance(rec, dict) else getattr(rec, "priority", "Medium")
+            owner = rec.get("suggested_owner", rec.get("confidence_score", "BI Team")) if isinstance(rec, dict) else getattr(rec, "suggested_owner", "BI Team")
+            
             cell_ins = table.cell(row_idx + 1, 0)
-            cell_ins.text = rec["insight"]
-            cell_ins.text_frame.paragraphs[0].font.size = Pt(13)
+            cell_ins.text = rec_text
+            cell_ins.text_frame.paragraphs[0].font.size = Pt(12)
             cell_ins.text_frame.paragraphs[0].font.color.rgb = text_color
             
-            # Priority
             cell_prio = table.cell(row_idx + 1, 1)
-            cell_prio.text = rec["priority"]
-            cell_prio.text_frame.paragraphs[0].font.size = Pt(13)
+            cell_prio.text = str(prio)
+            cell_prio.text_frame.paragraphs[0].font.size = Pt(12)
             cell_prio.text_frame.paragraphs[0].font.bold = True
             cell_prio.text_frame.paragraphs[0].font.color.rgb = primary_color
             cell_prio.text_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
             
-            # Confidence
             cell_conf = table.cell(row_idx + 1, 2)
-            conf_str = f"{rec['confidence_score']*100:.0f}%" if isinstance(rec['confidence_score'], (int, float)) else str(rec['confidence_score'])
-            cell_conf.text = conf_str
-            cell_conf.text_frame.paragraphs[0].font.size = Pt(13)
+            cell_conf.text = str(owner)
+            cell_conf.text_frame.paragraphs[0].font.size = Pt(12)
             cell_conf.text_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
             cell_conf.text_frame.paragraphs[0].font.color.rgb = text_color
             

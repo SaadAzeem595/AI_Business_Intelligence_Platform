@@ -33,7 +33,14 @@ export const API_ENDPOINTS = {
   REPORTS: {
     LIST: "/reports",
     GENERATE: "/reports/generate",
+    DETAIL: (id: string) => `/reports/${id}`,
+    REGENERATE: (id: string) => `/reports/${id}/regenerate`,
+    EMAIL: (id: string) => `/reports/${id}/email`,
+    DOWNLOAD: (id: string, format?: string) => `/reports/${id}/download${format ? `?format=${format}` : ""}`,
     DELETE: (id: string) => `/reports/${id}`,
+    SCHEDULE: "/reports/schedule",
+    SCHEDULES: "/reports/schedules/list",
+    CANCEL_SCHEDULE: (id: string) => `/reports/schedules/${id}`,
   },
   SETTINGS: {
     PROFILE: "/settings/profile",

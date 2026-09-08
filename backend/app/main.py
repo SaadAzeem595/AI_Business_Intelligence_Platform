@@ -218,10 +218,70 @@ async def startup_event():
                             startup_logger.info(f"Dynamically added missing column {col} to projects table")
                         except Exception as e:
                             startup_logger.warning(f"Could not add column {col} to projects: {e}")
+                            
+        def check_and_upgrade_reports_table(sync_conn):
+            # Check reports table
+            try:
+                cols = sync_conn.execute(text("PRAGMA table_info(reports)"))
+                col_names = [row[1] for row in cols.fetchall()]
+            except Exception:
+                try:
+                    cols = sync_conn.execute(text(
+                        "SELECT column_name FROM information_schema.columns WHERE table_name='reports'"
+                    ))
+                    col_names = [row[0] for row in cols.fetchall()]
+                except Exception:
+                    col_names = []
+
+            if col_names:
+                new_cols = {
+                    "project_id": "VARCHAR",
+                    "reporting_period": "VARCHAR DEFAULT 'Last 30 Days'",
+                    "data_sources": "VARCHAR",
+                    "options": "VARCHAR",
+                    "delivery_error": "VARCHAR",
+                    "report_data": "TEXT",
+                }
+                for col, col_type in new_cols.items():
+                    if col not in col_names:
+                        try:
+                            sync_conn.execute(text(f"ALTER TABLE reports ADD COLUMN {col} {col_type}"))
+                            startup_logger.info(f"Dynamically added missing column {col} to reports table")
+                        except Exception as e:
+                            startup_logger.warning(f"Could not add column {col} to reports: {e}")
+
+            # Check report_schedules table
+            try:
+                cols = sync_conn.execute(text("PRAGMA table_info(report_schedules)"))
+                sched_col_names = [row[1] for row in cols.fetchall()]
+            except Exception:
+                try:
+                    cols = sync_conn.execute(text(
+                        "SELECT column_name FROM information_schema.columns WHERE table_name='report_schedules'"
+                    ))
+                    sched_col_names = [row[0] for row in cols.fetchall()]
+                except Exception:
+                    sched_col_names = []
+
+            if sched_col_names:
+                new_sched_cols = {
+                    "project_id": "VARCHAR",
+                    "reporting_period": "VARCHAR DEFAULT 'Last 30 Days'",
+                    "data_sources": "VARCHAR",
+                    "options": "VARCHAR",
+                }
+                for col, col_type in new_sched_cols.items():
+                    if col not in sched_col_names:
+                        try:
+                            sync_conn.execute(text(f"ALTER TABLE report_schedules ADD COLUMN {col} {col_type}"))
+                            startup_logger.info(f"Dynamically added missing column {col} to report_schedules table")
+                        except Exception as e:
+                            startup_logger.warning(f"Could not add column {col} to report_schedules: {e}")
 
         await conn.run_sync(check_and_upgrade_datasets_table)
         await conn.run_sync(check_and_upgrade_users_table)
         await conn.run_sync(check_and_upgrade_projects_table)
+        await conn.run_sync(check_and_upgrade_reports_table)
 
     if settings.DEV_AUTH_BYPASS and not is_prod:
         startup_logger.warning("!" * 80)
