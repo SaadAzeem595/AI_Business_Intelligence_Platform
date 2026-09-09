@@ -124,11 +124,26 @@ apiClient.interceptors.request.use(
 // 2. Inject JWT Authorization header (runs first due to reverse execution in Axios)
 apiClient.interceptors.request.use(
   async (config) => {
-    // If dev auth bypass is active, do not block or try to query Clerk
+    // If dev auth bypass is active, check if a Clerk session is signed in; if not, bypass cleanly
     if (isDevAuthBypass) {
+      const Clerk = typeof window !== "undefined" ? (window as any).Clerk : null;
+      if (Clerk?.session) {
+        try {
+          const token = await Clerk.session.getToken();
+          if (token && config.headers) {
+            config.headers.Authorization = `Bearer ${token}`;
+            return config;
+          }
+        } catch {}
+      }
       return config;
     }
-    const token = await getAccessToken();
+
+    let token = await getAccessToken();
+    if (!token && typeof window !== "undefined") {
+      token = localStorage.getItem("accessToken");
+    }
+
     if (token && config.headers) {
       config.headers.Authorization = `Bearer ${token}`;
     }

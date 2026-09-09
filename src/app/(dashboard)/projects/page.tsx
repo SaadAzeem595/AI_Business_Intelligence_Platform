@@ -26,7 +26,18 @@ import { AnimatePresence, motion } from "framer-motion";
 import { cn } from "@/shared/lib/utils";
 
 export default function ProjectsPage() {
-  const { projects, isLoading, isError, refetch, createProject, isCreating, deleteProject } = useProjects();
+  const {
+    projects,
+    isAuthLoading,
+    authError,
+    isLoading,
+    isError,
+    error,
+    refetch,
+    createProject,
+    isCreating,
+    deleteProject,
+  } = useProjects();
   
   // Create Dialog state
   const [isDialogOpen, setIsDialogOpen] = useState(false);
@@ -68,7 +79,7 @@ export default function ProjectsPage() {
     
     try {
       setIsSubmitting(true);
-      const createdProject = await createProject({
+      await createProject({
         name: name.trim(),
         description: description.trim() || undefined
       });
@@ -82,9 +93,10 @@ export default function ProjectsPage() {
       // Trigger success toast
       setSuccessToast(`Project "${name.trim()}" created successfully.`);
       setTimeout(() => setSuccessToast(null), 4000);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("Failed to create project:", err);
-      const errMsg = err?.response?.data?.detail || err.message || "Failed to create project.";
+      const e = err as { response?: { data?: { detail?: string } }; message?: string };
+      const errMsg = e?.response?.data?.detail || e?.message || "Failed to create project.";
       setApiError(errMsg);
     } finally {
       setIsSubmitting(false);
@@ -102,9 +114,10 @@ export default function ProjectsPage() {
       setProjectToDelete(null);
       setSuccessToast(`Project "${deletedName}" deleted successfully.`);
       setTimeout(() => setSuccessToast(null), 3000);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("Failed to delete project:", err);
-      const errMsg = err?.response?.data?.detail || err.message || "Failed to delete project.";
+      const e = err as { response?: { data?: { detail?: string } }; message?: string };
+      const errMsg = e?.response?.data?.detail || e?.message || "Failed to delete project.";
       setDeleteError(errMsg);
     } finally {
       setIsDeleting(false);
@@ -144,7 +157,7 @@ export default function ProjectsPage() {
             </div>
           </div>
           <div className="mt-2.5">
-            <span className="text-2xl font-bold">{(isLoading || isError) ? "..." : projectsData.length}</span>
+            <span className="text-2xl font-bold">{(isAuthLoading || isLoading || isError) ? "..." : projectsData.length}</span>
             <p className="text-[10px] text-emerald-500 font-medium mt-0.5">🚀 Fully synchronized</p>
           </div>
         </Card>
@@ -158,7 +171,7 @@ export default function ProjectsPage() {
           </div>
           <div className="mt-2.5">
             <span className="text-2xl font-bold">
-              {(isLoading || isError) ? "..." : projectsData.reduce((acc, p) => acc + p.datasetsCount, 0)}
+              {(isAuthLoading || isLoading || isError) ? "..." : projectsData.reduce((acc, p) => acc + p.datasetsCount, 0)}
             </span>
             <p className="text-[10px] text-muted-foreground mt-0.5">DuckDB relational index</p>
           </div>
@@ -173,7 +186,7 @@ export default function ProjectsPage() {
           </div>
           <div className="mt-2.5">
             <span className="text-2xl font-bold">
-              {(isLoading || isError) ? "..." : projectsData.reduce((acc, p) => acc + p.teamSize, 0)}
+              {(isAuthLoading || isLoading || isError) ? "..." : projectsData.reduce((acc, p) => acc + p.teamSize, 0)}
             </span>
             <p className="text-[10px] text-muted-foreground mt-0.5">Cross-workspace roles</p>
           </div>
@@ -194,17 +207,60 @@ export default function ProjectsPage() {
       </div>
 
       {/* Projects List Grid / States */}
-      {isLoading ? (
-        <div className="flex flex-col items-center justify-center py-20 space-y-3 border border-border/40 rounded-xl bg-card/20 select-none">
+      {isAuthLoading ? (
+        <div className="flex flex-col items-center justify-center py-24 space-y-3 border border-border/40 rounded-xl bg-card/20 select-none">
           <RefreshCw className="h-8 w-8 text-brand-indigo animate-spin" />
-          <p className="text-sm font-medium text-muted-foreground">Loading projects...</p>
+          <p className="text-sm font-medium text-muted-foreground">Loading workspace...</p>
+        </div>
+      ) : authError ? (
+        <div className="flex flex-col items-center justify-center py-20 space-y-4 border border-border/40 rounded-xl bg-card/20 select-none">
+          <AlertCircle className="h-8 w-8 text-amber-500" />
+          <div className="text-center space-y-1">
+            <p className="text-sm font-semibold text-foreground">Authentication Required</p>
+            <p className="text-xs text-muted-foreground">Please sign in to access your projects and workspaces.</p>
+          </div>
+          <Link href="/sign-in">
+            <Button size="sm" className="cursor-pointer">
+              Sign In
+            </Button>
+          </Link>
+        </div>
+      ) : isLoading ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 select-none">
+          {Array.from({ length: 6 }).map((_, index) => (
+            <Card key={index} className="bg-card border-border/80 flex flex-col justify-between overflow-hidden animate-pulse">
+              <div>
+                <CardHeader className="pb-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="h-4 w-16 bg-muted/70 rounded-full" />
+                    <div className="h-3 w-20 bg-muted/40 rounded" />
+                  </div>
+                  <div className="h-5 w-3/4 bg-muted/70 rounded mt-3" />
+                  <div className="space-y-1.5 mt-2.5">
+                    <div className="h-3 w-full bg-muted/40 rounded" />
+                    <div className="h-3 w-4/5 bg-muted/30 rounded" />
+                  </div>
+                </CardHeader>
+
+                <CardContent className="py-3 border-t border-border/40 flex items-center justify-between">
+                  <div className="h-3.5 w-28 bg-muted/40 rounded" />
+                  <div className="h-3.5 w-10 bg-muted/40 rounded" />
+                </CardContent>
+              </div>
+
+              <div className="p-4 pt-0 border-t border-border/40 mt-auto flex items-center justify-between gap-2">
+                <div className="h-8 w-8 bg-muted/30 rounded" />
+                <div className="h-8 w-24 bg-muted/50 rounded" />
+              </div>
+            </Card>
+          ))}
         </div>
       ) : isError ? (
         <div className="flex flex-col items-center justify-center py-20 space-y-4 border border-border/40 rounded-xl bg-card/20 select-none">
           <AlertCircle className="h-8 w-8 text-rose-500" />
           <div className="text-center space-y-1">
             <p className="text-sm font-semibold text-foreground">Unable to load projects</p>
-            <p className="text-xs text-muted-foreground">The request to fetch your workspaces failed.</p>
+            <p className="text-xs text-muted-foreground">{error || "The request to fetch your workspaces failed."}</p>
           </div>
           <Button size="sm" onClick={() => refetch()} className="cursor-pointer">
             <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Retry
@@ -216,7 +272,7 @@ export default function ProjectsPage() {
           <div className="space-y-1">
             <h3 className="text-sm font-semibold text-foreground">No projects yet</h3>
             <p className="text-xs text-muted-foreground max-w-xs leading-relaxed">
-              You don't have any workspaces in this organization. Create a project to start importing datasets.
+              You don&apos;t have any workspaces in this organization. Create a project to start importing datasets.
             </p>
           </div>
           <Button size="sm" onClick={() => setIsDialogOpen(true)} className="cursor-pointer">

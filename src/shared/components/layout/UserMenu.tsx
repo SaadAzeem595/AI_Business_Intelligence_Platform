@@ -5,6 +5,7 @@ import Link from "next/link";
 import { User, CreditCard, Settings, LogOut, ChevronDown } from "lucide-react";
 import { useUser, useClerk } from "@clerk/nextjs";
 import { useRouter } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
 
 export function UserMenu() {
   const [isOpen, setIsOpen] = useState(false);
@@ -12,6 +13,7 @@ export function UserMenu() {
   const { user } = useUser();
   const { signOut } = useClerk();
   const router = useRouter();
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -93,6 +95,11 @@ export function UserMenu() {
             <button
               onClick={async () => {
                 setIsOpen(false);
+                queryClient.clear();
+                try {
+                  localStorage.removeItem("accessToken");
+                  localStorage.removeItem("refreshToken");
+                } catch {}
                 await signOut({ redirectUrl: "/sign-in" });
                 router.push("/sign-in");
               }}
