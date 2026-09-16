@@ -28,6 +28,13 @@ from app.features.rag.retrieval.context_builder import ContextBuilder
 from app.features.rag.evaluation.service import RAGEvaluationService
 from app.features.rag.schemas import Chunk
 from app.core.cache import cache_client
+import logging
+logger = logging.getLogger(__name__)
+
+ALLOWED_RAG_EXTENSIONS = {
+    "pdf", "docx", "doc", "txt", "csv", "xlsx", "xls", 
+    "pptx", "html", "htm", "json", "md", "markdown"
+}
 
 router = APIRouter(prefix="/rag", tags=["RAG Knowledge Layer Operations"])
 
@@ -187,8 +194,39 @@ async def ingest_document(
         target_ws = workspace.strip() if (workspace and workspace.strip()) else current_user.workspace_id
         doc_id = str(uuid.uuid4())
         
+        # 0. Validate File Extension and MIME type
+        ext = filename.split(".")[-1].lower() if "." in filename else ""
+        if ext not in ALLOWED_RAG_EXTENSIONS:
+            logger.warning(f"RAG_INGEST_VALIDATION: Rejected unsupported extension '.{ext}' for '{filename}'")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": "UNSUPPORTED_FILE_TYPE",
+                    "message": f"File extension '.{ext}' is not supported. Supported extensions: {', '.join(sorted(ALLOWED_RAG_EXTENSIONS))}.",
+                    "filename": filename
+                }
+            )
+
+        mime_type = file.content_type or ""
+        dangerous_mimes = [
+            "application/x-msdownload", "application/x-dosexec", "application/x-sh",
+            "application/x-bat", "application/x-executable", "application/x-msdos-program"
+        ]
+        if any(d in mime_type.lower() for d in dangerous_mimes):
+            logger.warning(f"RAG_INGEST_VALIDATION: Rejected dangerous MIME type '{mime_type}' for '{filename}'")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": "UNSUPPORTED_FILE_TYPE",
+                    "message": f"Files of MIME type '{mime_type}' are not permitted for security reasons.",
+                    "filename": filename
+                }
+            )
+
+        logger.info(f"RAG_INGEST_VALIDATION: Validated file '{filename}' (ext={ext}, size={file_size}B, workspace={target_ws})")
+
         # Persist tabular files into uploads directory so DuckDB analytical engine can query directly
-        if any(filename.lower().endswith(ext) for ext in [".csv", ".xlsx", ".xls", ".json", ".parquet"]):
+        if any(filename.lower().endswith(t_ext) for t_ext in [".csv", ".xlsx", ".xls", ".json", ".parquet"]):
             try:
                 uploads_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
                 os.makedirs(uploads_dir, exist_ok=True)
@@ -206,6 +244,7 @@ async def ingest_document(
                 logger.warning(f"Could not persist uploaded file to uploads directory: {save_err}")
                 
         # 1. Parse document
+        logger.info(f"RAG_INGEST_PARSING: Parsing file '{filename}'...")
         raw_text = parser_svc.parse_file(content_bytes, filename)
         
         # 2. Clean text
@@ -213,8 +252,10 @@ async def ingest_document(
         if not clean_text:
             raise ValueError("Document did not contain any extractable text.")
             
-        # 3. Chunk text (heading & tabular aware)
+        # 3. Chunk text (heading & tabular & markdown aware)
+        logger.info(f"RAG_INGEST_CHUNKING: Chunking text for '{filename}'...")
         chunk_dicts = chunker_svc.chunk_by_heading(clean_text)
+        logger.info(f"RAG_INGEST_CHUNKING: Generated {len(chunk_dicts)} chunks for '{filename}'")
         
         # Parse tags
         tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
@@ -222,10 +263,13 @@ async def ingest_document(
         chunks_to_insert = []
         
         # 4. Batch generate embeddings and create Chunk objects
+        logger.info(f"RAG_INGEST_EMBEDDING: Generating embeddings for {len(chunk_dicts)} chunks...")
         chunk_texts = [cd["text"] for cd in chunk_dicts]
         chunk_embeddings = embeddings.get_embeddings(chunk_texts)
         
-        doc_ext = filename.split(".")[-1].upper() if "." in filename else "TXT"
+        doc_ext = "MD" if ext in ("md", "markdown") else (filename.split(".")[-1].upper() if "." in filename else "TXT")
+        effective_mime = mime_type if mime_type else ("text/markdown" if ext in ("md", "markdown") else "text/plain")
+
         for i, cd in enumerate(chunk_dicts):
             chunk_text = cd["text"]
             heading = cd["heading"]
@@ -245,7 +289,13 @@ async def ingest_document(
                 row_start=cd.get("row_start"),
                 row_end=cd.get("row_end"),
                 columns=cd.get("columns", []),
-                table_name=cd.get("table_name")
+                table_name=cd.get("table_name"),
+                file_type=ext,
+                mime_type=effective_mime,
+                project_id=target_ws,
+                chunk_index=i,
+                heading_path=cd.get("heading_path", heading),
+                content_type=cd.get("content_type", "text/markdown" if ext in ("md", "markdown") else "text/plain")
             )
             
             chunk_obj = Chunk(
@@ -257,7 +307,17 @@ async def ingest_document(
             )
             chunks_to_insert.append(chunk_obj)
             
-        # 5. Index chunks
+        # 5. Index chunks (replace prior document version with same filename in this workspace if exists)
+        try:
+            existing_docs = db_repo.list_documents(workspace=target_ws)
+            for ed in existing_docs:
+                if ed.get("filename") == filename:
+                    logger.info(f"RAG_INGEST: Replacing previous version of '{filename}' (doc_id={ed['doc_id']})")
+                    db_repo.delete_by_document(ed["doc_id"])
+        except Exception as dedup_err:
+            logger.warning(f"Could not check/clean prior document versions: {dedup_err}")
+
+        logger.info(f"RAG_INGEST_INDEXING: Inserting {len(chunks_to_insert)} chunks into DuckDB vector store...")
         db_repo.insert_chunks(chunks_to_insert)
         
         # Invalidate RAG retrieve cache
@@ -272,7 +332,10 @@ async def ingest_document(
             "workspace": target_ws,
             "message": f"Successfully parsed and indexed {len(chunks_to_insert)} chunks into project '{target_ws}'."
         }
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.error(f"RAG_INGEST_ERROR: Ingestion failed for '{file.filename if file else 'unknown'}': {e}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={

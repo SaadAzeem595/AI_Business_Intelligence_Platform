@@ -27,7 +27,12 @@ class MockReranker(BaseReranker):
         "june": "jun", "july": "jul", "august": "aug", "september": "sep",
         "october": "oct", "november": "nov", "december": "dec"
     }
-    STOP_WORDS = {"what", "was", "the", "in", "which", "had", "do", "show", "over", "time", "a", "an", "is", "are", "of", "to", "for", "with", "me", "tell"}
+    STOP_WORDS = {
+        "what", "was", "the", "in", "which", "had", "do", "show", "over", "time", 
+        "a", "an", "is", "are", "of", "to", "for", "with", "me", "tell", "from",
+        "how", "does", "mean", "dataset", "datasets", "table", "tables", "contains",
+        "contain", "between", "difference", "related"
+    }
 
     def rerank(self, query: str, chunks: List[Chunk], intent: Optional[str] = None) -> List[Tuple[Chunk, float]]:
         """Computes query coverage, column matching, and semantic density relevance score (0.0 to 1.0)."""
@@ -41,7 +46,8 @@ class MockReranker(BaseReranker):
         
         results = []
         for chunk in chunks:
-            c_text_lower = chunk.text.lower()
+            heading_str = f"{chunk.metadata.heading or ''} {getattr(chunk.metadata, 'heading_path', '') or ''}".lower()
+            c_text_lower = f"{heading_str} {chunk.text.lower()}".strip()
             c_words_set = set(c_text_lower.split())
             c_type = getattr(chunk.metadata, "chunk_type", "text") or "text"
             chunk_cols = [c.lower() for c in (getattr(chunk.metadata, "columns", []) or [])]
@@ -53,8 +59,12 @@ class MockReranker(BaseReranker):
                 col_matches = 0
                 for w in target_words:
                     alias = self.MONTH_ALIASES.get(w, w)
-                    matched_in_text = (w in c_words_set or alias in c_words_set or w in c_text_lower or alias in c_text_lower)
-                    matched_in_cols = any(w in col for col in chunk_cols)
+                    stem = w[:-3] if len(w) > 6 and w.endswith("ies") else (w[:-1] if len(w) > 4 and w.endswith("s") else w)
+                    matched_in_text = (
+                        w in c_words_set or alias in c_words_set or w in c_text_lower or alias in c_text_lower
+                        or stem in c_text_lower
+                    )
+                    matched_in_cols = any(w in col or stem in col for col in chunk_cols)
                     if matched_in_text or matched_in_cols:
                         matches += 1
                     if matched_in_cols:
@@ -277,12 +287,15 @@ class RetrievalService:
         else:
             candidate_tuples = self.reciprocal_rank_fusion(vector_res, keyword_res)
             
-        # Deduplicate candidates by chunk ID and content
+        # Deduplicate candidates by chunk ID and text content (prevents duplicate upload saturation)
         seen_ids = set()
+        seen_texts = set()
         dedup_candidates = []
         for chunk, score in candidate_tuples:
-            if chunk.id not in seen_ids:
+            text_key = (getattr(chunk.metadata, "filename", "") or "", chunk.text.strip())
+            if chunk.id not in seen_ids and text_key not in seen_texts:
                 seen_ids.add(chunk.id)
+                seen_texts.add(text_key)
                 dedup_candidates.append((chunk, score))
                 
         chunks = [item[0] for item in dedup_candidates]

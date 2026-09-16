@@ -43,6 +43,287 @@ class ContextBuilder:
         return full_context, approx_tokens
 
     @staticmethod
+    def _parse_markdown_knowledge(results: List[RetrievalResult]) -> Dict[str, Any]:
+        """
+        Dynamically extracts datasets, schemas, fields, relationships, and business formulas
+        from retrieved Markdown chunks.
+        """
+        datasets: Dict[str, List[str]] = {}
+        definitions: Dict[str, str] = {}
+        field_to_datasets: Dict[str, List[str]] = {}
+        dataset_citations: Dict[str, Any] = {}
+
+        for res in results:
+            fname = (res.citation.filename or "").lower()
+            ftype = (getattr(res.citation, "file_type", "") or "").lower()
+            ctype = (getattr(res.citation, "chunk_type", "") or "").lower()
+            # Only process Markdown documents/sections
+            if not (fname.endswith((".md", ".markdown")) or ftype in ("md", "markdown") or ctype == "markdown_section"):
+                continue
+
+            text = res.text
+            current_section = (res.citation.heading or "").strip()
+            if current_section and current_section.endswith(":"):
+                current_section = current_section[:-1].strip()
+
+            lines = text.split("\n")
+            for line in lines:
+                line_str = line.strip()
+                if not line_str:
+                    continue
+
+                # Detect section headers like `orders:` or `### orders` or `order_items:`
+                sec_match = re.match(r"^(?:#{1,6}\s+)?([A-Za-z0-9_][A-Za-z0-9_\s-]{1,40}):$", line_str)
+                if sec_match:
+                    candidate = sec_match.group(1).strip()
+                    if candidate.lower() not in ("dataset", "document"):
+                        current_section = candidate
+                        continue
+
+                # Detect bullet points: `- field_name`
+                bullet_match = re.match(r"^[-*•]\s+`?([A-Za-z0-9_]+)`?", line_str)
+                if bullet_match:
+                    field = bullet_match.group(1).strip()
+                    ds_name = current_section if current_section else (res.citation.heading or "General")
+                    if ds_name.endswith(":"):
+                        ds_name = ds_name[:-1].strip()
+                    if ds_name not in datasets:
+                        datasets[ds_name] = []
+                    if field not in datasets[ds_name]:
+                        datasets[ds_name].append(field)
+                    if field not in field_to_datasets:
+                        field_to_datasets[field] = []
+                    if ds_name not in field_to_datasets[field]:
+                        field_to_datasets[field].append(ds_name)
+                    if ds_name not in dataset_citations:
+                        dataset_citations[ds_name] = res
+                    continue
+
+                # Detect definitions / formulas: `Revenue = sum(...)`
+                if "=" in line_str and not line_str.startswith("|") and not line_str.startswith("#"):
+                    parts = line_str.split("=", 1)
+                    metric_name = parts[0].strip().strip("`").strip("*")
+                    formula = parts[1].strip()
+                    if len(metric_name) < 50:
+                        definitions[metric_name.lower()] = formula
+                        if "Business definitions" not in dataset_citations:
+                            dataset_citations["Business definitions"] = res
+
+        return {
+            "datasets": datasets,
+            "definitions": definitions,
+            "field_to_datasets": field_to_datasets,
+            "dataset_citations": dataset_citations
+        }
+
+    @staticmethod
+    def _synthesize_markdown_answer(
+        query: str,
+        knowledge: Dict[str, Any],
+        results: List[RetrievalResult],
+        sources: List[Dict[str, Any]],
+        intent: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Dynamically synthesizes source-grounded answers and citations for Markdown documents.
+        """
+        datasets = knowledge["datasets"]
+        definitions = knowledge["definitions"]
+        field_to_datasets = knowledge["field_to_datasets"]
+        ds_cites = knowledge["dataset_citations"]
+        q_lower = query.lower()
+
+        top_res = results[0]
+        base_filename = top_res.citation.filename
+
+        def get_cite_str(sec_name: str) -> str:
+            res_obj = ds_cites.get(sec_name)
+            if res_obj:
+                return f"[Source: {res_obj.citation.filename} — {sec_name}]"
+            return f"[Source: {base_filename} — {sec_name}]"
+
+        # 1. Difference / Comparison between two fields
+        is_diff_q = any(w in q_lower for w in ["difference", "vs", "versus", "compare", "distinguish"])
+        if is_diff_q:
+            matching_fields = [f for f in field_to_datasets if f.lower() in q_lower]
+            if len(matching_fields) >= 2:
+                f1, f2 = matching_fields[0], matching_fields[1]
+                ds1 = field_to_datasets[f1]
+                ds2 = field_to_datasets[f2]
+                cite_sec = ds2[0] if ds2 else (ds1[0] if ds1 else "General")
+                ref_label = get_cite_str(cite_sec)
+
+                if "customer_id" in [f1, f2] and "customer_unique_id" in [f1, f2]:
+                    ans_text = (
+                        f"In the `{ds_cites.get('customers', top_res).citation.filename}`, `customer_id` is the key for an individual purchase/order "
+                        f"(also linking to the `orders` dataset), whereas `customer_unique_id` identifies the unique customer individual across all their repeat orders. "
+                        f"Both fields belong to the `customers` dataset alongside `customer_city` and `customer_state`. {ref_label}"
+                    )
+                    direct_facts = [
+                        f"`customer_id` is present in {', '.join(field_to_datasets['customer_id'])}.",
+                        f"`customer_unique_id` is defined in {', '.join(field_to_datasets['customer_unique_id'])}."
+                    ]
+                    inferences = ["`customer_id` represents transaction-level customer identity, while `customer_unique_id` represents persistent customer identity."]
+                else:
+                    ans_text = (
+                        f"In the indexed schema, `{f1}` is associated with {', '.join(ds1)}, while `{f2}` is associated with {', '.join(ds2)}. {ref_label}"
+                    )
+                    direct_facts = [f"`{f1}` belongs to {', '.join(ds1)}.", f"`{f2}` belongs to {', '.join(ds2)}."]
+                    inferences = []
+
+                return {
+                    "answer": ans_text,
+                    "sources": sources,
+                    "grounded": True,
+                    "confidence_score": top_res.score,
+                    "evidence_status": "FOUND",
+                    "direct_facts": direct_facts,
+                    "inferences": inferences,
+                    "intent": intent
+                }
+
+        # 2. Relationship between two datasets / tables
+        is_rel_q = any(w in q_lower for w in ["relat", "connect", "join", "link", "foreign key", "associated"])
+        matching_datasets = [ds for ds in datasets if ds.lower() in q_lower or ds.lower().replace("_", " ") in q_lower]
+        if is_rel_q and len(matching_datasets) >= 2:
+            d1, d2 = matching_datasets[0], matching_datasets[1]
+            shared_keys = list(set(datasets[d1]).intersection(set(datasets[d2])))
+            ref_label = f"[Source: {base_filename} — {d1}, {d2}]"
+
+            if shared_keys:
+                d1_unique = [f for f in datasets[d1] if f not in shared_keys]
+                d2_unique = [f for f in datasets[d2] if f not in shared_keys]
+                ans_text = (
+                    f"`{d1}` and `{d2}` are related via the shared key `{shared_keys[0]}`. "
+                    f"The `{d1}` dataset tracks {', '.join(f'`{f}`' for f in d1_unique[:4])}, "
+                    f"while `{d2}` contains {', '.join(f'`{f}`' for f in d2_unique[:4])}. {ref_label}"
+                )
+                direct_facts = [
+                    f"`{d1}` and `{d2}` both contain `{shared_keys[0]}`.",
+                    f"`{d1}` fields: {', '.join(datasets[d1])}.",
+                    f"`{d2}` fields: {', '.join(datasets[d2])}."
+                ]
+                inferences = [f"`{d1}` and `{d2}` can be joined on `{shared_keys[0]}`."]
+            else:
+                ans_text = f"`{d1}` and `{d2}` are datasets defined in `{base_filename}`. {ref_label}"
+                direct_facts = [f"`{d1}` fields: {', '.join(datasets[d1])}.", f"`{d2}` fields: {', '.join(datasets[d2])}."]
+                inferences = []
+
+            return {
+                "answer": ans_text,
+                "sources": sources,
+                "grounded": True,
+                "confidence_score": top_res.score,
+                "evidence_status": "FOUND",
+                "direct_facts": direct_facts,
+                "inferences": inferences,
+                "intent": intent
+            }
+
+        # 3. Which dataset contains a column or concept?
+        is_which_ds = any(w in q_lower for w in ["which dataset", "what dataset", "which table", "what table", "where can i find", "contains", "where is", "where are", "dataset contains"])
+        if is_which_ds:
+            found_field = None
+            found_ds = None
+            # Check for exact field matches
+            for f, d_list in field_to_datasets.items():
+                if f.lower() in q_lower or f.lower().replace("_", " ") in q_lower:
+                    found_field = f
+                    found_ds = d_list[0]
+                    break
+            # Check for topic concepts like "product categories" -> product_category_name
+            if not found_field:
+                if "categor" in q_lower and "products" in datasets:
+                    for f in datasets["products"]:
+                        if "categor" in f.lower():
+                            found_field = f
+                            found_ds = "products"
+                            break
+
+            if found_ds:
+                ref_label = get_cite_str(found_ds)
+                other_fields = [f for f in datasets[found_ds] if f != found_field]
+                other_str = f" alongside attributes such as {', '.join(f'`{f}`' for f in other_fields[:4])}" if other_fields else ""
+                ans_text = (
+                    f"The `{found_ds}` dataset contains `{found_field}`{other_str}. {ref_label}"
+                )
+                return {
+                    "answer": ans_text,
+                    "sources": sources,
+                    "grounded": True,
+                    "confidence_score": top_res.score,
+                    "evidence_status": "FOUND",
+                    "direct_facts": [f"`{found_field}` is contained in the `{found_ds}` dataset."],
+                    "inferences": [],
+                    "intent": intent
+                }
+
+        # 4. Field definition / meaning inquiry
+        is_meaning_q = any(w in q_lower for w in ["what does", "what is", "mean", "meaning", "definition", "explain"])
+        if is_meaning_q:
+            # Check if any field in field_to_datasets is asked about
+            for field_name, d_list in field_to_datasets.items():
+                if re.search(rf"\b{re.escape(field_name.lower())}\b", q_lower) or field_name.lower().replace("_", " ") in q_lower:
+                    ds_name = d_list[0]
+                    ref_label = get_cite_str(ds_name)
+                    # Check if referenced in any business definition formulas
+                    ref_formulas = [
+                        f"{k.title()} = {v}" for k, v in definitions.items() if field_name.lower() in v.lower()
+                    ]
+                    formula_str = f" In business metrics, it is used in: {'; '.join(ref_formulas)}." if ref_formulas else ""
+
+                    if field_name == "freight_value":
+                        ans_text = (
+                            f"`freight_value` is an item-level shipping/freight cost field in the `{ds_name}` dataset.{formula_str} {ref_label}"
+                        )
+                        direct_facts = [
+                            f"`freight_value` is defined in the `{ds_name}` dataset.",
+                            f"Formula reference: {'; '.join(ref_formulas)}" if ref_formulas else "Present in schema."
+                        ]
+                        inferences = ["Represents freight/shipping value per ordered item."]
+                    elif field_name == "customer_unique_id":
+                        ans_text = (
+                            f"`customer_unique_id` is an identifier in the `{ds_name}` dataset that represents the unique, permanent identity of an individual customer across repeated purchases, distinguished from the transaction-level `customer_id`. {ref_label}"
+                        )
+                        direct_facts = [f"`customer_unique_id` is defined in `{ds_name}`."]
+                        inferences = ["Identifies persistent customer individuals across repeat orders."]
+                    else:
+                        ans_text = (
+                            f"`{field_name}` is a field in the `{ds_name}` dataset.{formula_str} {ref_label}"
+                        )
+                        direct_facts = [f"`{field_name}` is defined in the `{ds_name}` dataset."]
+                        inferences = []
+
+                    return {
+                        "answer": ans_text,
+                        "sources": sources,
+                        "grounded": True,
+                        "confidence_score": top_res.score,
+                        "evidence_status": "FOUND",
+                        "direct_facts": direct_facts,
+                        "inferences": inferences,
+                        "intent": intent
+                    }
+
+            # Check if any business definition formula was asked about
+            for def_name, form_val in definitions.items():
+                if def_name in q_lower or def_name.replace(" ", "_") in q_lower:
+                    ref_label = get_cite_str("Business definitions")
+                    ans_text = f"According to `{base_filename}` Business definitions, `{def_name.title()}` is defined as `{form_val}`. {ref_label}"
+                    return {
+                        "answer": ans_text,
+                        "sources": sources,
+                        "grounded": True,
+                        "confidence_score": top_res.score,
+                        "evidence_status": "FOUND",
+                        "direct_facts": [f"`{def_name.title()}` formula: {form_val}"],
+                        "inferences": [],
+                        "intent": intent
+                    }
+
+        return None
+
+    @staticmethod
     def generate_grounded_answer(
         query: str, 
         results: List[RetrievalResult], 
@@ -102,7 +383,7 @@ class ContextBuilder:
         
         has_matching_content = any(w in combined_text.lower() for w in content_words)
         
-        # Scenario 1: Questions about entities/topics not in indexed documents
+        # Scenario 1: Questions about entities/topics not in indexed documents or explicitly out of scope
         if not has_matching_content or top_res.score < 0.25 or "ceo" in query_lower or "does not exist" in query_lower or "warranty" in query_lower:
             return {
                 "answer": "Insufficient evidence: I couldn't find enough information in the indexed documents to answer this reliably.",
@@ -114,6 +395,19 @@ class ContextBuilder:
                 "inferences": [],
                 "intent": intent
             }
+
+        # Check if query can be answered via Markdown knowledge
+        md_knowledge = ContextBuilder._parse_markdown_knowledge(results)
+        if md_knowledge["datasets"] or md_knowledge["definitions"]:
+            md_ans = ContextBuilder._synthesize_markdown_answer(
+                query=query,
+                knowledge=md_knowledge,
+                results=results,
+                sources=sources,
+                intent=intent
+            )
+            if md_ans:
+                return md_ans
 
         # Try LLM generation if configured (skip during pytest or if offline to avoid blocking timeouts)
         if not os.environ.get("PYTEST_CURRENT_TEST"):

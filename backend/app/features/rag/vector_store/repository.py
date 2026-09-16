@@ -104,8 +104,8 @@ class InMemoryVectorRepository(BaseVectorRepository):
         if not filtered_chunks or not query_text.strip():
             return []
             
-        # Implement keyword search using standard TF-IDF similarity
-        texts = [c.text for c in filtered_chunks]
+        # Implement keyword search using standard TF-IDF similarity (enriching text with heading and heading_path)
+        texts = [f"{c.metadata.heading or ''} {getattr(c.metadata, 'heading_path', '') or ''} {c.text}" for c in filtered_chunks]
         try:
             vectorizer = TfidfVectorizer(stop_words='english')
             tfidf_matrix = vectorizer.fit_transform(texts)
@@ -122,7 +122,8 @@ class InMemoryVectorRepository(BaseVectorRepository):
             # Fallback to simple substring match score if TF-IDF fails (e.g. vocabulary size too small)
             results = []
             for c in filtered_chunks:
-                matches = sum(1 for w in query_text.lower().split() if w in c.text.lower())
+                searchable = f"{c.metadata.heading or ''} {getattr(c.metadata, 'heading_path', '') or ''} {c.text}".lower()
+                matches = sum(1 for w in query_text.lower().split() if w in searchable)
                 if matches > 0:
                     results.append((c, float(matches / len(query_text.split()))))
             results = sorted(results, key=lambda x: x[1], reverse=True)
@@ -207,7 +208,13 @@ class DuckDBVectorRepository(BaseVectorRepository):
                 row_start INTEGER,
                 row_end INTEGER,
                 columns VARCHAR,
-                table_name VARCHAR
+                table_name VARCHAR,
+                file_type VARCHAR,
+                mime_type VARCHAR,
+                project_id VARCHAR,
+                chunk_index INTEGER,
+                heading_path VARCHAR,
+                content_type VARCHAR
             )
         """)
         for col_def in [
@@ -216,7 +223,13 @@ class DuckDBVectorRepository(BaseVectorRepository):
             "row_start INTEGER",
             "row_end INTEGER",
             "columns VARCHAR",
-            "table_name VARCHAR"
+            "table_name VARCHAR",
+            "file_type VARCHAR",
+            "mime_type VARCHAR",
+            "project_id VARCHAR",
+            "chunk_index INTEGER",
+            "heading_path VARCHAR",
+            "content_type VARCHAR"
         ]:
             try:
                 conn.execute(f"ALTER TABLE rag_chunks ADD COLUMN {col_def}")
@@ -314,8 +327,8 @@ class DuckDBVectorRepository(BaseVectorRepository):
                     cols_str = json.dumps(chunk.metadata.columns) if getattr(chunk.metadata, "columns", None) else None
                     conn.execute("""
                         INSERT OR REPLACE INTO rag_chunks (
-                            id, doc_id, text, embedding, filename, author, upload_date, workspace, page, heading, tags, document_type, file_size, chunk_type, row_start, row_end, columns, table_name
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            id, doc_id, text, embedding, filename, author, upload_date, workspace, page, heading, tags, document_type, file_size, chunk_type, row_start, row_end, columns, table_name, file_type, mime_type, project_id, chunk_index, heading_path, content_type
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         chunk.id,
                         chunk.doc_id,
@@ -334,7 +347,13 @@ class DuckDBVectorRepository(BaseVectorRepository):
                         getattr(chunk.metadata, "row_start", None),
                         getattr(chunk.metadata, "row_end", None),
                         cols_str,
-                        getattr(chunk.metadata, "table_name", None)
+                        getattr(chunk.metadata, "table_name", None),
+                        getattr(chunk.metadata, "file_type", None),
+                        getattr(chunk.metadata, "mime_type", None),
+                        getattr(chunk.metadata, "project_id", None) or chunk.metadata.workspace,
+                        getattr(chunk.metadata, "chunk_index", None),
+                        getattr(chunk.metadata, "heading_path", None),
+                        getattr(chunk.metadata, "content_type", None)
                     ))
                 conn.execute("COMMIT")
             except Exception:
@@ -376,6 +395,12 @@ class DuckDBVectorRepository(BaseVectorRepository):
             except Exception:
                 cols_list = [c.strip() for c in cols_val.split(",") if c.strip()]
         t_name = row[17] if len(row) > 17 else None
+        f_type = row[18] if len(row) > 18 else None
+        m_type = row[19] if len(row) > 19 else None
+        p_id = row[20] if len(row) > 20 else None
+        c_idx = row[21] if len(row) > 21 else None
+        h_path = row[22] if len(row) > 22 else None
+        c_type = row[23] if len(row) > 23 else None
 
         meta = DocumentMetadata(
             filename=row[4],
@@ -391,7 +416,13 @@ class DuckDBVectorRepository(BaseVectorRepository):
             row_start=r_start,
             row_end=r_end,
             columns=cols_list,
-            table_name=t_name
+            table_name=t_name,
+            file_type=f_type,
+            mime_type=m_type,
+            project_id=p_id,
+            chunk_index=c_idx,
+            heading_path=h_path,
+            content_type=c_type
         )
         emb = json.loads(row[3]) if row[3] else None
         return Chunk(
@@ -447,7 +478,7 @@ class DuckDBVectorRepository(BaseVectorRepository):
                 
             chunks = [self._row_to_chunk(row) for row in res]
             
-            texts = [c.text for c in chunks]
+            texts = [f"{c.metadata.heading or ''} {getattr(c.metadata, 'heading_path', '') or ''} {c.text}" for c in chunks]
             try:
                 vectorizer = TfidfVectorizer(stop_words='english')
                 tfidf_matrix = vectorizer.fit_transform(texts)
@@ -463,7 +494,8 @@ class DuckDBVectorRepository(BaseVectorRepository):
             except Exception:
                 results = []
                 for c in chunks:
-                    matches = sum(1 for w in query_text.lower().split() if w in c.text.lower())
+                    searchable = f"{c.metadata.heading or ''} {getattr(c.metadata, 'heading_path', '') or ''} {c.text}".lower()
+                    matches = sum(1 for w in query_text.lower().split() if w in searchable)
                     if matches > 0:
                         results.append((c, float(matches / len(query_text.split()))))
                 results = sorted(results, key=lambda x: x[1], reverse=True)

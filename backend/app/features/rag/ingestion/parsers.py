@@ -27,7 +27,26 @@ class TextParser(BaseParser):
 
 class MarkdownParser(BaseParser):
     def parse(self, file_bytes: bytes, filename: str, ocr_provider: Optional[BaseOCRProvider] = None) -> str:
-        return file_bytes.decode("utf-8", errors="ignore")
+        # Robust decoding handling UTF-8 BOM, standard UTF-8, and latin-1 fallback
+        text = ""
+        for encoding in ("utf-8-sig", "utf-8", "latin-1"):
+            try:
+                text = file_bytes.decode(encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+        if not text:
+            text = file_bytes.decode("utf-8", errors="replace")
+
+        # Standardize line breaks
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        
+        # Clean redundant whitespace while preserving Markdown structural elements:
+        # headings (#, ##, setext ===/---), tables (| ... |), lists (-, *, 1.),
+        # section markers (e.g., "orders:"), and code fences (```).
+        lines = [line.rstrip() for line in text.split("\n")]
+        cleaned_text = "\n".join(lines).strip()
+        return cleaned_text
 
 
 class PDFParser(BaseParser):

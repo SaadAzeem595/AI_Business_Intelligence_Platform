@@ -174,6 +174,219 @@ class ChunkerService:
                 
         return chunks
 
+    def chunk_markdown(self, text: str) -> List[Dict[str, Any]]:
+        """
+        Intelligently chunks Markdown documents with hierarchical heading path tracking,
+        section marker detection (e.g., 'orders:', 'Business definitions:'),
+        table preservation, and code block grouping.
+        """
+        if not text or not text.strip():
+            return []
+
+        lines = text.split("\n")
+        sections = []  # List of dicts: {"heading": str, "heading_path": str, "lines": List[str]}
+        heading_stack: List[tuple] = []  # (level, title)
+
+        current_heading = "Introduction"
+        current_path = "Introduction"
+        current_lines: List[str] = []
+        in_code_block = False
+
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            stripped = line.strip()
+
+            # Track fenced code blocks (do not treat lines inside code blocks as headings)
+            if stripped.startswith("```"):
+                in_code_block = not in_code_block
+                current_lines.append(line)
+                i += 1
+                continue
+
+            if in_code_block:
+                current_lines.append(line)
+                i += 1
+                continue
+
+            # Detect Setext headings (e.g. Title\n=== or Subtitle\n---)
+            is_setext = False
+            if i + 1 < len(lines) and stripped and not stripped.startswith(("#", "-", "*", ">", "|", "```")):
+                next_stripped = lines[i + 1].strip()
+                if re.match(r"^={3,}$", next_stripped):
+                    is_setext = True
+                    level = 1
+                    title = stripped
+                    i += 2  # consume both header line and underline
+                elif re.match(r"^-{3,}$", next_stripped) and not stripped.startswith("---"):
+                    is_setext = True
+                    level = 2
+                    title = stripped
+                    i += 2
+            
+            if is_setext:
+                if current_lines:
+                    sections.append({
+                        "heading": current_heading,
+                        "heading_path": current_path,
+                        "text": "\n".join(current_lines).strip()
+                    })
+                    current_lines = []
+                while heading_stack and heading_stack[-1][0] >= level:
+                    heading_stack.pop()
+                heading_stack.append((level, title))
+                current_heading = title
+                current_path = " > ".join([h[1] for h in heading_stack])
+                continue
+
+            # Detect ATX Markdown headers: #, ##, ###, ####, #####, ######
+            if re.match(r"^#{1,6}\s+", stripped):
+                header_match = re.match(r"^(#{1,6})\s+(.+)$", stripped)
+                if header_match:
+                    level = len(header_match.group(1))
+                    title = header_match.group(2).strip()
+
+                    if current_lines:
+                        sections.append({
+                            "heading": current_heading,
+                            "heading_path": current_path,
+                            "text": "\n".join(current_lines).strip()
+                        })
+                        current_lines = []
+
+                    while heading_stack and heading_stack[-1][0] >= level:
+                        heading_stack.pop()
+                    heading_stack.append((level, title))
+                    current_heading = title
+                    current_path = " > ".join([h[1] for h in heading_stack])
+                    current_lines.append(line)
+                    i += 1
+                    continue
+
+            # Detect Slide / Sheet headers: --- Slide 1 ---
+            if stripped.startswith("--- ") and stripped.endswith(" ---"):
+                title = stripped.replace("---", "").strip()
+                level = 2
+                if current_lines:
+                    sections.append({
+                        "heading": current_heading,
+                        "heading_path": current_path,
+                        "text": "\n".join(current_lines).strip()
+                    })
+                    current_lines = []
+                while heading_stack and heading_stack[-1][0] >= level:
+                    heading_stack.pop()
+                heading_stack.append((level, title))
+                current_heading = title
+                current_path = " > ".join([h[1] for h in heading_stack])
+                current_lines.append(line)
+                i += 1
+                continue
+
+            # Detect Dataset / Document prefix header (e.g., "Dataset: Olist Brazilian E-Commerce")
+            if re.match(r"^(Dataset|Document|Database):\s*(.+)$", stripped, re.IGNORECASE):
+                doc_match = re.match(r"^(Dataset|Document|Database):\s*(.+)$", stripped, re.IGNORECASE)
+                level = 1
+                title = doc_match.group(2).strip() if doc_match else stripped
+                if current_lines:
+                    sections.append({
+                        "heading": current_heading,
+                        "heading_path": current_path,
+                        "text": "\n".join(current_lines).strip()
+                    })
+                    current_lines = []
+                while heading_stack and heading_stack[-1][0] >= level:
+                    heading_stack.pop()
+                heading_stack.append((level, title))
+                current_heading = title
+                current_path = " > ".join([h[1] for h in heading_stack])
+                current_lines.append(line)
+                i += 1
+                continue
+
+            # Detect section markers ending with colon: e.g. "orders:", "order_items:", "Business definitions:"
+            # Must not be a list item (starts with -, *, 1.) or a URL or sentence
+            is_section_marker = (
+                stripped.endswith(":") and
+                len(stripped) <= 60 and
+                not stripped.startswith(("-", "*", "+", ">", "|", "http")) and
+                not " " in stripped.rstrip(":") and "_" in stripped or  # e.g., orders:, order_items:
+                re.match(r"^[A-Za-z][A-Za-z0-9_\s-]{1,40}:$", stripped)
+            )
+
+            if is_section_marker:
+                title = stripped.rstrip(":").strip()
+                level = 2 if heading_stack else 1
+                if current_lines:
+                    sections.append({
+                        "heading": current_heading,
+                        "heading_path": current_path,
+                        "text": "\n".join(current_lines).strip()
+                    })
+                    current_lines = []
+                while heading_stack and heading_stack[-1][0] >= level:
+                    heading_stack.pop()
+                heading_stack.append((level, title))
+                current_heading = title
+                current_path = " > ".join([h[1] for h in heading_stack])
+                current_lines.append(line)
+                i += 1
+                continue
+
+            current_lines.append(line)
+            i += 1
+
+        if current_lines:
+            sections.append({
+                "heading": current_heading,
+                "heading_path": current_path,
+                "text": "\n".join(current_lines).strip()
+            })
+
+        chunks = []
+        for sect in sections:
+            sect_text = sect["text"].strip()
+            if not sect_text:
+                continue
+
+            heading = sect["heading"]
+            h_path = sect["heading_path"]
+
+            # If section text fits in chunk size, keep intact to prevent meaningless fragments
+            if len(sect_text) <= self.chunk_size * 1.2:
+                chunks.append({
+                    "text": sect_text,
+                    "heading": heading,
+                    "heading_path": h_path,
+                    "chunk_type": "markdown_section",
+                    "content_type": "text/markdown"
+                })
+            else:
+                # Break large section by paragraphs or fixed size
+                sub_chunks = self.chunk_fixed_size(sect_text)
+                for sub_idx, sub_t in enumerate(sub_chunks):
+                    chunks.append({
+                        "text": sub_t,
+                        "heading": heading if sub_idx == 0 else f"{heading} (Part {sub_idx + 1})",
+                        "heading_path": h_path,
+                        "chunk_type": "markdown_section",
+                        "content_type": "text/markdown"
+                    })
+
+        # Fallback if no sections were produced
+        if not chunks and text.strip():
+            sect_chunks = self.chunk_fixed_size(text)
+            for chunk_text in sect_chunks:
+                chunks.append({
+                    "text": chunk_text,
+                    "heading": "Introduction",
+                    "heading_path": "Introduction",
+                    "chunk_type": "markdown_section",
+                    "content_type": "text/markdown"
+                })
+
+        return chunks
+
     def chunk_by_heading(self, text: str) -> List[Dict[str, Any]]:
         """
         Chunks the document text while keeping track of headings.
@@ -188,7 +401,19 @@ class ChunkerService:
             if tabular_chunks:
                 return tabular_chunks
 
+        # Check for Markdown structure (headings, lists, section markers, tables, code blocks)
         lines = text.split("\n")
+        has_markdown = (
+            any(l.strip().startswith(("#", "##", "###", "####", "--- Slide")) for l in lines) or
+            any(re.match(r"^[A-Za-z0-9_][A-Za-z0-9_\s-]{1,50}:$", l.strip()) for l in lines) or
+            any(l.strip().startswith("|") and l.strip().endswith("|") for l in lines) or
+            "```" in text
+        )
+
+        if has_markdown:
+            return self.chunk_markdown(text)
+
+        # Standard plain text heading chunker
         current_heading = "Introduction"
         heading_sections = []
         current_section = []
@@ -198,14 +423,7 @@ class ChunkerService:
             if not line_stripped:
                 continue
                 
-            # Detect Markdown header
-            if line_stripped.startswith(("#", "##", "###", "####")):
-                if current_section:
-                    heading_sections.append((current_heading, "\n".join(current_section)))
-                current_heading = line_stripped.lstrip("#").strip()
-                current_section = [line]
-            # Detect Slide/Sheet header
-            elif line_stripped.startswith("--- ") and line_stripped.endswith(" ---"):
+            if line_stripped.startswith("--- ") and line_stripped.endswith(" ---"):
                 if current_section:
                     heading_sections.append((current_heading, "\n".join(current_section)))
                 current_heading = line_stripped.replace("---", "").strip()
@@ -222,16 +440,21 @@ class ChunkerService:
             for chunk_text in sect_chunks:
                 chunks.append({
                     "text": chunk_text,
-                    "heading": heading
+                    "heading": heading,
+                    "heading_path": heading,
+                    "chunk_type": "text",
+                    "content_type": "text/plain"
                 })
                 
-        # If no heading-based sections were found, split everything under "Introduction"
         if not chunks and text.strip():
             sect_chunks = self.chunk_fixed_size(text)
             for chunk_text in sect_chunks:
                 chunks.append({
                     "text": chunk_text,
-                    "heading": "Introduction"
+                    "heading": "Introduction",
+                    "heading_path": "Introduction",
+                    "chunk_type": "text",
+                    "content_type": "text/plain"
                 })
                 
         return chunks

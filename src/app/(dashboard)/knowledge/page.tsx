@@ -101,7 +101,7 @@ const getFormatIcon = (docType: string) => {
   const t = (docType || "").toUpperCase();
   if (t === "PDF" || t === "DOCX" || t === "DOC") return <FileText className="h-4 w-4 text-brand-indigo" />;
   if (t === "CSV" || t === "XLSX" || t === "XLS") return <FileSpreadsheet className="h-4 w-4 text-emerald-400" />;
-  if (t === "JSON" || t === "HTML" || t === "MD") return <FileCode className="h-4 w-4 text-cyan-400" />;
+  if (t === "JSON" || t === "HTML" || t === "MD" || t === "MARKDOWN" || t === "BUSINESS_DICTIONARY") return <FileCode className="h-4 w-4 text-cyan-400" />;
   return <FileIcon className="h-4 w-4 text-brand-indigo" />;
 };
 
@@ -204,7 +204,12 @@ export default function KnowledgeBasePage() {
       setUploadSuccess(`Successfully indexed "${file.name}" into RAG workspace (${res.chunks_count} chunks).`);
     } catch (err: any) {
       setUploadStep(null);
-      setUploadError(err.message || "Failed to ingest document into RAG index.");
+      const serverMsg =
+        err?.response?.data?.detail?.message ||
+        err?.response?.data?.detail ||
+        err?.message ||
+        "Failed to ingest document into RAG index.";
+      setUploadError(typeof serverMsg === "string" ? serverMsg : JSON.stringify(serverMsg));
     }
   };
 

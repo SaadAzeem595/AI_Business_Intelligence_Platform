@@ -12,11 +12,17 @@ class DocumentMetadata(BaseModel):
     tags: List[str] = Field(default_factory=list)
     document_type: str  # PDF, DOCX, PPTX, TXT, MD, HTML, CSV, XLSX, JSON
     file_size: Optional[int] = 0
-    chunk_type: Optional[str] = "text"  # text, dataset_schema, dataset_summary, table_rows
+    chunk_type: Optional[str] = "text"  # text, dataset_schema, dataset_summary, table_rows, markdown_section
     row_start: Optional[int] = None
     row_end: Optional[int] = None
     columns: List[str] = Field(default_factory=list)
     table_name: Optional[str] = None
+    file_type: Optional[str] = None
+    mime_type: Optional[str] = None
+    project_id: Optional[str] = None
+    chunk_index: Optional[int] = None
+    heading_path: Optional[str] = None
+    content_type: Optional[str] = None
 
 class Document(BaseModel):
     id: str
@@ -47,6 +53,12 @@ class Citation(BaseModel):
     row_start: Optional[int] = None
     row_end: Optional[int] = None
     columns: List[str] = Field(default_factory=list)
+    file_type: Optional[str] = None
+    mime_type: Optional[str] = None
+    project_id: Optional[str] = None
+    chunk_index: Optional[int] = None
+    heading_path: Optional[str] = None
+    content_type: Optional[str] = None
 
 class RetrievalResult(BaseModel):
     chunk_id: str
