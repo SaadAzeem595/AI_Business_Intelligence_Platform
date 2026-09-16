@@ -92,6 +92,7 @@ export function ReportConfigPanel({ onGenerate, isGenerating }: ReportConfigPane
     "impact",
     "recommendations",
     "evidence",
+  ]);
   const [recipient, setRecipient] = useState("board@company.com");
   const [schedule, setSchedule] = useState<"Ad-hoc" | "Daily" | "Weekly" | "Monthly">("Ad-hoc");
 

@@ -143,6 +143,8 @@ export interface Report {
   delivery_status: "Delivered" | "Pending" | "Failed" | "Delivery Pending";
   delivery_error?: string;
   file_path?: string;
+  verification_rate?: number;
+  delivery_confidence?: number;
   report_data?: ExecutiveReportData;
 }
 
