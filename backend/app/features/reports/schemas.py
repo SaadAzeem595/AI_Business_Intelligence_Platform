@@ -89,6 +89,30 @@ class ReportRecommendation(BaseModel):
     source_id: str = "SRC-REC"
 
 
+class ModuleExecutionStatus(BaseModel):
+    module: str
+    status: str  # SUCCESS, UNAVAILABLE, FAILED, SKIPPED
+    duration_ms: int = 0
+    dataset_ids: List[str] = []
+    result_summary: str = ""
+    error: Optional[str] = None
+
+
+class StructuredMetric(BaseModel):
+    key: str
+    label: str
+    value: Any
+    unit: Optional[str] = None
+    period: Optional[str] = None
+    source_module: str
+    query_id: Optional[str] = None
+    run_id: Optional[str] = None
+    dataset_ids: List[str] = []
+    source_rows: Optional[int] = None
+    confidence: float = 1.0
+    generated_at: str = ""
+
+
 class ReportEvidenceItem(BaseModel):
     source_id: str
     category: str  # Dashboard KPI, SQL Analytics, Forecasting, Segmentation, Anomaly Detection, Knowledge Base
@@ -102,12 +126,18 @@ class ReportMetadata(BaseModel):
     title: str
     project_name: str = "Global Workspace"
     project_id: Optional[str] = None
-    reporting_period: str = "Last 30 Days"
+    reporting_period: str = "Full Dataset Period"
+    period_start: Optional[str] = None
+    period_end: Optional[str] = None
+    dataset_min_date: Optional[str] = None
+    dataset_max_date: Optional[str] = None
     generated_at: str
     author: str = "system"
     recipient: str
     confidence_score: float = 0.95
+    verification_rate: float = 1.0
     sources_included: List[str] = []
+    module_statuses: List[ModuleExecutionStatus] = []
 
 
 class ExecutiveReportData(BaseModel):
@@ -122,6 +152,10 @@ class ExecutiveReportData(BaseModel):
     business_impact: List[ReportBusinessImpact] = []
     recommendations: List[ReportRecommendation] = []
     evidence: List[ReportEvidenceItem] = []
+    module_statuses: List[ModuleExecutionStatus] = []
+    structured_metrics: List[StructuredMetric] = []
+    verification_rate: float = 1.0
+    delivery_confidence: float = 0.95
 
 
 class GenerateReportPayload(BaseModel):
@@ -131,7 +165,7 @@ class GenerateReportPayload(BaseModel):
     workspace: str = "default"
     project_id: Optional[str] = None
     template: str = "Executive Summary"  # Executive Summary, Sales Performance, Customer Analytics, Financial Performance, Operations, Risk & Anomaly, Custom
-    reporting_period: str = "Last 30 Days"  # Last 7 Days, Last 30 Days, Last 90 Days, Last 12 Months, Current Quarter, Previous Quarter, Custom Range
+    reporting_period: str = "Full Dataset Period"  # Full Dataset Period, Last 7 Days, Last 30 Days, Last 90 Days, Last 12 Months, Current Quarter, Previous Quarter, Custom Range
     custom_date_range: Optional[Dict[str, str]] = None  # { startDate, endDate }
     data_sources: List[str] = Field(default_factory=lambda: ["dashboard", "sql", "forecasting", "segmentation", "anomaly", "rag"])
     options: List[str] = Field(default_factory=lambda: ["kpis", "charts", "summary", "insights", "impact", "recommendations", "evidence"])
@@ -160,13 +194,18 @@ class ReportResponse(BaseModel):
     workspace: str
     project_id: Optional[str] = None
     author: str
-    reporting_period: Optional[str] = "Last 30 Days"
+    reporting_period: Optional[str] = "Full Dataset Period"
+    period_start: Optional[str] = None
+    period_end: Optional[str] = None
     data_sources: Optional[str] = None
     options: Optional[str] = None
     datasets_used: Optional[str] = None
     delivery_status: str
     delivery_error: Optional[str] = None
     file_path: Optional[str] = None
+    verification_rate: Optional[float] = 1.0
+    delivery_confidence: Optional[float] = 0.95
+    module_statuses: Optional[List[ModuleExecutionStatus]] = []
     report_data: Optional[ExecutiveReportData] = None
 
     model_config = ConfigDict(from_attributes=True)

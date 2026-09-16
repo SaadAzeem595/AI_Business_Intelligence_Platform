@@ -27,6 +27,7 @@ interface ReportConfigPanelProps {
 }
 
 const REPORTING_PERIODS = [
+  "Full Dataset Period",
   "Last 7 Days",
   "Last 30 Days",
   "Last 90 Days",
@@ -70,7 +71,7 @@ export function ReportConfigPanel({ onGenerate, isGenerating }: ReportConfigPane
 
   const [title, setTitle] = useState("Executive Intelligence & Performance Report");
   const [projectId, setProjectId] = useState<string>("");
-  const [period, setPeriod] = useState("Last 30 Days");
+  const [period, setPeriod] = useState("Full Dataset Period");
   const [customStart, setCustomStart] = useState("");
   const [customEnd, setCustomEnd] = useState("");
   const [reportType, setReportType] = useState("Executive Summary");
@@ -91,9 +92,21 @@ export function ReportConfigPanel({ onGenerate, isGenerating }: ReportConfigPane
     "impact",
     "recommendations",
     "evidence",
-  ]);
   const [recipient, setRecipient] = useState("board@company.com");
   const [schedule, setSchedule] = useState<"Ad-hoc" | "Daily" | "Weekly" | "Monthly">("Ad-hoc");
+
+  // Preselect Olist project if available
+  React.useEffect(() => {
+    if (!projectId && projects && projects.length > 0) {
+      const olistProj = projects.find((p) => p.name.toLowerCase().includes("olist"));
+      if (olistProj) {
+        setProjectId(olistProj.id);
+      }
+    }
+  }, [projects, projectId]);
+
+  const selectedProject = projects.find((p) => p.id === projectId);
+  const isOlist = selectedProject?.name?.toLowerCase().includes("olist") || false;
 
   const toggleSource = (sourceId: string) => {
     setSelectedSources((prev) =>
@@ -194,6 +207,11 @@ export function ReportConfigPanel({ onGenerate, isGenerating }: ReportConfigPane
                 </option>
               ))}
             </select>
+            {isOlist && (
+              <p className="text-[10px] text-brand-indigo/90 font-medium pt-0.5">
+                Historical dataset: rolling periods anchor to latest dataset transactions (2016-2018).
+              </p>
+            )}
           </div>
 
           <div className="space-y-1">

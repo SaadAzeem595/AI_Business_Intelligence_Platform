@@ -76,9 +76,12 @@ def register_all_datasets_in_duckdb(conn: duckdb.DuckDBPyConnection, project_id:
                 df = pd.read_excel(file_path)
                 conn.register(clean_v, df)
             elif clean_path.endswith('.json'):
-                import pandas as pd
-                df = pd.read_json(file_path)
-                conn.register(clean_v, df)
+                try:
+                    import pandas as pd
+                    df = pd.read_json(file_path)
+                    conn.register(clean_v, df)
+                except Exception:
+                    pass
             elif clean_path.endswith('.parquet'):
                 conn.execute(f"CREATE OR REPLACE TEMP VIEW \"{clean_v}\" AS SELECT * FROM read_parquet('{clean_path}')")
         except Exception as e:

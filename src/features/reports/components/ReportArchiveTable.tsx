@@ -96,9 +96,16 @@ export function ReportArchiveTable({
   const getStatusBadge = (status: string) => {
     switch (status) {
       case "Delivered":
+      case "Completed":
         return (
           <Badge variant="outline" className="bg-emerald-500/10 text-emerald-400 border-emerald-500/30 text-[10px] flex items-center gap-1">
-            <CheckCircle2 className="h-3 w-3" /> Delivered
+            <CheckCircle2 className="h-3 w-3" /> {status}
+          </Badge>
+        );
+      case "Partial":
+        return (
+          <Badge variant="outline" className="bg-amber-500/10 text-amber-400 border-amber-500/30 text-[10px] flex items-center gap-1">
+            <AlertCircle className="h-3 w-3" /> Partial
           </Badge>
         );
       case "Failed":
@@ -111,7 +118,7 @@ export function ReportArchiveTable({
       case "Pending":
       default:
         return (
-          <Badge variant="outline" className="bg-amber-500/10 text-amber-400 border-amber-500/30 text-[10px] flex items-center gap-1">
+          <Badge variant="outline" className="bg-blue-500/10 text-blue-400 border-blue-500/30 text-[10px] flex items-center gap-1">
             <Hourglass className="h-3 w-3" /> {status}
           </Badge>
         );

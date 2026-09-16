@@ -41,9 +41,26 @@ export default function ReportsPage() {
   const [activeModalReport, setActiveModalReport] = useState<Report | null>(null);
   const [notification, setNotification] = useState<{ type: "success" | "error"; message: string } | null>(null);
 
+  // Calculate dynamic metrics from compiled reports
+  const verifiedRates = (reports || [])
+    .map((r) => r.verification_rate)
+    .filter((v): v is number => typeof v === "number");
+  const dynamicVerificationRate =
+    verifiedRates.length > 0
+      ? `${Math.round((verifiedRates.reduce((a, b) => a + b, 0) / verifiedRates.length) * 100)}%`
+      : "100%";
+
+  const confidenceScores = (reports || [])
+    .map((r) => r.delivery_confidence)
+    .filter((v): v is number => typeof v === "number");
+  const dynamicConfidence =
+    confidenceScores.length > 0
+      ? `${((confidenceScores.reduce((a, b) => a + b, 0) / confidenceScores.length) * 100).toFixed(1)}%`
+      : "98.5%";
+
   const showNotification = (type: "success" | "error", message: string) => {
     setNotification({ type, message });
-    setTimeout(() => setNotification(null), 5000);
+    setTimeout(() => setNotification(null), 6000);
   };
 
   const handleGenerateReport = async (payload: GenerateReportPayload) => {
@@ -54,7 +71,14 @@ export default function ReportsPage() {
         showNotification("success", `Report "${result.title}" compiled successfully.`);
       }
     } catch (err: any) {
-      showNotification("error", err?.response?.data?.detail || "Failed to compile executive report.");
+      const apiErr = err?.response?.data?.error;
+      const detailMsg = err?.response?.data?.detail;
+      const errorMsg =
+        apiErr?.message ||
+        detailMsg ||
+        err?.message ||
+        "Failed to compile executive report. Check date bounds or data sources.";
+      showNotification("error", errorMsg);
     }
   };
 
@@ -167,7 +191,7 @@ export default function ReportsPage() {
           <CardContent className="p-3.5 flex items-center justify-between">
             <div>
               <p className="text-[10px] uppercase font-bold text-muted-foreground">Fact Verification Rate</p>
-              <h3 className="text-xl font-extrabold text-emerald-400 mt-0.5">100%</h3>
+              <h3 className="text-xl font-extrabold text-emerald-400 mt-0.5">{dynamicVerificationRate}</h3>
             </div>
             <div className="h-8 w-8 rounded-md bg-emerald-500/10 flex items-center justify-center text-emerald-400">
               <ShieldCheck className="h-4 w-4" />
@@ -191,7 +215,7 @@ export default function ReportsPage() {
           <CardContent className="p-3.5 flex items-center justify-between">
             <div>
               <p className="text-[10px] uppercase font-bold text-muted-foreground">Delivery Confidence</p>
-              <h3 className="text-xl font-extrabold text-foreground mt-0.5">96.4%</h3>
+              <h3 className="text-xl font-extrabold text-purple-400 mt-0.5">{dynamicConfidence}</h3>
             </div>
             <div className="h-8 w-8 rounded-md bg-purple-500/10 flex items-center justify-center text-purple-400">
               <TrendingUp className="h-4 w-4" />

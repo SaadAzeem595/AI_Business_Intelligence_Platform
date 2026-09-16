@@ -197,6 +197,10 @@ class LLMService:
                             err = LLMConfigurationError("Invalid API key configured for OpenRouter (HTTP 401 authentication error).")
                             err.http_status = 401
                             raise err
+                        elif response.status_code == 402:
+                            err = LLMConfigurationError("OpenRouter account credit is exhausted (HTTP 402 Payment Required).")
+                            err.http_status = 402
+                            raise err
                         elif response.status_code == 403:
                             err = LLMConfigurationError(f"OpenRouter permission error for model '{model_name}' (HTTP 403 permission error).")
                             err.http_status = 403
