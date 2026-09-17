@@ -27,6 +27,10 @@ class Report(Base):
     file_path: Mapped[str] = mapped_column(String, nullable=True)
     report_data: Mapped[str] = mapped_column(String, nullable=True)  # JSON-encoded normalized report context
 
+    @property
+    def status(self) -> str:
+        return "Active"
+
 
 class ReportSchedule(Base):
     __tablename__ = "report_schedules"

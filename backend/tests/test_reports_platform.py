@@ -142,7 +142,8 @@ async def test_report_service_lifecycle():
         )
         
         # Mock Celery delay to avoid trigger queue in unit test
-        with patch("app.features.reports.tasks.generate_report_task.delay") as mock_celery:
+        with patch("app.features.reports.tasks.generate_report_task.delay") as mock_celery, \
+             patch("app.core.cache.cache_client.is_connected", True):
             resp = await ReportService.trigger_celery_report_generation(db, payload, author="tester")
             assert resp.id is not None
             assert resp.title == "Q3 Sales Projections Audit"

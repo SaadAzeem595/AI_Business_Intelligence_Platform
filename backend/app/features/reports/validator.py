@@ -39,8 +39,9 @@ class AntiHallucinationValidator:
             if not cleaned:
                 continue
 
-            # Check if sentence mentions revenue or sales
-            if any(term in cleaned.lower() for term in ["revenue", "sales", "gross"]):
+            # Check if sentence mentions revenue or sales (excluding distinct forecast/projection statements)
+            is_forecast_sentence = any(fc_term in cleaned.lower() for fc_term in ["forecast", "projection", "projects", "predictive", "src-fc"])
+            if not is_forecast_sentence and any(term in cleaned.lower() for term in ["revenue", "sales", "gross"]):
                 rev_kpi = next((k for k in kpis if "revenue" in k.title.lower() or "sales" in k.title.lower()), None)
                 if rev_kpi:
                     # Look for currency numbers in the sentence

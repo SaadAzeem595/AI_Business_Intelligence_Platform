@@ -46,14 +46,25 @@ class ReportForecastPoint(BaseModel):
 
 
 class ReportForecastSection(BaseModel):
-    horizon: str = "30 Days"
+    status: str = "success"  # "success" or "unavailable"
+    target_metric: str = "Revenue"
+    frequency: str = "monthly"
+    historical_start: Optional[str] = None
+    historical_end: Optional[str] = None
+    horizon: str = "6 Months"
+    forecast_horizon: int = 6
     model_used: str = "ARIMA"
     historical_performance: str = ""
     trend_direction: str = "Stable"
     points: List[ReportForecastPoint] = []
+    historical_points: List[ReportForecastPoint] = []
     metrics: Dict[str, Any] = {}
-    source: str = "Forecasting"
-    source_id: str = "SRC-FC"
+    summary_text: Optional[str] = None
+    unavailable_reason: Optional[str] = None
+    confidence_available: bool = True
+    source: str = "Forecasting Service (ARIMA)"
+    source_id: str = "SRC-FC-1"
+
 
 
 class ReportSegmentItem(BaseModel):

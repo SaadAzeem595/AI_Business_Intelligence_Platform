@@ -146,6 +146,7 @@ class ExecutiveReportContextBuilder:
         now = datetime.now()
 
         # 1. Resolve Project and Datasets
+        import app.features.auth.models  # Ensures User mapper is initialized for relationships
         from app.features.datasets.models import Dataset
         from sqlalchemy import select
 
@@ -504,16 +505,34 @@ class ExecutiveReportContextBuilder:
         if "forecasting" in data_sources or not data_sources:
             ctx.metadata.sources_included.append("Time-Series Forecasting")
             t0 = time.perf_counter()
+            horizon_steps = 6
+            target_metric_name = "revenue"
+            date_col_name = "date"
+            agg_freq = "monthly"
+
+            logger.info(
+                "forecast_started",
+                extra={
+                    "event": "forecast_started",
+                    "project_id": payload.project_id or "default",
+                    "dataset_id": dataset_id_list[0] if dataset_id_list else "unknown",
+                    "target_metric": target_metric_name,
+                    "date_column": date_col_name,
+                    "aggregation_frequency": agg_freq,
+                    "forecast_horizon": horizon_steps,
+                    "model": "ARIMA"
+                }
+            )
+
             try:
-                # Query daily or monthly time-series aggregation from DuckDB
+                # Construct historical time-series aggregation from DuckDB across actual dataset history
                 if is_olist_project:
-                    ts_query = f"""
+                    ts_query = """
                         SELECT 
                             CAST(DATE_TRUNC('month', CAST(o.order_purchase_timestamp AS TIMESTAMP)) AS DATE) as date,
                             ROUND(SUM(i.price), 2) as revenue
                         FROM olist_orders_dataset o
                         JOIN olist_order_items_dataset i ON o.order_id = i.order_id
-                        WHERE CAST(o.order_purchase_timestamp AS TIMESTAMP) BETWEEN TIMESTAMP '{start_date_str}' AND TIMESTAMP '{end_date_str}'
                         GROUP BY 1
                         ORDER BY 1
                     """
@@ -522,105 +541,249 @@ class ExecutiveReportContextBuilder:
                     ts_query = f"SELECT CAST(date AS DATE) as date, SUM(revenue) as revenue FROM read_csv_auto('{clean_p}') GROUP BY 1 ORDER BY 1"
 
                 ts_df = duckdb_conn.execute(ts_query).df()
-                if len(ts_df) >= 3:
-                    from app.features.analytics.engine.forecasting import ForecastingService
-                    fc_svc = ForecastingService()
-                    # Export temporary ts csv for forecasting service
-                    temp_ts_path = os.path.abspath(os.path.join("storage", "reports", f"temp_ts_{int(time.time())}.csv"))
-                    os.makedirs(os.path.dirname(temp_ts_path), exist_ok=True)
-                    ts_df.to_csv(temp_ts_path, index=False)
+                obs_count = len(ts_df) if ts_df is not None else 0
 
-                    periods = 3
-                    fc_res = fc_svc.forecast(
-                        dataset_ref=temp_ts_path,
-                        model_name="arima",
-                        date_col="date",
-                        value_col="revenue",
-                        periods=periods,
+                if obs_count >= 3:
+                    from app.features.analytics.engine.forecasting import ProductionForecastingEngine
+
+                    fc_response = ProductionForecastingEngine.execute_project_forecast(
+                        df=ts_df,
+                        project_id=payload.project_id or "default",
+                        dataset_id=dataset_id_list[0] if dataset_id_list else None,
+                        dataset_name=ctx.dataset_name,
+                        date_col=date_col_name,
+                        target_col=target_metric_name,
+                        aggregation=agg_freq,
+                        horizon=horizon_steps,
+                        requested_model="arima",
                         confidence=0.95
                     )
-                    try:
-                        os.remove(temp_ts_path)
-                    except Exception:
-                        pass
-
-                    timeline = fc_res.get("timeline", [])
-                    points: List[ReportForecastPoint] = []
-                    for pt in timeline[-periods:]:
-                        points.append(ReportForecastPoint(
-                            date=str(pt.get("date", "")),
-                            actual=pt.get("actual"),
-                            forecast=pt.get("forecast"),
-                            lower=pt.get("forecast", 0) * 0.9 if pt.get("forecast") else None,
-                            upper=pt.get("forecast", 0) * 1.1 if pt.get("forecast") else None
-                        ))
-
-                    trend_dir = "Upward" if points and points[-1].forecast and points[0].forecast and points[-1].forecast >= points[0].forecast else "Positive Stable"
-                    ctx.forecast = ReportForecastSection(
-                        horizon=f"{periods} Months",
-                        model_used="ARIMA / Trend Extrapolation",
-                        historical_performance=f"Evaluated across {len(ts_df)} historical observation periods.",
-                        trend_direction=trend_dir,
-                        points=points,
-                        metrics=fc_res.get("metrics", {"r_squared": 0.94, "mae": 12500.0}),
-                        source="Forecasting Engine",
-                        source_id="SRC-FC-1"
-                    )
-                    if points and points[-1].forecast:
-                        ctx.source_facts["forecast_end_value"] = points[-1].forecast
-                        ctx.source_facts["forecast_trend"] = trend_dir
 
                     duration_ms = int((time.perf_counter() - t0) * 1000)
-                    summary_text = f"Projected {trend_dir} trend over {periods} periods with 95% confidence."
+
+                    if fc_response.status == "error":
+                        raise ValueError(fc_response.message or "Forecasting engine returned error status.")
+
+                    hist_points: List[ReportForecastPoint] = []
+                    points: List[ReportForecastPoint] = []
+                    for pt in fc_response.timeline:
+                        d_str = str(pt.date)[:10]
+                        if pt.actual is not None:
+                            hist_points.append(ReportForecastPoint(date=d_str, actual=round(float(pt.actual), 2)))
+                        if pt.forecast is not None:
+                            points.append(ReportForecastPoint(
+                                date=d_str,
+                                forecast=round(float(pt.forecast), 2),
+                                lower=round(float(pt.lower), 2) if pt.lower is not None else None,
+                                upper=round(float(pt.upper), 2) if pt.upper is not None else None
+                            ))
+
+                    has_ci = (
+                        len(points) > 0 and
+                        any(p.lower is not None and p.upper is not None and p.upper > (p.lower or 0) for p in points)
+                    )
+
+                    # Extract best model evaluation metrics
+                    metrics_dict: Dict[str, Any] = {}
+                    if fc_response.metrics:
+                        best_m = next((m for m in fc_response.metrics if m.is_best), fc_response.metrics[0])
+                        metrics_dict = {
+                            "mae": round(float(best_m.mae), 2),
+                            "rmse": round(float(best_m.rmse), 2),
+                            "mape": round(float(best_m.mape), 2),
+                            "model_name": best_m.model_name
+                        }
+
+                    # Determine trend direction
+                    trend_dir = "Stable"
+                    if fc_response.business_summary and fc_response.business_summary.current_trend:
+                        trend_dir = fc_response.business_summary.current_trend
+                    elif points and points[-1].forecast and points[0].forecast:
+                        diff = points[-1].forecast - points[0].forecast
+                        trend_dir = "Upward" if diff > 0.01 * points[0].forecast else ("Downward" if diff < -0.01 * points[0].forecast else "Stable")
+
+                    hist_start = hist_points[0].date if hist_points else "N/A"
+                    hist_end = hist_points[-1].date if hist_points else "N/A"
+
+                    logger.info(
+                        "forecast_completed",
+                        extra={
+                            "event": "forecast_completed",
+                            "project_id": payload.project_id or "default",
+                            "dataset_id": dataset_id_list[0] if dataset_id_list else "unknown",
+                            "target_metric": target_metric_name,
+                            "training_observations": len(hist_points),
+                            "forecast_horizon": len(points),
+                            "model": fc_response.selected_model,
+                            "duration_ms": duration_ms
+                        }
+                    )
+
+                    logger.info(
+                        "forecast_result_received",
+                        extra={
+                            "event": "forecast_result_received",
+                            "project_id": payload.project_id or "default",
+                            "dataset_id": dataset_id_list[0] if dataset_id_list else "unknown",
+                            "target_metric": target_metric_name,
+                            "forecast_row_count": len(points),
+                            "generated_forecast_values": [p.forecast for p in points],
+                            "confidence_interval_availability": has_ci,
+                            "model": fc_response.selected_model
+                        }
+                    )
+
+                    summary_text = (
+                        fc_response.business_summary.headline if (fc_response.business_summary and fc_response.business_summary.headline)
+                        else f"{fc_response.selected_model} model projects a {trend_dir.lower()} trend over the next {horizon_steps} months, reaching ${points[-1].forecast:,.2f} baseline."
+                    )
+
+                    ctx.forecast = ReportForecastSection(
+                        status="success",
+                        target_metric="Revenue",
+                        frequency="monthly",
+                        historical_start=hist_start,
+                        historical_end=hist_end,
+                        horizon=f"{len(points)} Months",
+                        forecast_horizon=len(points),
+                        model_used=fc_response.selected_model,
+                        historical_performance=f"Trained on {len(hist_points)} verified monthly observation periods from {hist_start} to {hist_end}.",
+                        trend_direction=trend_dir,
+                        points=points,
+                        historical_points=hist_points,
+                        metrics=metrics_dict,
+                        summary_text=summary_text,
+                        confidence_available=has_ci,
+                        source=f"Forecasting Service ({fc_response.selected_model})",
+                        source_id="SRC-FC-1"
+                    )
+
+                    if points and points[-1].forecast:
+                        ctx.source_facts["forecast_end_value"] = points[-1].forecast
+                        ctx.source_facts["forecast_final_value"] = f"${points[-1].forecast:,.2f}"
+                        ctx.source_facts["forecast_final_date"] = points[-1].date
+                        ctx.source_facts["forecast_trend"] = trend_dir
+                        ctx.source_facts["forecast_model"] = fc_response.selected_model
+
+                    logger.info(
+                        "forecast_result_added_to_report_context",
+                        extra={
+                            "event": "forecast_result_added_to_report_context",
+                            "project_id": payload.project_id or "default",
+                            "dataset_id": dataset_id_list[0] if dataset_id_list else "unknown",
+                            "target_metric": target_metric_name,
+                            "date_column": date_col_name,
+                            "aggregation_frequency": agg_freq,
+                            "training_observations": len(hist_points),
+                            "forecast_horizon": len(points),
+                            "model": fc_response.selected_model,
+                            "forecast_row_count": len(points),
+                            "generated_forecast_values": [p.forecast for p in points],
+                            "confidence_interval_availability": has_ci
+                        }
+                    )
+
                     status_obj = ModuleExecutionStatus(
                         module="Time-Series Forecasting",
                         status="SUCCESS",
                         duration_ms=duration_ms,
                         dataset_ids=dataset_id_list,
-                        result_summary=summary_text
+                        result_summary=f"{fc_response.selected_model}: {trend_dir} trajectory over {len(points)} months (Target: ${points[-1].forecast:,.2f})"
                     )
                     ctx.module_statuses.append(status_obj)
                     logger.info(f"REPORT MODULE EXECUTION: {status_obj.model_dump()}")
 
+                    # Grounded Source Evidence Item [SRC-FC-1]
+                    claim_text = (
+                        f"{fc_response.selected_model} forecast of monthly revenue for the next {len(points)} months based on "
+                        f"order history from {hist_start} to {hist_end}. "
+                        f"Final forecast period: {points[-1].date}. Predicted revenue: ${points[-1].forecast:,.2f}."
+                    )
+                    metrics_desc = (
+                        f"MAE: ${metrics_dict['mae']:,.2f}, RMSE: ${metrics_dict['rmse']:,.2f}, MAPE: {metrics_dict['mape']:.1f}%"
+                        if metrics_dict.get("mae") is not None
+                        else "Evaluation metrics unavailable"
+                    )
+                    details_text = (
+                        f"Target: Revenue (Monthly). Historical training observations: {len(hist_points)} periods. "
+                        f"Horizon: {len(points)} months. {metrics_desc}."
+                    )
                     ctx.evidence.append(ReportEvidenceItem(
                         source_id="SRC-FC-1",
                         category="Forecasting",
-                        claim=f"Time-series model projects {trend_dir.lower()} trend reaching ${points[-1].forecast:,.2f} baseline.",
-                        source_name="Forecasting Service (ARIMA)",
-                        details=f"Evaluated across {len(ts_df)} observation periods."
+                        claim=claim_text,
+                        source_name=f"Forecasting Service ({fc_response.selected_model})",
+                        details=details_text
                     ))
                 else:
                     duration_ms = int((time.perf_counter() - t0) * 1000)
+                    reason_msg = f"Insufficient historical observations for forecasting: only {obs_count} observation(s) available (minimum 3 required)."
                     ctx.forecast = ReportForecastSection(
-                        horizon="30 Days",
+                        status="unavailable",
+                        target_metric="Revenue",
+                        frequency="monthly",
+                        horizon="6 Months",
+                        forecast_horizon=6,
                         model_used="ARIMA",
-                        historical_performance="Insufficient observations in selected period.",
+                        historical_performance=reason_msg,
                         trend_direction="Unavailable",
                         points=[],
+                        historical_points=[],
                         metrics={},
-                        source="Forecasting Engine",
+                        summary_text="Forecasting unavailable: insufficient historical observations.",
+                        unavailable_reason=reason_msg,
+                        confidence_available=False,
+                        source="Forecasting Service (ARIMA)",
                         source_id="SRC-FC-1"
+                    )
+                    logger.warning(
+                        "forecast_result_added_to_report_context",
+                        extra={
+                            "event": "forecast_result_added_to_report_context",
+                            "project_id": payload.project_id or "default",
+                            "status": "unavailable",
+                            "reason": reason_msg
+                        }
                     )
                     status_obj = ModuleExecutionStatus(
                         module="Time-Series Forecasting",
                         status="UNAVAILABLE",
                         duration_ms=duration_ms,
                         dataset_ids=dataset_id_list,
-                        result_summary="Insufficient historical observations in date period for forecasting.",
+                        result_summary=reason_msg,
                     )
                     ctx.module_statuses.append(status_obj)
                     logger.info(f"REPORT MODULE EXECUTION: {status_obj.model_dump()}")
             except Exception as e:
                 duration_ms = int((time.perf_counter() - t0) * 1000)
+                reason_msg = f"Forecasting pipeline execution failed: {str(e)}"
                 ctx.forecast = ReportForecastSection(
-                    horizon="30 Days",
+                    status="unavailable",
+                    target_metric="Revenue",
+                    frequency="monthly",
+                    horizon="6 Months",
+                    forecast_horizon=6,
                     model_used="ARIMA",
-                    historical_performance="Forecasting unavailable for this scope.",
+                    historical_performance=reason_msg,
                     trend_direction="Unavailable",
                     points=[],
+                    historical_points=[],
                     metrics={},
-                    source="Forecasting Engine",
+                    summary_text="Forecasting unavailable for this report scope.",
+                    unavailable_reason=reason_msg,
+                    confidence_available=False,
+                    source="Forecasting Service (ARIMA)",
                     source_id="SRC-FC-1"
+                )
+                logger.warning(
+                    "forecast_result_added_to_report_context",
+                    extra={
+                        "event": "forecast_result_added_to_report_context",
+                        "project_id": payload.project_id or "default",
+                        "status": "unavailable",
+                        "reason": reason_msg,
+                        "error": str(e)
+                    }
                 )
                 status_obj = ModuleExecutionStatus(
                     module="Time-Series Forecasting",

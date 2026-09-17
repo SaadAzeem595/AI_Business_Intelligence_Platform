@@ -1,10 +1,14 @@
 import os
+import logging
 from datetime import datetime
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, PageBreak, KeepTogether
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 from reportlab.pdfgen import canvas
+from app.features.reports.snapshot_generator import DashboardSnapshotGenerator
+
+logger = logging.getLogger(__name__)
 
 TEMPLATE_THEMES = {
     "CEO": {"primary": "#1e3a8a", "secondary": "#3b82f6", "bg_light": "#eff6ff"},
@@ -334,20 +338,107 @@ class PDFReportGenerator:
         fc_data = data.get("forecast") or data.get("forecast_result")
         if fc_data:
             story.append(Paragraph("6. Predictive Forecasting Projections", h1_style))
-            preds = fc_data.get("predictions") if isinstance(fc_data, dict) and "predictions" in fc_data else (getattr(fc_data, "points", []) or [])
-            if preds:
-                table_data = [["Forecast Date", "Target Revenue", "Lower Bounds", "Upper Bounds"]]
-                for item in preds[:6]:
+            
+            # Extract metadata and configuration
+            fc_status = fc_data.get("status", "success") if isinstance(fc_data, dict) else getattr(fc_data, "status", "success")
+            unavail_reason = fc_data.get("unavailable_reason") if isinstance(fc_data, dict) else getattr(fc_data, "unavailable_reason", None)
+            model_name = fc_data.get("model_used", "ARIMA") if isinstance(fc_data, dict) else getattr(fc_data, "model_used", "ARIMA")
+            horizon_str = fc_data.get("horizon", "6 Months") if isinstance(fc_data, dict) else getattr(fc_data, "horizon", "6 Months")
+            trend_dir = fc_data.get("trend_direction", "Stable") if isinstance(fc_data, dict) else getattr(fc_data, "trend_direction", "Stable")
+            summary_txt = fc_data.get("summary_text") if isinstance(fc_data, dict) else getattr(fc_data, "summary_text", None)
+            metrics = fc_data.get("metrics") if isinstance(fc_data, dict) else getattr(fc_data, "metrics", {})
+            metrics = metrics or {}
+            has_ci = fc_data.get("confidence_available", True) if isinstance(fc_data, dict) else getattr(fc_data, "confidence_available", True)
+
+            # Retrieve forecast points and historical observations
+            preds = []
+            if isinstance(fc_data, dict):
+                preds = fc_data.get("points") or fc_data.get("predictions") or []
+            else:
+                preds = getattr(fc_data, "points", []) or getattr(fc_data, "predictions", []) or []
+
+            hist_pts = []
+            if isinstance(fc_data, dict):
+                hist_pts = fc_data.get("historical_points") or []
+            else:
+                hist_pts = getattr(fc_data, "historical_points", []) or []
+
+            if fc_status == "unavailable" or not preds:
+                # Requirement 11: Render clean failure message if unavailable
+                callout_unavail = [
+                    [Paragraph(
+                        f"<b>Forecasting Unavailable</b><br/>"
+                        f"<font size=9 color='#475569'>{unavail_reason or 'Predictive time-series forecasting is unavailable for the selected dataset scope due to insufficient observations or missing timestamp attributes.'}</font>",
+                        body_style
+                    )]
+                ]
+                unavail_table = Table(callout_unavail, colWidths=[504])
+                unavail_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#fef2f2")),
+                    ('BOX', (0,0), (-1,-1), 1, colors.HexColor("#f87171")),
+                    ('TOPPADDING', (0,0), (-1,-1), 8),
+                    ('BOTTOMPADDING', (0,0), (-1,-1), 8),
+                    ('LEFTPADDING', (0,0), (-1,-1), 12),
+                    ('RIGHTPADDING', (0,0), (-1,-1), 12),
+                ]))
+                story.append(unavail_table)
+                story.append(Spacer(1, 15))
+            else:
+                # 1. Narrative Forecast Summary
+                if not summary_txt:
+                    summary_txt = f"The {model_name} model projects a {trend_dir.lower()} trend over the next {horizon_str}, evaluated against historical transaction run-rates."
+                story.append(Paragraph(f"<b>Forecast Horizon:</b> {horizon_str} &nbsp;|&nbsp; <b>Model:</b> {model_name} &nbsp;|&nbsp; <b>Trajectory:</b> {trend_dir}", meta_style))
+                story.append(Spacer(1, 4))
+                story.append(Paragraph(summary_txt, body_style))
+                story.append(Spacer(1, 8))
+
+                # 2. Forecast Chart Generation
+                try:
+                    fc_chart_dir = os.path.dirname(filepath)
+                    fc_chart_filename = f"forecast_chart_{os.path.basename(filepath)}.png"
+                    fc_chart_path = os.path.abspath(os.path.join(fc_chart_dir, fc_chart_filename))
+                    DashboardSnapshotGenerator.generate_forecast_chart(
+                        historical_points=hist_pts,
+                        forecast_points=preds,
+                        filepath=fc_chart_path,
+                        title=f"Predictive Revenue Projections ({model_name})",
+                        confidence_available=has_ci
+                    )
+                    if os.path.exists(fc_chart_path):
+                        story.append(Image(fc_chart_path, width=504, height=235))
+                        story.append(Spacer(1, 10))
+                        logger.info(
+                            "forecast_chart_created",
+                            extra={
+                                "event": "forecast_chart_created",
+                                "filepath": fc_chart_path,
+                                "model": model_name,
+                                "forecast_row_count": len(preds),
+                                "confidence_interval_availability": has_ci
+                            }
+                        )
+                except Exception as chart_err:
+                    logger.warning(f"Failed to render forecast chart image: {chart_err}")
+
+                # 3. Confidence Interval note if unavailable
+                if not has_ci:
+                    story.append(Paragraph("<font size=8 color='#64748b'><i>Note: Confidence interval not available from the selected forecasting model.</i></font>", body_style))
+                    story.append(Spacer(1, 4))
+
+                # 4. Compact Forecast Table
+                table_data = [["Forecast Period", "Predicted Revenue", "Lower Bound (95% CI)", "Upper Bound (95% CI)"]]
+                for item in preds[:12]:
                     d_val = item.get("date") if isinstance(item, dict) else getattr(item, "date", "")
-                    val = item.get("value", item.get("forecast", 0)) if isinstance(item, dict) else getattr(item, "forecast", 0)
-                    low = item.get("lower", 0) if isinstance(item, dict) else getattr(item, "lower", 0)
-                    upp = item.get("upper", 0) if isinstance(item, dict) else getattr(item, "upper", 0)
-                    table_data.append([
-                        str(d_val),
-                        f"${val:,.2f}" if isinstance(val, (int, float)) else str(val),
-                        f"${low:,.2f}" if isinstance(low, (int, float)) else str(low),
-                        f"${upp:,.2f}" if isinstance(upp, (int, float)) else str(upp)
-                    ])
+                    val = item.get("forecast", item.get("value", 0)) if isinstance(item, dict) else getattr(item, "forecast", getattr(item, "value", 0))
+                    low = item.get("lower") if isinstance(item, dict) else getattr(item, "lower", None)
+                    upp = item.get("upper") if isinstance(item, dict) else getattr(item, "upper", None)
+
+                    val_str = f"${val:,.2f}" if isinstance(val, (int, float)) else str(val)
+                    low_str = f"${low:,.2f}" if isinstance(low, (int, float)) else ("N/A" if not has_ci else str(low or 0))
+                    upp_str = f"${upp:,.2f}" if isinstance(upp, (int, float)) else ("N/A" if not has_ci else str(upp or 0))
+
+                    table_data.append([str(d_val)[:10], val_str, low_str, upp_str])
+
                 forecast_table = Table(table_data, colWidths=[126, 126, 126, 126])
                 forecast_table.setStyle(TableStyle([
                     ('BACKGROUND', (0,0), (-1,0), primary_color),
@@ -360,7 +451,33 @@ class PDFReportGenerator:
                     ('BOTTOMPADDING', (0,0), (-1,-1), 5),
                 ]))
                 story.append(forecast_table)
+                story.append(Spacer(1, 8))
+
+                # 5. Model Evaluation Metrics
+                mae_val = metrics.get("mae")
+                rmse_val = metrics.get("rmse")
+                mape_val = metrics.get("mape")
+                if mae_val is not None or rmse_val is not None:
+                    metrics_txt = f"<b>Evaluation Metrics:</b> MAE: ${mae_val:,.2f} &nbsp;|&nbsp; RMSE: ${rmse_val:,.2f} &nbsp;|&nbsp; MAPE: {mape_val:.2f}%"
+                else:
+                    metrics_txt = "<font color='#64748b'><i>Forecast evaluation metrics unavailable.</i></font>"
+                story.append(Paragraph(metrics_txt, body_style))
+                story.append(Spacer(1, 4))
+
+                # 6. Citation Reference
+                story.append(Paragraph("<font size=8 color='#64748b'>Source: Forecasting Service [SRC-FC-1]</font>", body_style))
                 story.append(Spacer(1, 15))
+
+                logger.info(
+                    "forecast_section_rendered",
+                    extra={
+                        "event": "forecast_section_rendered",
+                        "model": model_name,
+                        "forecast_row_count": len(preds),
+                        "confidence_interval_availability": has_ci,
+                        "metrics_available": mae_val is not None
+                    }
+                )
 
         # --- 8. SEGMENTATION ---
         segments = data.get("segmentation") or []

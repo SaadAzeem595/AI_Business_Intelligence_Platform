@@ -247,7 +247,8 @@ def test_e2e_report_generation_pipeline_api():
     }
 
     # 1. Trigger generate report
-    with patch("app.features.reports.tasks.generate_report_task.delay") as mock_delay:
+    with patch("app.features.reports.tasks.generate_report_task.delay") as mock_delay, \
+         patch("app.core.cache.cache_client.is_connected", True):
         resp = client.post("/api/v1/reports/generate", json=payload)
         assert resp.status_code == 200
         data = resp.json()

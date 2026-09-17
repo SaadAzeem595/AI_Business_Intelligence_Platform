@@ -38,9 +38,16 @@ class NarrativeGenerator:
             for a in ctx.anomalies
         ]
         forecast_summary = []
-        if ctx.forecast and ctx.forecast.points:
+        if ctx.forecast and ctx.forecast.status == "success" and ctx.forecast.points:
+            last_p = ctx.forecast.points[-1]
+            last_val_fmt = f"${last_p.forecast:,.2f}" if last_p.forecast is not None else "projected baseline"
             forecast_summary.append(
-                f"Forecast horizon: {ctx.forecast.horizon}, trend: {ctx.forecast.trend_direction}, model: {ctx.forecast.model_used} [Source: {ctx.forecast.source_id}]"
+                f"Model: {ctx.forecast.model_used}, Horizon: {ctx.forecast.horizon}, Trend: {ctx.forecast.trend_direction}, "
+                f"Forecast periods: {len(ctx.forecast.points)}, Final period {last_p.date} projects revenue of {last_val_fmt} [Source: {ctx.forecast.source_id}]"
+            )
+        elif ctx.forecast and ctx.forecast.status == "unavailable":
+            forecast_summary.append(
+                f"Time-series forecasting is unavailable ({ctx.forecast.unavailable_reason or 'insufficient historical observations'}) [Source: {ctx.forecast.source_id}]"
             )
         segment_summary = [
             f"Segment '{s.name}': {s.size} members ({s.size_pct}), avg spend {s.avg_spent}, risk {s.risk_rating} [Source: {s.source_id}]"
@@ -193,11 +200,23 @@ Return a JSON object with exactly these keys:
         kpi0 = ctx.kpis[0] if ctx.kpis else None
         kpi1 = ctx.kpis[1] if len(ctx.kpis) > 1 else None
 
+        fc_sentence = "Time-series predictive forecasting is currently unavailable for this dataset scope [SRC-FC-1]."
+        if ctx.forecast and ctx.forecast.status == "success" and ctx.forecast.points:
+            last_p = ctx.forecast.points[-1]
+            last_val_fmt = f"${last_p.forecast:,.2f}" if last_p.forecast is not None else "projected levels"
+            fc_sentence = (
+                f"The {ctx.forecast.model_used} model projects a {ctx.forecast.trend_direction.lower()} trend "
+                f"over the next {ctx.forecast.horizon}, with forecast revenue reaching approximately {last_val_fmt} by {last_p.date} [SRC-FC-1]."
+            )
+        elif ctx.forecast and ctx.forecast.status == "unavailable":
+            reason_txt = ctx.forecast.unavailable_reason or "insufficient historical data"
+            fc_sentence = f"Predictive time-series forecasting is currently unavailable ({reason_txt}) [SRC-FC-1]."
+
         summary = [
             f"Overall financial performance indicates primary metric volume of {kpi0.current_value if kpi0 else '$1.24M'} with a {kpi0.change_pct if kpi0 else '+14.2%'} trajectory [{kpi0.source_id if kpi0 else 'SRC-KPI-1'}].",
             f"Operating margins maintain stability at {kpi1.current_value if kpi1 else '$320.5K'} [{kpi1.source_id if kpi1 else 'SRC-KPI-2'}], reflecting disciplined capital allocation.",
             f"Machine learning anomaly scanning detected {len(ctx.anomalies)} variance spikes requiring operational monitoring [SRC-ANOM-1].",
-            f"Time-series projections project a {ctx.forecast.trend_direction.lower() if ctx.forecast else 'stable'} baseline over the next 30 days [SRC-FC-1]."
+            fc_sentence
         ]
 
         insights = [

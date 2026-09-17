@@ -7,6 +7,7 @@ from typing import List, Optional, Dict, Any
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import app.features.auth.models  # Ensures User relationship is initialized in SQLAlchemy mapper
 from app.features.reports.models import Report, ReportSchedule
 from app.features.reports.schemas import (
     GenerateReportPayload,
@@ -243,6 +244,18 @@ class ReportService:
                 delivery_confidence=ctx.delivery_confidence
             )
 
+            # Pre-Deliverable Validation Check: Ensure Forecasting Contract Integrity
+            data_sources = [s.lower() for s in (payload.data_sources or [])]
+            if not data_sources or "forecasting" in data_sources:
+                if not ctx.forecast:
+                    raise ValueError("Forecasting was selected in data sources but forecast section is missing from report context.")
+                if ctx.forecast.status not in ["success", "unavailable"]:
+                    raise ValueError(f"Invalid forecast status '{ctx.forecast.status}'. Must be 'success' or 'unavailable'.")
+                if ctx.forecast.status == "success" and not ctx.forecast.points:
+                    raise ValueError("Forecasting status is 'success' but 0 forecast points were returned.")
+                if ctx.forecast.status == "unavailable" and not ctx.forecast.unavailable_reason:
+                    ctx.forecast.unavailable_reason = "Forecasting unavailable for the selected dataset scope."
+
             # 4. Generate Snapshot PNG for visuals
             os.makedirs(os.path.join("storage", "reports"), exist_ok=True)
             snapshot_filename = f"snapshot-{report_id}.png"
@@ -293,7 +306,7 @@ class ReportService:
 
             # Determine completion status (Completed vs Partial)
             has_unavailable = any(m.status != "SUCCESS" for m in ctx.module_statuses)
-            report.status = "Partial" if has_unavailable else "Completed"
+            completion_status = "Partial" if has_unavailable else "Completed"
             report.size = size_str
             report.file_path = report_path
             report.datasets_used = ctx.dataset_name
@@ -301,7 +314,7 @@ class ReportService:
             report.delivery_error = delivery_err
             report.report_data = report_data.model_dump_json()
 
-            logger.info(f"Executive Report pipeline successfully completed for report: {report_id} (Status: {report.status})")
+            logger.info(f"Executive Report pipeline successfully completed for report: {report_id} (Status: {completion_status})")
 
         except Exception as e:
             logger.error(f"Error executing Executive Report pipeline for ID {report_id}: {str(e)}", exc_info=True)
