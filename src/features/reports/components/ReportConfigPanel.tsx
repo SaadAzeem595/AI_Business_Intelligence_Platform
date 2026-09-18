@@ -17,8 +17,10 @@ import {
   Send,
   Loader2,
   Database,
+  Lock,
 } from "lucide-react";
 import { useProjects } from "@/features/projects/hooks/useProjects";
+import { useSubscription } from "@/features/billing/hooks/useSubscription";
 import { GenerateReportPayload } from "@/shared/types/reports";
 
 interface ReportConfigPanelProps {
@@ -96,6 +98,9 @@ export function ReportConfigPanel({ onGenerate, isGenerating }: ReportConfigPane
   const [recipient, setRecipient] = useState("board@company.com");
   const [schedule, setSchedule] = useState<"Ad-hoc" | "Daily" | "Weekly" | "Monthly">("Ad-hoc");
 
+  const { hasFeature, createCheckout, isCheckingOut } = useSubscription();
+  const isScheduleEntitled = hasFeature("scheduled_reports");
+
   // Preselect Olist project if available
   React.useEffect(() => {
     if (!projectId && projects && projects.length > 0) {
@@ -122,6 +127,10 @@ export function ReportConfigPanel({ onGenerate, isGenerating }: ReportConfigPane
   };
 
   const handleSubmit = async (previewOnly: boolean = false) => {
+    if (schedule !== "Ad-hoc" && !isScheduleEntitled) {
+      createCheckout({ plan: "growth" });
+      return;
+    }
     const payload: GenerateReportPayload = {
       title,
       project_id: projectId || undefined,
@@ -352,19 +361,44 @@ export function ReportConfigPanel({ onGenerate, isGenerating }: ReportConfigPane
           </div>
 
           <div className="space-y-1">
-            <label className="font-semibold text-muted-foreground flex items-center gap-1">
-              <Clock className="h-3.5 w-3.5" /> Scheduling Routine
-            </label>
+            <div className="flex items-center justify-between">
+              <label className="font-semibold text-muted-foreground flex items-center gap-1">
+                <Clock className="h-3.5 w-3.5" /> Scheduling Routine
+              </label>
+              {!isScheduleEntitled && (
+                <Badge variant="info" className="text-[10px] px-1.5 py-0 h-4">
+                  Growth Tier
+                </Badge>
+              )}
+            </div>
             <select
               value={schedule}
               onChange={(e) => setSchedule(e.target.value as any)}
               className="w-full p-2 text-xs rounded-md border border-border/80 bg-background text-foreground cursor-pointer"
             >
               <option value="Ad-hoc">Ad-hoc (Immediate Compilation)</option>
-              <option value="Daily">Daily at 8:00 AM</option>
-              <option value="Weekly">Weekly (Every Monday)</option>
-              <option value="Monthly">Monthly (1st of each month)</option>
+              <option value="Daily">Daily at 8:00 AM {!isScheduleEntitled ? "🔒 (Growth)" : ""}</option>
+              <option value="Weekly">Weekly (Every Monday) {!isScheduleEntitled ? "🔒 (Growth)" : ""}</option>
+              <option value="Monthly">Monthly (1st of each month) {!isScheduleEntitled ? "🔒 (Growth)" : ""}</option>
             </select>
+            {schedule !== "Ad-hoc" && !isScheduleEntitled && (
+              <div className="rounded-md border border-indigo-500/30 bg-indigo-500/10 p-2 text-indigo-400 text-[11px] flex items-center justify-between gap-2 mt-1">
+                <span className="flex items-center gap-1.5">
+                  <Lock className="h-3.5 w-3.5 shrink-0" />
+                  Recurring delivery requires Growth
+                </span>
+                <Button
+                  size="sm"
+                  type="button"
+                  variant="brand"
+                  className="h-6 text-[10px] px-2"
+                  onClick={() => createCheckout({ plan: "growth" })}
+                  disabled={isCheckingOut}
+                >
+                  {isCheckingOut ? "Loading..." : "Upgrade $79/mo"}
+                </Button>
+              </div>
+            )}
           </div>
         </div>
 

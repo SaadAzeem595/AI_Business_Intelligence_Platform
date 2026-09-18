@@ -126,6 +126,13 @@ class Settings(BaseSettings):
     RATE_LIMIT_PER_MINUTE: int = 100
     API_KEYS: str = "admin-secret-api-key-12345,analyst-key-54321"
 
+    # Stripe Billing Configuration
+    STRIPE_SECRET_KEY: Optional[str] = None
+    STRIPE_PUBLISHABLE_KEY: Optional[str] = None
+    STRIPE_WEBHOOK_SECRET: Optional[str] = None
+    STRIPE_GROWTH_PRICE_ID: Optional[str] = None
+    FRONTEND_URL: str = "http://localhost:3000"
+
 
 
 settings = Settings()

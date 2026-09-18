@@ -22,6 +22,7 @@ from app.features.settings.router import router as settings_router
 from app.features.ml.router import router as ml_router
 from app.features.rag.router import router as rag_router
 from app.features.agents.router import router as agents_router
+from app.features.billing.router import router as billing_router
 
 
 # Initialize structured logging dict config
@@ -110,6 +111,7 @@ async def startup_event():
         from app.features.projects.models import Project
         from app.features.datasets.models import Dataset
         from app.features.reports.models import Report, ReportSchedule
+        from app.features.billing.models import WorkspaceSubscription, StripeProcessedEvent
     except ImportError:
         pass
         
@@ -457,4 +459,5 @@ app.include_router(settings_router, prefix=settings.API_V1_STR)
 app.include_router(ml_router, prefix=settings.API_V1_STR)
 app.include_router(rag_router, prefix=settings.API_V1_STR)
 app.include_router(agents_router, prefix=settings.API_V1_STR)
+app.include_router(billing_router, prefix=settings.API_V1_STR)
 

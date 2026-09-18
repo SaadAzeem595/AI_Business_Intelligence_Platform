@@ -9,6 +9,7 @@ try:
     from app.features.projects.models import Project
     from app.features.datasets.models import Dataset
     from app.features.reports.models import Report, ReportSchedule
+    from app.features.billing.models import WorkspaceSubscription, StripeProcessedEvent
 except ImportError:
     pass
 

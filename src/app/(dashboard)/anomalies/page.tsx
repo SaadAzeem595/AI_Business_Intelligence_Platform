@@ -30,6 +30,7 @@ import {
   Activity, 
   Zap
 } from "lucide-react";
+import { PlanGate } from "@/features/billing/components/PlanGate";
 
 export default function AnomaliesPage() {
   const { activeProject, setActiveProject } = useUIStore();
@@ -256,6 +257,12 @@ export default function AnomaliesPage() {
           </div>
         )}
       </div>
+
+      <PlanGate
+        feature="advanced_anomaly_detection"
+        featureName="Anomaly & Outlier Detection"
+        description="Multi-variate anomaly detection algorithms (Z-Score, IQR, and Isolation Forests) require the Growth plan. Upgrade your workspace to monitor metric spikes, threshold anomalies, and audit log risk factors."
+      >
 
       {/* No Suitable Datasets Banner */}
       {!isLoadingSchema && candidates.length === 0 && (
@@ -597,6 +604,8 @@ export default function AnomaliesPage() {
           </div>
         </div>
       )}
+      </PlanGate>
     </div>
   );
 }
+

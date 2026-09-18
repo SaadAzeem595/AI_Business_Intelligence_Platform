@@ -13,6 +13,7 @@ from app.features.datasets.models import Dataset
 from app.features.datasets.schemas import DatasetResponse, DatasetDetailsResponse, DatasetSchemaColumn, CleanPayload
 from app.features.datasets.service import DatasetService
 from app.core.cache import cache_client
+from app.features.billing.entitlements import EntitlementService
 
 logger = logging.getLogger(__name__)
 
@@ -254,6 +255,9 @@ async def upload_dataset(
     db: AsyncSession = Depends(get_db_session),
 ) -> DatasetResponse:
     """Handles binary multipart uploads and triggers DuckDB parser mappings."""
+    # Enforce workspace dataset quota
+    await EntitlementService.check_dataset_limit(db, current_user.workspace_id)
+
     try:
         import json
         from app.features.datasets.repository import dataset_repo

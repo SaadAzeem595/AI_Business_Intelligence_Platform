@@ -19,6 +19,7 @@ from app.features.reports.schemas import (
 )
 from app.features.reports.service import ReportService
 from app.core.cache import cache_client
+from app.features.billing.entitlements import EntitlementService
 
 router = APIRouter(prefix="/reports", tags=["Executive Reports"])
 
@@ -262,6 +263,9 @@ async def create_schedule(
     db: AsyncSession = Depends(get_db_session),
 ) -> ReportScheduleResponse:
     """Registers a new periodic reporting rule schedule."""
+    await EntitlementService.check_feature_entitlement(
+        db, current_user.workspace_id, "scheduled_reports"
+    )
     payload.workspace = current_user.workspace_id
     author_email = current_user.email if hasattr(current_user, "email") else "system"
     schedule = await ReportService.create_schedule(db, payload, author=author_email)

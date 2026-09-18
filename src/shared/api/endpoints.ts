@@ -48,4 +48,12 @@ export const API_ENDPOINTS = {
     TEAM: "/settings/team",
     API_KEYS: "/settings/api-keys",
   },
+  BILLING: {
+    SUBSCRIPTION: "/billing/subscription",
+    USAGE: "/billing/usage",
+    CHECKOUT: "/billing/checkout",
+    PORTAL: "/billing/portal",
+    WEBHOOK: "/billing/webhook",
+  },
 };
+

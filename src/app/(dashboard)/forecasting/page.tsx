@@ -35,6 +35,7 @@ import {
   Zap
 } from "lucide-react";
 import { cn } from "@/shared/lib/utils";
+import { PlanGate } from "@/features/billing/components/PlanGate";
 
 export default function ForecastingPage() {
   const { activeProject, setActiveProject } = useUIStore();
@@ -238,6 +239,12 @@ export default function ForecastingPage() {
           </div>
         )}
       </div>
+
+      <PlanGate
+        feature="advanced_forecasting"
+        featureName="Time-Series Forecasting"
+        description="Advanced ARIMA and Prophet forecasting engines require the Growth plan. Upgrade your workspace to run multi-period predictions, dynamic confidence intervals, and AI executive summaries."
+      >
 
       {/* No Time-Series Data Banner */}
       {!isLoadingSchema && !hasTimeSeries && (
@@ -612,6 +619,8 @@ export default function ForecastingPage() {
           </div>
         </div>
       )}
+      </PlanGate>
     </div>
   );
 }
+

@@ -3,7 +3,10 @@ from datetime import datetime
 import uuid
 from fastapi import APIRouter, Depends, status
 
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.core.database import get_db_session
 from app.core.dependencies import get_current_user, MockUser, require_role
+from app.features.billing.entitlements import EntitlementService
 from app.features.settings.schemas import (
     WorkspaceInput,
     ProfileInput,
@@ -58,13 +61,18 @@ async def update_billing(
 @router.get("/team", response_model=List[TeamMemberResponse])
 async def list_team_members(
     current_user: MockUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
 ) -> List[TeamMemberResponse]:
     """Exposes all active workspace collaborators emails."""
+    await EntitlementService.check_feature_entitlement(
+        db, current_user.workspace_id, "shared_collaboration"
+    )
     return [
         TeamMemberResponse(name="Saad Alvi", email="saad@example.com", role="Owner"),
         TeamMemberResponse(name="Alex Mercer", email="alex@company.com", role="Admin"),
         TeamMemberResponse(name="Sarah Connor", email="sarah@company.com", role="Viewer"),
     ]
+
 
 
 @router.get("/api-keys", response_model=List[APIKeyResponse])

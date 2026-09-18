@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Sparkles, BarChart3, Database, MessageSquare, ShieldAlert, Cpu, ArrowRight, CheckCircle2 } from "lucide-react";
 import { Button } from "@/shared/components/ui/button";
 import { Card, CardContent } from "@/shared/components/ui/card";
+import { PricingCards } from "@/features/billing/components/PricingCards";
 
 export default function LandingPage() {
   return (
@@ -198,81 +199,7 @@ export default function LandingPage() {
             </p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 max-w-5xl mx-auto">
-            {/* Free Tier */}
-            <Card className="border-border/80 flex flex-col justify-between">
-              <CardContent className="p-6 space-y-6 flex-1">
-                <div>
-                  <h3 className="text-base font-bold text-foreground">Starter</h3>
-                  <p className="text-xs text-muted-foreground mt-1">For individual analysts testing the engine.</p>
-                </div>
-                <div className="flex items-baseline">
-                  <span className="text-3xl font-extrabold">$0</span>
-                  <span className="text-xs text-muted-foreground ml-1">/ month</span>
-                </div>
-                <ul className="space-y-2 text-xs text-muted-foreground">
-                  <li className="flex items-center gap-2"><CheckCircle2 className="h-4 w-4 text-emerald-500" /> 1 active dataset file</li>
-                  <li className="flex items-center gap-2"><CheckCircle2 className="h-4 w-4 text-emerald-500" /> Basic SQL Playground</li>
-                  <li className="flex items-center gap-2"><CheckCircle2 className="h-4 w-4 text-emerald-500" /> Standard AI Chat queries</li>
-                </ul>
-              </CardContent>
-              <div className="p-6 pt-0 border-t border-border/40 mt-4">
-                <Link href="/dashboard" className="w-full">
-                  <Button variant="outline" className="w-full mt-4">Get Started</Button>
-                </Link>
-              </div>
-            </Card>
-
-            {/* Growth Tier */}
-            <Card className="border-brand-indigo/50 border-2 bg-brand-indigo/5 flex flex-col justify-between relative">
-              <div className="absolute -top-3.5 left-1/2 -translate-x-1/2 px-2.5 py-0.5 rounded-full bg-brand-indigo text-[10px] font-bold text-brand-indigo-foreground uppercase tracking-wider">Most Popular</div>
-              <CardContent className="p-6 space-y-6 flex-1 pt-8">
-                <div>
-                  <h3 className="text-base font-bold text-foreground">Growth</h3>
-                  <p className="text-xs text-muted-foreground mt-1">For scaling businesses and data departments.</p>
-                </div>
-                <div className="flex items-baseline">
-                  <span className="text-3xl font-extrabold">$79</span>
-                  <span className="text-xs text-muted-foreground ml-1">/ month</span>
-                </div>
-                <ul className="space-y-2 text-xs text-muted-foreground">
-                  <li className="flex items-center gap-2"><CheckCircle2 className="h-4 w-4 text-emerald-500" /> Unlimited datasets uploading</li>
-                  <li className="flex items-center gap-2"><CheckCircle2 className="h-4 w-4 text-emerald-500" /> Advanced Forecasting & Outliers</li>
-                  <li className="flex items-center gap-2"><CheckCircle2 className="h-4 w-4 text-emerald-500" /> Scheduled Executive PDF reports</li>
-                  <li className="flex items-center gap-2"><CheckCircle2 className="h-4 w-4 text-emerald-500" /> Shared team collaboration spaces</li>
-                </ul>
-              </CardContent>
-              <div className="p-6 pt-0 border-t border-border/40 mt-4">
-                <Link href="/dashboard" className="w-full">
-                  <Button variant="brand" className="w-full mt-4">Upgrade Now</Button>
-                </Link>
-              </div>
-            </Card>
-
-            {/* Enterprise Tier */}
-            <Card className="border-border/80 flex flex-col justify-between">
-              <CardContent className="p-6 space-y-6 flex-1">
-                <div>
-                  <h3 className="text-base font-bold text-foreground">Enterprise</h3>
-                  <p className="text-xs text-muted-foreground mt-1">For multi-tenant compliance and custom setups.</p>
-                </div>
-                <div className="flex items-baseline">
-                  <span className="text-3xl font-extrabold">Custom</span>
-                </div>
-                <ul className="space-y-2 text-xs text-muted-foreground">
-                  <li className="flex items-center gap-2"><CheckCircle2 className="h-4 w-4 text-emerald-500" /> Custom integrations</li>
-                  <li className="flex items-center gap-2"><CheckCircle2 className="h-4 w-4 text-emerald-500" /> SSO, SAML, & Auditing keys</li>
-                  <li className="flex items-center gap-2"><CheckCircle2 className="h-4 w-4 text-emerald-500" /> Dedicated DuckDB cloud scaling</li>
-                  <li className="flex items-center gap-2"><CheckCircle2 className="h-4 w-4 text-emerald-500" /> SLA support guarantees</li>
-                </ul>
-              </CardContent>
-              <div className="p-6 pt-0 border-t border-border/40 mt-4">
-                <Link href="mailto:sales@example.com" className="w-full">
-                  <Button variant="outline" className="w-full mt-4">Contact Sales</Button>
-                </Link>
-              </div>
-            </Card>
-          </div>
+          <PricingCards />
         </div>
       </section>
 

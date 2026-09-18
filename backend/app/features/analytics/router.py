@@ -33,6 +33,7 @@ from app.features.analytics.engine.utils import load_dataset
 from app.features.analytics.engine.forecasting import ForecastingService
 from app.features.analytics.engine.segmentation import SegmentationService
 from app.features.analytics.engine.anomaly import AnomalyDetectionService
+from app.features.billing.entitlements import EntitlementService
 
 router = APIRouter(tags=["Analytics & ML Model Operations"])
 
@@ -171,8 +172,12 @@ async def forecast_trend(
     payload: ForecastPayload,
     dataset_id: Optional[str] = None,
     current_user: MockUser = Depends(require_role(["Analyst", "Admin"])),
+    db: AsyncSession = Depends(get_db_session),
 ) -> ForecastResponse:
     """Executes pluggable forecasting model predictions on the active dataset."""
+    await EntitlementService.check_feature_entitlement(
+        db, current_user.workspace_id, "advanced_forecasting"
+    )
     try:
         dataset_path = resolve_dataset_path(dataset_id)
         df = load_dataset(dataset_path)
@@ -283,6 +288,9 @@ async def run_project_forecast(
     db: AsyncSession = Depends(get_db_session),
 ) -> ProjectForecastResponse:
     """Executes dataset-aware time-series forecasting pipeline on project datasets via DuckDB."""
+    await EntitlementService.check_feature_entitlement(
+        db, current_user.workspace_id, "advanced_forecasting"
+    )
     from app.features.projects.router import get_project_and_verify_access
     from app.features.analytics.engine.discovery import DatasetDiscoveryService, is_valid_date_column, EXPLICIT_NON_DATE_KEYWORDS
     from app.features.analytics.engine.forecasting import ProductionForecastingEngine
@@ -596,6 +604,9 @@ async def run_project_anomalies(
     db: AsyncSession = Depends(get_db_session),
 ) -> ProjectAnomalyResponse:
     """Executes dataset-aware anomaly detection pipeline (Z-Score, IQR, Isolation Forest) on project datasets."""
+    await EntitlementService.check_feature_entitlement(
+        db, current_user.workspace_id, "advanced_anomaly_detection"
+    )
     from app.features.projects.router import get_project_and_verify_access
     from app.features.analytics.engine.discovery import DatasetDiscoveryService
 
@@ -713,8 +724,12 @@ async def detect_anomalies(
     payload: AnomalyPayload,
     dataset_id: Optional[str] = None,
     current_user: MockUser = Depends(require_role(["Analyst", "Admin"])),
+    db: AsyncSession = Depends(get_db_session),
 ) -> AnomalyResponse:
     """Scans dataset columns for standard deviation and mathematical spikes/outliers."""
+    await EntitlementService.check_feature_entitlement(
+        db, current_user.workspace_id, "advanced_anomaly_detection"
+    )
     try:
         dataset_path = resolve_dataset_path(dataset_id)
         df = load_dataset(dataset_path)

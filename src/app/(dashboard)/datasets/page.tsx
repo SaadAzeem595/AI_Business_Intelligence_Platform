@@ -6,20 +6,27 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/sha
 import { Button } from "@/shared/components/ui/button";
 import { Badge } from "@/shared/components/ui/badge";
 import { BaseTable, type Column } from "@/shared/components/data-display/BaseTable";
-import { UploadCloud, File, Trash2, ArrowRight, Table } from "lucide-react";
+import { UploadCloud, File, Trash2, ArrowRight, Table, Sparkles, AlertCircle } from "lucide-react";
 import { cn } from "@/shared/lib/utils";
 
 import { useDatasets } from "@/features/datasets/hooks/useDatasets";
 import { useUpload } from "@/features/datasets/hooks/useUpload";
+import { useSubscription } from "@/features/billing/hooks/useSubscription";
 import { Dataset } from "@/shared/types/dataset";
 
 export default function DatasetsPage() {
   const { datasets, isLoading, deleteDataset } = useDatasets();
   const { upload, isUploading, progress } = useUpload();
+  const { plan, datasetUsage, isAtDatasetLimit, createCheckout, isCheckingOut } = useSubscription();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragActive, setIsDragActive] = useState(false);
 
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (isAtDatasetLimit && plan === "starter") {
+      createCheckout({ plan: "growth" });
+      return;
+    }
     const file = e.target.files?.[0];
     if (file) {
       const cleanTableName = file.name
@@ -31,6 +38,10 @@ export default function DatasetsPage() {
   };
 
   const handleButtonClick = () => {
+    if (isAtDatasetLimit && plan === "starter") {
+      createCheckout({ plan: "growth" });
+      return;
+    }
     fileInputRef.current?.click();
   };
 
@@ -47,6 +58,10 @@ export default function DatasetsPage() {
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragActive(false);
+    if (isAtDatasetLimit && plan === "starter") {
+      createCheckout({ plan: "growth" });
+      return;
+    }
     const file = e.dataTransfer.files?.[0];
     if (file) {
       const cleanTableName = file.name
@@ -148,6 +163,28 @@ export default function DatasetsPage() {
         <h1 className="text-2xl font-bold tracking-tight">Data Sources</h1>
         <p className="text-xs text-muted-foreground">Upload and manage datasets. DuckDB analyzes and indexes uploaded sheets automatically.</p>
       </div>
+
+      {/* Starter Quota Banner */}
+      {isAtDatasetLimit && plan === "starter" && (
+        <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-amber-500">
+          <div className="flex items-center gap-2.5">
+            <AlertCircle className="h-5 w-5 shrink-0" />
+            <div className="text-xs">
+              <span className="font-semibold text-sm block sm:inline mr-1">Starter Quota Reached:</span>
+              You have reached the 1 active dataset limit on Starter. Upgrade to Growth for unlimited dataset uploads.
+            </div>
+          </div>
+          <Button
+            size="sm"
+            onClick={() => createCheckout({ plan: "growth" })}
+            disabled={isCheckingOut}
+            className="bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold shrink-0 gap-1.5"
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+            {isCheckingOut ? "Loading..." : "Upgrade to Growth"}
+          </Button>
+        </div>
+      )}
 
       {/* Drag & Drop Upload Zone */}
       <Card 
