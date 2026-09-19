@@ -77,3 +77,14 @@ export interface BillingErrorResponse {
   current?: number;
   limit?: number;
 }
+
+export interface Invoice {
+  invoiceId: string;
+  amount: string;
+  amount_paid?: number;
+  currency?: string;
+  date: string;
+  status: string;
+  hosted_invoice_url?: string | null;
+  invoice_pdf?: string | null;
+}

@@ -6,14 +6,10 @@ import { BillingInput, WorkspaceInput, ProfileInput } from "../schemas/settings.
 export const BillingService = {
   async getInvoices(): Promise<Invoice[]> {
     try {
-      const response = await apiClient.get<Invoice[]>(API_ENDPOINTS.SETTINGS.BILLING);
-      return response.data;
+      const response = await apiClient.get<Invoice[]>(API_ENDPOINTS.BILLING.INVOICES);
+      return response.data || [];
     } catch {
-      return [
-        { invoiceId: "INV-9021", amount: "$79.00", date: "2026-08-01", status: "Paid" },
-        { invoiceId: "INV-7801", amount: "$79.00", date: "2026-07-01", status: "Paid" },
-        { invoiceId: "INV-6204", amount: "$79.00", date: "2026-06-01", status: "Paid" },
-      ];
+      return [];
     }
   },
 

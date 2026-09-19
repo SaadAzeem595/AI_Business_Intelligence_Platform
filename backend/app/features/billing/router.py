@@ -1,8 +1,9 @@
-from typing import Optional
+from typing import Optional, List
 import logging
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db_session
 from app.core.dependencies import get_current_user, MockUser
 from app.features.billing.schemas import (
@@ -12,6 +13,7 @@ from app.features.billing.schemas import (
     PortalResponse,
     SubscriptionResponse,
     UsageResponse,
+    InvoiceResponse,
 )
 from app.features.billing.entitlements import EntitlementService
 from app.features.billing.stripe_service import StripeService
@@ -33,6 +35,7 @@ async def get_subscription(
     effective_plan = await EntitlementService.get_workspace_plan(
         db, current_user.workspace_id
     )
+    entitlements = EntitlementService.get_plan_entitlements(effective_plan)
     return SubscriptionResponse(
         plan=effective_plan,
         status=sub.status,
@@ -41,6 +44,7 @@ async def get_subscription(
         cancel_at_period_end=sub.cancel_at_period_end,
         stripe_customer_id=sub.stripe_customer_id,
         stripe_subscription_id=sub.stripe_subscription_id,
+        entitlements=entitlements,
     )
 
 
@@ -54,6 +58,19 @@ async def get_usage(
         db, current_user.workspace_id
     )
     return UsageResponse(**usage_data)
+
+
+@router.get("/invoices", response_model=List[InvoiceResponse])
+async def get_invoices(
+    current_user: MockUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+) -> List[InvoiceResponse]:
+    """
+    Returns authentic past billing history invoices from Stripe.
+    Workspace isolation strictly enforced; never returns mock invoices.
+    """
+    invoices = await StripeService.list_invoices(db, current_user.workspace_id)
+    return [InvoiceResponse(**inv) for inv in invoices]
 
 
 @router.post("/checkout", response_model=CheckoutResponse)
@@ -118,6 +135,13 @@ async def stripe_webhook(
     Production-grade, idempotent Stripe webhook endpoint.
     Processes signature-verified lifecycle events from Stripe.
     """
+    if not stripe_signature and settings.STRIPE_WEBHOOK_SECRET and not settings.STRIPE_WEBHOOK_SECRET.startswith("whsec_placeholder"):
+        logger.warning("[BILLING] Webhook HTTP request received without stripe-signature header")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing stripe-signature header",
+        )
+
     payload_bytes = await request.body()
     try:
         result = await StripeService.handle_webhook(
@@ -138,3 +162,4 @@ async def stripe_webhook(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Webhook handler failure",
         )
+

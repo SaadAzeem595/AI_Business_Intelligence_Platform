@@ -40,12 +40,19 @@ async def update_profile(
 @router.get("/billing", response_model=List[InvoiceResponse])
 async def list_invoices(
     current_user: MockUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
 ) -> List[InvoiceResponse]:
-    """Returns past billing history invoices lists."""
+    """Returns authentic past billing history invoices from Stripe."""
+    from app.features.billing.stripe_service import StripeService
+    invoices = await StripeService.list_invoices(db, current_user.workspace_id)
     return [
-        InvoiceResponse(invoiceId="INV-9021", amount="$79.00", date="2026-08-01", status="Paid"),
-        InvoiceResponse(invoiceId="INV-7801", amount="$79.00", date="2026-07-01", status="Paid"),
-        InvoiceResponse(invoiceId="INV-6204", amount="$79.00", date="2026-06-01", status="Paid"),
+        InvoiceResponse(
+            invoiceId=inv["invoiceId"],
+            amount=inv["amount"],
+            date=inv["date"],
+            status=inv["status"],
+        )
+        for inv in invoices
     ]
 
 

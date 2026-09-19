@@ -65,6 +65,12 @@ class StripeProcessedEvent(Base):
     workspace_id: Mapped[Optional[str]] = mapped_column(
         String, nullable=True, index=True
     )
+    status: Mapped[str] = mapped_column(
+        String, default="processed", nullable=False
+    )
+    error_message: Mapped[Optional[str]] = mapped_column(
+        String, nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=func.now(), nullable=False
     )

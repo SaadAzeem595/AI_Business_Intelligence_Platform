@@ -27,6 +27,7 @@ import {
   Database,
   Layers,
   Clock,
+  Receipt,
 } from "lucide-react";
 import { useSubscription } from "@/features/billing/hooks/useSubscription";
 import { useBilling } from "@/features/settings/hooks/useBilling";
@@ -35,7 +36,9 @@ interface Invoice {
   invoiceId: string;
   amount: string;
   date: string;
-  status: "Paid" | "Pending";
+  status: string;
+  hosted_invoice_url?: string | null;
+  invoice_pdf?: string | null;
 }
 
 function BillingContent() {
@@ -64,27 +67,31 @@ function BillingContent() {
 
   const { invoices, isLoadingInvoices } = useBilling();
 
-  // Polling state when returning from successful checkout
+  // Polling state when returning from checkout
   const [pollingAttempts, setPollingAttempts] = useState(0);
-  const [pollSuccess, setPollSuccess] = useState(false);
+  const [syncTimeout, setSyncTimeout] = useState(false);
 
   useEffect(() => {
     if (checkoutStatus === "success" && plan !== "growth") {
-      const interval = setInterval(() => {
-        setPollingAttempts((prev) => {
-          if (prev < 15) {
-            refetch();
-            return prev + 1;
-          } else {
-            clearInterval(interval);
-            return prev;
-          }
-        });
-      }, 2000);
+      let currentAttempt = 0;
+      const maxAttempts = 8;
+      let timer: NodeJS.Timeout;
 
-      return () => clearInterval(interval);
-    } else if (checkoutStatus === "success" && plan === "growth") {
-      setPollSuccess(true);
+      const runPoll = () => {
+        currentAttempt += 1;
+        setPollingAttempts(currentAttempt);
+        refetch();
+
+        if (currentAttempt < maxAttempts) {
+          const delay = Math.min(2000 + currentAttempt * 500, 5000);
+          timer = setTimeout(runPoll, delay);
+        } else {
+          setSyncTimeout(true);
+        }
+      };
+
+      timer = setTimeout(runPoll, 1500);
+      return () => clearTimeout(timer);
     }
   }, [checkoutStatus, plan, refetch]);
 
@@ -111,17 +118,32 @@ function BillingContent() {
       header: "Receipt",
       accessorKey: "receipt",
       align: "right",
-      cell: () => (
-        <Button
-          size="icon"
-          variant="ghost"
-          className="h-8 w-8 hover:bg-muted text-muted-foreground hover:text-foreground"
-          onClick={() => openPortal()}
-          title="Download Receipt via Stripe Portal"
-        >
-          <Download className="h-4 w-4" />
-        </Button>
-      ),
+      cell: (row) => {
+        if (row.hosted_invoice_url || row.invoice_pdf) {
+          return (
+            <a
+              href={row.hosted_invoice_url || row.invoice_pdf || "#"}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center justify-center h-8 w-8 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+              title="View Invoice Receipt on Stripe"
+            >
+              <ExternalLink className="h-4 w-4" />
+            </a>
+          );
+        }
+        return (
+          <Button
+            size="icon"
+            variant="ghost"
+            className="h-8 w-8 hover:bg-muted text-muted-foreground hover:text-foreground"
+            onClick={() => openPortal()}
+            title="Manage in Stripe Portal"
+          >
+            <Download className="h-4 w-4" />
+          </Button>
+        );
+      },
     },
   ];
 
@@ -219,20 +241,66 @@ function BillingContent() {
 
       {/* Checkout Return Banners */}
       {checkoutStatus === "success" && (
-        <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-emerald-400 flex items-start gap-3">
-          <CheckCircle2 className="h-5 w-5 mt-0.5 shrink-0" />
+        <div
+          className={`rounded-xl border p-4 flex items-start gap-3 transition-colors ${
+            plan === "growth"
+              ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
+              : syncTimeout
+              ? "border-amber-500/30 bg-amber-500/10 text-amber-400"
+              : "border-indigo-500/30 bg-indigo-500/10 text-indigo-400"
+          }`}
+        >
+          {plan === "growth" ? (
+            <CheckCircle2 className="h-5 w-5 mt-0.5 shrink-0 text-emerald-400" />
+          ) : syncTimeout ? (
+            <AlertTriangle className="h-5 w-5 mt-0.5 shrink-0 text-amber-400" />
+          ) : (
+            <Loader2 className="h-5 w-5 mt-0.5 shrink-0 animate-spin text-indigo-400" />
+          )}
           <div className="text-xs space-y-1">
             <div className="font-semibold text-sm">
-              Payment Completed Successfully!
+              {plan === "growth"
+                ? "Growth Subscription Activated"
+                : syncTimeout
+                ? "Subscription Activation Pending"
+                : "Payment Submitted — Confirming Subscription..."}
             </div>
-            {plan === "growth" || pollSuccess ? (
+            {plan === "growth" ? (
               <p>
-                Your workspace has been elevated to <strong>Growth Plan</strong>. You now have unlimited datasets and all advanced forecasting, anomalies, and reporting features.
+                Your workspace has been elevated to the <strong>Growth Plan</strong>. You now have unlimited datasets and access to Advanced Forecasting, Anomaly Detection, and Scheduled Reports.
               </p>
+            ) : syncTimeout ? (
+              <div className="space-y-1.5">
+                <p>
+                  Payment received. Subscription activation is pending confirmation from Stripe. Please refresh this page shortly or inspect your Stripe Customer Portal.
+                </p>
+                <div className="pt-1 flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setSyncTimeout(false);
+                      refetch();
+                    }}
+                    className="text-xs h-7 gap-1"
+                  >
+                    <RefreshCw className="h-3 w-3" /> Retry Confirmation
+                  </Button>
+                  {subscription?.stripe_customer_id && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => openPortal()}
+                      className="text-xs h-7 gap-1"
+                    >
+                      <ExternalLink className="h-3 w-3" /> Stripe Portal
+                    </Button>
+                  )}
+                </div>
+              </div>
             ) : (
               <p className="flex items-center gap-2">
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                Synchronizing subscription webhook with Stripe (Attempt {pollingAttempts}/15)...
+                Subscription activation is pending confirmation from Stripe (Attempt {pollingAttempts}/8)...
               </p>
             )}
           </div>
@@ -267,7 +335,9 @@ function BillingContent() {
                 {getStatusBadge()}
               </div>
               <CardDescription className="text-xs">
-                {plan === "growth"
+                {isGracePeriod
+                  ? "Growth — Canceling (Access retained until period end)"
+                  : plan === "growth"
                   ? "Growth Tier (Full Analytics & Automated Delivery)"
                   : plan === "enterprise"
                   ? "Enterprise Custom Scaled Platform"
@@ -278,7 +348,7 @@ function BillingContent() {
               <div className="flex items-baseline justify-between border-b border-border/40 pb-4">
                 <div>
                   <h3 className="text-3xl font-black text-foreground capitalize">
-                    {plan === "growth"
+                    {plan === "growth" || isGracePeriod
                       ? "$79.00"
                       : plan === "enterprise"
                       ? "Custom"
@@ -288,7 +358,10 @@ function BillingContent() {
                     </span>
                   </h3>
                   <p className="text-[11px] text-muted-foreground mt-0.5">
-                    Workspace plan: <strong className="text-foreground capitalize">{plan}</strong>
+                    Workspace plan:{" "}
+                    <strong className="text-foreground capitalize">
+                      {isGracePeriod ? "Growth — Canceling" : plan}
+                    </strong>
                   </p>
                 </div>
 
@@ -330,7 +403,7 @@ function BillingContent() {
                 <div className="text-xs flex items-center justify-between text-muted-foreground bg-muted/40 p-2.5 rounded-lg border border-border/40">
                   <span className="flex items-center gap-1.5">
                     <Clock className="h-3.5 w-3.5 text-indigo-400" />
-                    {isGracePeriod ? "Access expires on" : "Renews automatically on"}
+                    {isGracePeriod ? "Access ends on" : "Renews automatically on"}
                   </span>
                   <span className="font-semibold text-foreground">
                     {formattedPeriodEnd}
@@ -536,6 +609,13 @@ function BillingContent() {
               columns={columns as any}
               data={invoices}
               isLoading={isLoadingInvoices}
+              emptyState={
+                <div className="flex flex-col items-center justify-center space-y-2 py-8 text-center">
+                  <Receipt className="h-8 w-8 text-muted-foreground/30" />
+                  <p className="text-sm font-medium text-foreground">No invoices yet.</p>
+                  <p className="text-xs text-muted-foreground">Real Stripe payment receipts will appear here automatically upon completed subscription billing cycles.</p>
+                </div>
+              }
             />
           </div>
         </div>

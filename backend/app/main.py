@@ -280,10 +280,37 @@ async def startup_event():
                         except Exception as e:
                             startup_logger.warning(f"Could not add column {col} to report_schedules: {e}")
 
+        def check_and_upgrade_stripe_processed_events_table(sync_conn):
+            try:
+                cols = sync_conn.execute(text("PRAGMA table_info(stripe_processed_events)"))
+                col_names = [row[1] for row in cols.fetchall()]
+            except Exception:
+                try:
+                    cols = sync_conn.execute(text(
+                        "SELECT column_name FROM information_schema.columns WHERE table_name='stripe_processed_events'"
+                    ))
+                    col_names = [row[0] for row in cols.fetchall()]
+                except Exception:
+                    col_names = []
+
+            if col_names:
+                new_cols = {
+                    "status": "VARCHAR DEFAULT 'processed'",
+                    "error_message": "VARCHAR",
+                }
+                for col, col_type in new_cols.items():
+                    if col not in col_names:
+                        try:
+                            sync_conn.execute(text(f"ALTER TABLE stripe_processed_events ADD COLUMN {col} {col_type}"))
+                            startup_logger.info(f"Dynamically added missing column {col} to stripe_processed_events table")
+                        except Exception as e:
+                            startup_logger.warning(f"Could not add column {col} to stripe_processed_events: {e}")
+
         await conn.run_sync(check_and_upgrade_datasets_table)
         await conn.run_sync(check_and_upgrade_users_table)
         await conn.run_sync(check_and_upgrade_projects_table)
         await conn.run_sync(check_and_upgrade_reports_table)
+        await conn.run_sync(check_and_upgrade_stripe_processed_events_table)
 
     if settings.DEV_AUTH_BYPASS and not is_prod:
         startup_logger.warning("!" * 80)

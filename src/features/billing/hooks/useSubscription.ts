@@ -15,14 +15,14 @@ export function useSubscription() {
   const subscriptionQuery = useQuery({
     queryKey: BILLING_QUERY_KEYS.SUBSCRIPTION,
     queryFn: () => BillingService.getSubscription(),
-    staleTime: 30 * 1000,
+    staleTime: 10 * 1000,
     retry: 1,
   });
 
   const usageQuery = useQuery({
     queryKey: BILLING_QUERY_KEYS.USAGE,
     queryFn: () => BillingService.getUsage(),
-    staleTime: 30 * 1000,
+    staleTime: 10 * 1000,
     retry: 1,
   });
 
@@ -71,6 +71,11 @@ export function useSubscription() {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: BILLING_QUERY_KEYS.SUBSCRIPTION }),
       queryClient.invalidateQueries({ queryKey: BILLING_QUERY_KEYS.USAGE }),
+      queryClient.invalidateQueries({ queryKey: ["settings", "invoices"] }),
+    ]);
+    await Promise.all([
+      subscriptionQuery.refetch(),
+      usageQuery.refetch(),
     ]);
   };
 

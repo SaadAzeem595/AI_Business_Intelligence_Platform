@@ -7,6 +7,7 @@ import {
   CheckoutSessionResponse,
   PortalSessionRequest,
   PortalSessionResponse,
+  Invoice,
 } from "@/shared/types/billing";
 
 export const BillingService = {
@@ -28,6 +29,21 @@ export const BillingService = {
       API_ENDPOINTS.BILLING.USAGE
     );
     return response.data;
+  },
+
+  /**
+   * Retrieves authentic past billing history invoices from Stripe.
+   * Returns empty array if no invoices exist; never returns fake data.
+   */
+  async getInvoices(): Promise<Invoice[]> {
+    try {
+      const response = await apiClient.get<Invoice[]>(
+        API_ENDPOINTS.BILLING.INVOICES
+      );
+      return response.data || [];
+    } catch {
+      return [];
+    }
   },
 
   /**
