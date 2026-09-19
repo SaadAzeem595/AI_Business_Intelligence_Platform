@@ -22,6 +22,16 @@ export const BillingService = {
   },
 
   /**
+   * Triggers authoritative synchronization against Stripe to reconcile subscription status.
+   */
+  async syncSubscription(): Promise<SubscriptionData> {
+    const response = await apiClient.post<SubscriptionData>(
+      API_ENDPOINTS.BILLING.SYNC
+    );
+    return response.data;
+  },
+
+  /**
    * Retrieves real-time dataset usage, quota limits, and feature entitlements.
    */
   async getUsage(): Promise<UsageData> {

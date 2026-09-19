@@ -25,6 +25,7 @@ router = APIRouter(prefix="/billing", tags=["Billing & Subscriptions"])
 
 @router.get("/subscription", response_model=SubscriptionResponse)
 async def get_subscription(
+    sync: bool = False,
     current_user: MockUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ) -> SubscriptionResponse:
@@ -32,6 +33,16 @@ async def get_subscription(
     sub = await EntitlementService.get_or_create_workspace_subscription(
         db, current_user.workspace_id
     )
+
+    # Reconcile if sync requested or if customer exists but subscription is unlinked or still starter
+    if sub.stripe_customer_id and not sub.stripe_customer_id.startswith("cus_dev_"):
+        if sync or sub.stripe_subscription_id is None or sub.plan == "starter":
+            updated_sub = await StripeService.sync_subscription_from_stripe(
+                db, current_user.workspace_id
+            )
+            if updated_sub:
+                sub = updated_sub
+
     effective_plan = await EntitlementService.get_workspace_plan(
         db, current_user.workspace_id
     )
@@ -46,6 +57,16 @@ async def get_subscription(
         stripe_subscription_id=sub.stripe_subscription_id,
         entitlements=entitlements,
     )
+
+
+@router.post("/sync", response_model=SubscriptionResponse)
+async def sync_subscription(
+    current_user: MockUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+) -> SubscriptionResponse:
+    """Explicitly triggers synchronization against Stripe to reconcile subscription status."""
+    await StripeService.sync_subscription_from_stripe(db, current_user.workspace_id)
+    return await get_subscription(sync=False, current_user=current_user, db=db)
 
 
 @router.get("/usage", response_model=UsageResponse)

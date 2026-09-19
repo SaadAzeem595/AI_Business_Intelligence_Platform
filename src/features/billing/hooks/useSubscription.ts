@@ -67,7 +67,12 @@ export function useSubscription() {
   const isAtDatasetLimit =
     datasetUsage.limit !== null && datasetUsage.current >= datasetUsage.limit;
 
-  const refetchAll = async () => {
+  const syncSubscription = async () => {
+    try {
+      await BillingService.syncSubscription();
+    } catch {
+      // Continue to invalidate/refetch cached queries
+    }
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: BILLING_QUERY_KEYS.SUBSCRIPTION }),
       queryClient.invalidateQueries({ queryKey: BILLING_QUERY_KEYS.USAGE }),
@@ -98,6 +103,7 @@ export function useSubscription() {
     openPortal: (req?: PortalSessionRequest) => portalMutation.mutateAsync(req),
     isOpeningPortal: portalMutation.isPending,
     portalError: portalMutation.error,
-    refetch: refetchAll,
+    refetch: syncSubscription,
+    syncSubscription,
   };
 }

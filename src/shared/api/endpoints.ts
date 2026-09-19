@@ -55,6 +55,7 @@ export const API_ENDPOINTS = {
     PORTAL: "/billing/portal",
     WEBHOOK: "/billing/webhook",
     INVOICES: "/billing/invoices",
+    SYNC: "/billing/sync",
   },
 };
 

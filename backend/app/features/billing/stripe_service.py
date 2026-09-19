@@ -255,6 +255,71 @@ class StripeService:
             return []
 
     @classmethod
+    async def sync_subscription_from_stripe(
+        cls,
+        db: AsyncSession,
+        workspace_id: str,
+    ) -> Optional[WorkspaceSubscription]:
+        """
+        Actively reconciles the workspace subscription state with the Stripe API.
+        Acts as a robust fallback and live synchronizer when webhooks are pending,
+        delayed by network latency, or in environments where webhooks cannot reach localhost.
+        """
+        cls.init_stripe()
+        if not cls._is_stripe_configured():
+            return None
+
+        sub = await EntitlementService.get_workspace_subscription(db, workspace_id)
+        if not sub or not sub.stripe_customer_id or sub.stripe_customer_id.startswith("cus_dev_"):
+            return None
+
+        try:
+            cus_subs = stripe.Subscription.list(
+                customer=sub.stripe_customer_id,
+                limit=5,
+            )
+            for cs in cus_subs.data:
+                d = cs.to_dict() if hasattr(cs, "to_dict") else dict(cs)
+                status = d.get("status")
+                if status in ("active", "trialing", "past_due"):
+                    sub.stripe_subscription_id = cs.id
+                    sub.status = status
+                    sub.plan = PLAN_GROWTH
+                    sub.cancel_at_period_end = d.get("cancel_at_period_end", False)
+                    items = d.get("items", {}).get("data", [])
+                    if items:
+                        item = items[0]
+                        cps = item.get("current_period_start") or d.get("current_period_start")
+                        cpe = item.get("current_period_end") or d.get("current_period_end")
+                        if cps:
+                            sub.current_period_start = datetime.fromtimestamp(cps, tz=timezone.utc)
+                        if cpe:
+                            sub.current_period_end = datetime.fromtimestamp(cpe, tz=timezone.utc)
+                    await db.commit()
+                    await db.refresh(sub)
+                    logger.info(
+                        f"[BILLING] Live reconciled subscription from Stripe: workspace_id={workspace_id}, sub_id={cs.id}, status={status}"
+                    )
+                    return sub
+
+            if sub.plan == PLAN_GROWTH and sub.stripe_subscription_id:
+                try:
+                    remote_sub = stripe.Subscription.retrieve(sub.stripe_subscription_id)
+                    rem_d = remote_sub.to_dict() if hasattr(remote_sub, "to_dict") else dict(remote_sub)
+                    if rem_d.get("status") in ("canceled", "unpaid"):
+                        sub.status = rem_d.get("status")
+                        sub.plan = PLAN_STARTER
+                        await db.commit()
+                        await db.refresh(sub)
+                except Exception:
+                    pass
+
+            return sub
+        except Exception as e:
+            logger.error(f"[BILLING] Error synchronizing subscription from Stripe: {e}")
+            return sub
+
+    @classmethod
     async def handle_webhook(
         cls,
         db: AsyncSession,
