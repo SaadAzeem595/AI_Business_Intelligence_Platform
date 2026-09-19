@@ -30,8 +30,10 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
+# env files (allow templates to be committed)
 .env*
+!.env.example
+!.env.production.example
 
 # vercel
 .vercel
@@ -42,8 +44,24 @@ next-env.d.ts
 
 # Database & Vector Store Files
 *.db
+*.db-journal
 *.db.wal
 *.db.shm
 *.sqlite
 *.sqlite3
 backend/*.db*
+rag_vector.db*
+local_dev.db*
+mlflow.db*
+
+# Storage, Uploads, and Artifacts
+storage/
+backend/storage/
+uploads/
+backend/app/uploads/
+mlruns/
+backend/mlruns/
+
+# Test output and debug dumps
+*_out.txt
+*.log

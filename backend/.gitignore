@@ -4,4 +4,19 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 uploads/
+app/uploads/
+storage/
 *.db
+*.db-journal
+*.db.wal
+*.db.shm
+*.sqlite
+*.sqlite3
+mlruns/
+*_out.txt
+*.log
+
+# Env templates allowed
+.env*
+!.env.example
+!.env.production.example

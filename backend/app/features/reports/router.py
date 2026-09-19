@@ -180,9 +180,10 @@ async def download_report(
     req_ext = "pdf" if "PDF" in target_format else ("pptx" if "PPT" in target_format or "POWERPOINT" in target_format else "html")
 
     file_path = report.file_path
+    reports_dir = os.path.join(settings.resolved_storage_dir, "reports")
     if not file_path or not os.path.exists(file_path) or not file_path.endswith(f".{req_ext}"):
         # Check if alternative format exists or compile on the fly
-        base_path = file_path.rsplit(".", 1)[0] if file_path else os.path.join("storage", "reports", f"report-{id}")
+        base_path = file_path.rsplit(".", 1)[0] if file_path else os.path.join(reports_dir, f"report-{id}")
         alt_path = f"{base_path}.{req_ext}"
         if os.path.exists(alt_path):
             file_path = alt_path
@@ -196,7 +197,7 @@ async def download_report(
 
                 data_dict = json.loads(report.report_data)
                 exec_data = ExecutiveReportData.model_validate(data_dict)
-                snapshot_path = os.path.join("storage", "reports", f"snapshot-{id}.png")
+                snapshot_path = os.path.join(reports_dir, f"snapshot-{id}.png")
 
                 if req_ext == "pdf":
                     PDFReportGenerator.generate(alt_path, report.title, report.template, data_dict, snapshot_path)

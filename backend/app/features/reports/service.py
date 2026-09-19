@@ -7,6 +7,7 @@ from typing import List, Optional, Dict, Any
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 import app.features.auth.models  # Ensures User relationship is initialized in SQLAlchemy mapper
 from app.features.reports.models import Report, ReportSchedule
 from app.features.reports.schemas import (
@@ -257,9 +258,10 @@ class ReportService:
                     ctx.forecast.unavailable_reason = "Forecasting unavailable for the selected dataset scope."
 
             # 4. Generate Snapshot PNG for visuals
-            os.makedirs(os.path.join("storage", "reports"), exist_ok=True)
+            reports_dir = os.path.join(settings.resolved_storage_dir, "reports")
+            os.makedirs(reports_dir, exist_ok=True)
             snapshot_filename = f"snapshot-{report_id}.png"
-            snapshot_path = os.path.join("storage", "reports", snapshot_filename)
+            snapshot_path = os.path.join(reports_dir, snapshot_filename)
             snapshot_abs = os.path.abspath(snapshot_path)
 
             kpis_dict_list = [
@@ -272,7 +274,7 @@ class ReportService:
             format_type = (payload.type or "PDF").strip()
             ext = "pdf" if format_type == "PDF" else ("pptx" if format_type in ["PowerPoint", "PPTX"] else "html")
             report_filename = f"report-{report_id}.{ext}"
-            report_path = os.path.join("storage", "reports", report_filename)
+            report_path = os.path.join(reports_dir, report_filename)
             report_abs = os.path.abspath(report_path)
 
             template_data = report_data.model_dump()

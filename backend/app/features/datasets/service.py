@@ -3,6 +3,7 @@ import uuid
 from typing import Dict, Any, List
 import duckdb
 
+from app.core.config import settings
 from app.core.database import get_duckdb_conn
 from app.features.datasets.schemas import DatasetSchemaColumn, DatasetDetailsResponse
 
@@ -12,8 +13,7 @@ class DatasetService:
 
     @staticmethod
     def get_upload_dir() -> str:
-        # Create an uploads directory inside the workspace
-        upload_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
+        upload_dir = settings.resolved_uploads_dir
         os.makedirs(upload_dir, exist_ok=True)
         return upload_dir
 

@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     NODE_ENV: Optional[str] = None
     APP_ENV: Optional[str] = None
     DEV_AUTH_BYPASS: bool = False
+    ENABLE_DOCS: bool = False
+
+    @property
+    def is_production(self) -> bool:
+        env_vars = [self.ENVIRONMENT, self.NODE_ENV, self.APP_ENV]
+        return any(v and v.strip().lower() == "production" for v in env_vars)
 
     @model_validator(mode="after")
     def validate_dev_auth_bypass(self) -> "Settings":
@@ -132,6 +138,22 @@ class Settings(BaseSettings):
     STRIPE_WEBHOOK_SECRET: Optional[str] = None
     STRIPE_GROWTH_PRICE_ID: Optional[str] = None
     FRONTEND_URL: str = "http://localhost:3000"
+
+    # Persistent Storage Paths (supports shared volume mounts)
+    STORAGE_DIR: str = "storage"
+    UPLOADS_DIR: str = "uploads"
+
+    @property
+    def resolved_storage_dir(self) -> str:
+        if os.path.isabs(self.STORAGE_DIR):
+            return self.STORAGE_DIR
+        return os.path.abspath(os.path.join(base_dir, self.STORAGE_DIR))
+
+    @property
+    def resolved_uploads_dir(self) -> str:
+        if os.path.isabs(self.UPLOADS_DIR):
+            return self.UPLOADS_DIR
+        return os.path.abspath(os.path.join(base_dir, self.UPLOADS_DIR))
 
 
 

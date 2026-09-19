@@ -3,14 +3,36 @@ import { NextRequest, NextResponse } from "next/server";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
+function getBackendBaseUrl(): string {
+  const rawUrl =
+    process.env.INTERNAL_BACKEND_URL ||
+    process.env.NEXT_PUBLIC_API_URL ||
+    "http://127.0.0.1:8000";
+
+  let trimmed = rawUrl.trim().replace(/\/+$/, "");
+  if (trimmed.startsWith("/")) {
+    trimmed = "http://127.0.0.1:8000";
+  }
+  if (trimmed.endsWith("/api/v1")) {
+    trimmed = trimmed.substring(0, trimmed.length - 7);
+  }
+  return trimmed;
+}
+
 async function handleProxy(req: NextRequest, { params }: { params: Promise<{ path: string[] }> }) {
   const resolvedParams = await params;
   const pathStr = resolvedParams.path ? resolvedParams.path.join("/") : "";
   const searchParams = req.nextUrl.search;
-  const targetUrl = `http://127.0.0.1:8000/api/v1/${pathStr}${searchParams}`;
+  const backendBase = getBackendBaseUrl();
+  const targetUrl = `${backendBase}/api/v1/${pathStr}${searchParams}`;
 
   const headers = new Headers(req.headers);
-  headers.set("host", "127.0.0.1:8000");
+  try {
+    const targetHost = new URL(targetUrl).host;
+    headers.set("host", targetHost);
+  } catch {
+    headers.delete("host");
+  }
   headers.delete("accept-encoding");
 
   const hasBody = req.method !== "GET" && req.method !== "HEAD";

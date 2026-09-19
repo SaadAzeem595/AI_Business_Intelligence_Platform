@@ -14,21 +14,46 @@ logger = logging.getLogger(__name__)
 # Dynamic check for testing mode to use in-memory SQLite database
 IS_TESTING = "pytest" in sys.modules or os.getenv("TESTING") == "1"
 
+def get_target_db_host_and_port() -> tuple[str, int]:
+    """Resolves target database host and port from DATABASE_URL or settings."""
+    if settings.DATABASE_URL:
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(settings.DATABASE_URL)
+            if parsed.hostname:
+                return parsed.hostname, parsed.port or 5432
+        except Exception:
+            pass
+    return settings.POSTGRES_SERVER, settings.POSTGRES_PORT
+
 def check_postgres_availability() -> bool:
     import socket
+    host, port = get_target_db_host_and_port()
     try:
-        # Simple TCP connection probe with a short timeout (0.5s)
-        with socket.create_connection((settings.POSTGRES_SERVER, settings.POSTGRES_PORT), timeout=0.5):
+        # Simple TCP connection probe with a 1.0s timeout
+        with socket.create_connection((host, port), timeout=1.0):
             return True
     except Exception:
         return False
 
-USE_SQLITE = IS_TESTING or not check_postgres_availability()
+postgres_available = check_postgres_availability()
+
+if settings.is_production and not postgres_available and not IS_TESTING:
+    host, port = get_target_db_host_and_port()
+    error_msg = (
+        f"CRITICAL DATABASE ERROR: Production PostgreSQL database at '{host}:{port}' is unreachable! "
+        f"Refusing to fall back to ephemeral SQLite in production environment."
+    )
+    logger.error(error_msg)
+    raise RuntimeError(error_msg)
+
+USE_SQLITE = IS_TESTING or (not postgres_available and not settings.is_production)
 
 if USE_SQLITE:
     if not IS_TESTING:
+        host, port = get_target_db_host_and_port()
         logger.warning(
-            f"PostgreSQL server at {settings.POSTGRES_SERVER}:{settings.POSTGRES_PORT} is unreachable. "
+            f"PostgreSQL server at {host}:{port} is unreachable. "
             f"Automatically falling back to local persistent SQLite database ('local_dev.db') for local development resiliency."
         )
     sqlite_url = "sqlite+aiosqlite:///:memory:" if IS_TESTING else "sqlite+aiosqlite:///local_dev.db"

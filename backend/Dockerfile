@@ -21,18 +21,20 @@ WORKDIR /app
 COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
-# Copy source folders
+# Copy source folders and migration definitions
 COPY app app
 COPY run.py run.py
+COPY alembic alembic
+COPY alembic.ini alembic.ini
 
 # Setup non-root execution user for security hardening
 RUN groupadd -g 10001 appgroup && \
     useradd -r -u 10001 -g appgroup -d /app -s /sbin/nologin appuser && \
-    mkdir -p storage && \
+    mkdir -p storage uploads && \
     chown -R appuser:appgroup /app
 
 USER appuser
 
 EXPOSE 8000
 
-CMD ["python", "run.py"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4", "--proxy-headers", "--forwarded-allow-ips=*"]

@@ -36,12 +36,14 @@ if settings.SENTRY_DSN:
         profiles_sample_rate=1.0,
     )
 
+docs_enabled = not settings.is_production or settings.ENABLE_DOCS
+
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version="1.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
-    openapi_url=f"{settings.API_V1_STR}/openapi.json",
+    docs_url="/docs" if docs_enabled else None,
+    redoc_url="/redoc" if docs_enabled else None,
+    openapi_url=f"{settings.API_V1_STR}/openapi.json" if docs_enabled else None,
 )
 
 # Setup compression
@@ -55,23 +57,30 @@ cors_source = settings.FRONTEND_ORIGINS or settings.ALLOWED_ORIGINS
 raw_origins = [o.strip() for o in cors_source.split(",") if o.strip()] if cors_source else []
 origins = [o for o in raw_origins if o != "*"]
 
-# Explicit local development origins for credentialed CORS
-dev_origins = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "http://localhost:3001",
-    "http://127.0.0.1:3001",
-    "http://localhost:8000",
-    "http://127.0.0.1:8000",
-]
-for d_origin in dev_origins:
-    if d_origin not in origins:
-        origins.append(d_origin)
+if not settings.is_production:
+    # Explicit local development origins for credentialed CORS
+    dev_origins = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3001",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+    ]
+    for d_origin in dev_origins:
+        if d_origin not in origins:
+            origins.append(d_origin)
+
+cors_regex = (
+    None
+    if settings.is_production
+    else r"^https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+)(:\d+)?$"
+)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+)(:\d+)?$",
+    allow_origin_regex=cors_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

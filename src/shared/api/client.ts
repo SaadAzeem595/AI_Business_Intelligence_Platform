@@ -23,7 +23,9 @@ const getBaseURL = () => {
   if (url.startsWith("/")) {
     return url.endsWith("/api/v1") ? url : `${url}/api/v1`;
   }
-  url = url.replace("://localhost", "://127.0.0.1");
+  if (process.env.NODE_ENV !== "production") {
+    url = url.replace("://localhost", "://127.0.0.1");
+  }
   if (!url.endsWith("/api/v1")) {
     url = `${url}/api/v1`;
   }

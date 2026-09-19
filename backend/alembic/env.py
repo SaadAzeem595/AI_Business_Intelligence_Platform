@@ -19,8 +19,10 @@ if config.config_file_name is not None:
 # Import Base and active models for migrations mapping
 from app.db.base import Base
 from app.features.auth.models import User
+from app.features.projects.models import Project
 from app.features.datasets.models import Dataset
-from app.features.reports.models import Report
+from app.features.reports.models import Report, ReportSchedule
+from app.features.billing.models import WorkspaceSubscription, StripeProcessedEvent
 from app.core.config import settings
 
 target_metadata = Base.metadata
