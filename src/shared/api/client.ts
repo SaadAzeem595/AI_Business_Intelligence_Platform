@@ -85,10 +85,13 @@ const getAccessToken = async () => {
         });
       }
       try {
-        const tokenPromise = Clerk.session?.getToken();
+        let tokenPromise = Clerk.session?.getToken({ skipCache: true });
+        if (!tokenPromise) {
+          tokenPromise = Clerk.session?.getToken();
+        }
         if (tokenPromise) {
           const timeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error("Clerk token retrieval timed out")), 2000)
+            setTimeout(() => reject(new Error("Clerk token retrieval timed out")), 3000)
           );
           const token = await Promise.race([tokenPromise, timeoutPromise]);
           if (token && typeof token === "string") {
@@ -96,6 +99,12 @@ const getAccessToken = async () => {
           }
         }
       } catch (err) {
+        try {
+          const fallback = await Clerk.session?.getToken();
+          if (fallback && typeof fallback === "string") {
+            return fallback;
+          }
+        } catch {}
         console.error("Failed to retrieve Clerk token:", err);
       }
     }

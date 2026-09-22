@@ -62,7 +62,7 @@ export const DatasetService = {
       headers: {
         "Content-Type": "multipart/form-data",
       },
-      timeout: 300000,
+      timeout: 600000,
     });
     return response.data;
   },
