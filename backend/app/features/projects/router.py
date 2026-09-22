@@ -98,11 +98,14 @@ async def create_project(
                 id=current_user.id,
                 email=current_user.email,
                 name=current_user.name,
-                role=current_user.role,
+                role=current_user.role or "Owner",
                 is_active=True,
                 hashed_password="dev_auth_bypass_hash"
             )
             db.add(user_in_db)
+            await db.flush()
+        elif user_in_db.role == "Viewer" and current_user.role != "Viewer":
+            user_in_db.role = "Owner"
             await db.flush()
 
         # 2. Insert project record into database
@@ -266,7 +269,7 @@ async def update_project(
 @router.delete("/{project_id}")
 async def delete_project(
     project_id: str,
-    current_user: MockUser = Depends(require_role(["Analyst", "Admin"])),
+    current_user: MockUser = Depends(require_role(["Analyst", "Admin", "Owner"])),
     db: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Deletes a project and all associated datasets."""
@@ -347,7 +350,7 @@ async def upload_project_dataset(
     project_id: str,
     file: UploadFile = File(...),
     tableName: Optional[str] = Form(None),
-    current_user: MockUser = Depends(require_role(["Analyst", "Admin"])),
+    current_user: MockUser = Depends(require_role(["Analyst", "Admin", "Owner"])),
     db: AsyncSession = Depends(get_db_session),
 ) -> DatasetResponse:
     """Handles project-scoped binary multipart uploads, runs analysis, and registers with DuckDB."""

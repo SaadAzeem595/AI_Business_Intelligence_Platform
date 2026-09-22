@@ -15,7 +15,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
     hashed_password: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    role: Mapped[str] = mapped_column(String, default="Viewer", nullable=False)
+    role: Mapped[str] = mapped_column(String, default="Owner", nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())

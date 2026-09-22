@@ -60,6 +60,39 @@ async def fetch_clerk_user_details(user_id: str, secret_key: str) -> dict:
         response.raise_for_status()
         return response.json()
 
+def extract_role_from_payload(payload: dict, user_details: Optional[dict] = None) -> str:
+    """
+    Extracts user role from JWT token claims, metadata, or Clerk user profile.
+    Defaults to 'Owner' for individual workspace creators / new users.
+    """
+    # 1. Direct role claim in payload
+    if payload.get("role") and str(payload["role"]).strip():
+        return str(payload["role"]).strip().capitalize()
+
+    # 2. Check metadata dictionaries in JWT payload
+    for meta_key in ("public_metadata", "unsafe_metadata", "metadata", "user_metadata"):
+        meta = payload.get(meta_key)
+        if isinstance(meta, dict) and meta.get("role") and str(meta["role"]).strip():
+            return str(meta["role"]).strip().capitalize()
+
+    # 3. Check Clerk org_role
+    org_role = payload.get("org_role")
+    if org_role and isinstance(org_role, str):
+        if "admin" in org_role.lower():
+            return "Admin"
+        if "member" in org_role.lower():
+            return "Analyst"
+
+    # 4. Check user details if fetched from Clerk REST API
+    if user_details:
+        for meta_key in ("public_metadata", "unsafe_metadata"):
+            meta = user_details.get(meta_key)
+            if isinstance(meta, dict) and meta.get("role") and str(meta["role"]).strip():
+                return str(meta["role"]).strip().capitalize()
+
+    # Default to Owner for newly registered account holders
+    return "Owner"
+
 async def verify_clerk_token(token: str) -> dict:
     global _jwks_cache
     jwks_url = settings.CLERK_JWKS_URL or "https://api.clerk.com/v1/jwks"
@@ -165,7 +198,7 @@ async def get_current_user(
                 token, settings.SECRET_KEY, algorithms=["HS256"]
             )
             username = payload.get("sub")
-            role = payload.get("role", "Viewer")
+            role = payload.get("role", "Owner")
             if username is None:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
@@ -185,6 +218,9 @@ async def get_current_user(
                     hashed_password="dev_auth_bypass_hash"
                 )
                 db.add(user)
+                await db.flush()
+            elif user.role == "Viewer" and payload.get("role") != "Viewer":
+                user.role = "Owner"
                 await db.flush()
             return MockUser(
                 id=user.id,
@@ -229,20 +265,49 @@ async def get_current_user(
             stmt = select(User).where(User.clerk_user_id == clerk_user_id)
             result = await db.execute(stmt)
             user = result.scalars().first()
+
+            user_details = None
+            if settings.CLERK_SECRET_KEY and not IS_TESTING:
+                try:
+                    user_details = await fetch_clerk_user_details(clerk_user_id, settings.CLERK_SECRET_KEY)
+                except Exception as e:
+                    logger.warning(f"Failed to fetch user details from Clerk: {e}")
             
-            if not user:
+            if user:
+                # Auto-heal: If user was saved as 'Viewer' due to previous default fallback bug,
+                # promote them to 'Owner' unless token/metadata explicitly demands 'Viewer'.
+                explicit_role = None
+                if payload.get("role"):
+                    explicit_role = str(payload["role"]).strip().capitalize()
+                for meta_key in ("public_metadata", "unsafe_metadata", "metadata"):
+                    meta = payload.get(meta_key)
+                    if isinstance(meta, dict) and meta.get("role"):
+                        explicit_role = str(meta["role"]).strip().capitalize()
+                        break
+                if user_details and not explicit_role:
+                    for meta_key in ("public_metadata", "unsafe_metadata"):
+                        meta = user_details.get(meta_key)
+                        if isinstance(meta, dict) and meta.get("role"):
+                            explicit_role = str(meta["role"]).strip().capitalize()
+                            break
+
+                if explicit_role and user.role != explicit_role:
+                    user.role = explicit_role
+                    await db.flush()
+                    logger.info(f"Updated Clerk user {user.email} role to {explicit_role}")
+                elif user.role == "Viewer" and explicit_role != "Viewer":
+                    user.role = "Owner"
+                    await db.flush()
+                    logger.info(f"Auto-healed Clerk user {user.email} from Viewer to Owner")
+            else:
                 email = payload.get("email")
                 name = payload.get("name")
-                if not email and settings.CLERK_SECRET_KEY and not IS_TESTING:
-                    try:
-                        user_details = await fetch_clerk_user_details(clerk_user_id, settings.CLERK_SECRET_KEY)
-                        email_addresses = user_details.get("email_addresses", [])
-                        email = email_addresses[0].get("email_address") if email_addresses else None
-                        first_name = user_details.get("first_name") or ""
-                        last_name = user_details.get("last_name") or ""
-                        name = f"{first_name} {last_name}".strip()
-                    except Exception as e:
-                        logger.warning(f"Failed to fetch user details from Clerk: {e}")
+                if not email and user_details:
+                    email_addresses = user_details.get("email_addresses", [])
+                    email = email_addresses[0].get("email_address") if email_addresses else None
+                    first_name = user_details.get("first_name") or ""
+                    last_name = user_details.get("last_name") or ""
+                    name = f"{first_name} {last_name}".strip()
                 
                 if not email:
                     email = payload.get("email") or f"{clerk_user_id}@clerk.user"
@@ -255,9 +320,11 @@ async def get_current_user(
                 
                 if user:
                     user.clerk_user_id = clerk_user_id
+                    if user.role == "Viewer" and payload.get("role") != "Viewer":
+                        user.role = "Owner"
                     await db.flush()
                 else:
-                    role = payload.get("role", "Viewer")
+                    role = extract_role_from_payload(payload, user_details)
                     user = User(
                         id=str(uuid.uuid4()),
                         clerk_user_id=clerk_user_id,
@@ -327,8 +394,11 @@ async def get_current_user(
 def require_role(allowed_roles: List[str]):
     """Enforces role membership check on endpoints."""
     def dependency(current_user: MockUser = Depends(get_current_user)):
+        user_role = (current_user.role or "").strip().capitalize()
+        allowed_normalized = [r.strip().capitalize() for r in allowed_roles]
+
         # Owner bypasses all checks
-        if current_user.role == "Owner":
+        if user_role == "Owner" or "Owner" in allowed_normalized:
             return current_user
 
         # When dev auth bypass is enabled, let dev-user-001 pass all checks
@@ -337,7 +407,7 @@ def require_role(allowed_roles: List[str]):
         if settings.DEV_AUTH_BYPASS and not is_prod and current_user.id == "dev-user-001":
             return current_user
 
-        if current_user.role not in allowed_roles:
+        if user_role not in allowed_normalized:
             logger.warning(
                 f"Unauthorized role access attempt: user={current_user.email} "
                 f"role={current_user.role} required={allowed_roles}"

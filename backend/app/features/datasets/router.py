@@ -251,7 +251,7 @@ async def list_datasets(
 async def upload_dataset(
     file: UploadFile = File(...),
     tableName: str = Form(...),
-    current_user: MockUser = Depends(require_role(["Analyst", "Admin"])),
+    current_user: MockUser = Depends(require_role(["Analyst", "Admin", "Owner"])),
     db: AsyncSession = Depends(get_db_session),
 ) -> DatasetResponse:
     """Handles binary multipart uploads and triggers DuckDB parser mappings."""
@@ -445,7 +445,7 @@ async def get_dataset_details(
 async def clean_dataset(
     id: str,
     payload: CleanPayload,
-    current_user: MockUser = Depends(require_role(["Analyst", "Admin"])),
+    current_user: MockUser = Depends(require_role(["Analyst", "Admin", "Owner"])),
     db: AsyncSession = Depends(get_db_session),
 ) -> DatasetDetailsResponse:
     """Executes cleaning operations (e.g. dropping duplicates or zero fields)."""
@@ -464,7 +464,7 @@ async def clean_dataset(
 @router.delete("/{id}")
 async def delete_dataset(
     id: str,
-    current_user: MockUser = Depends(require_role(["Analyst", "Admin"])),
+    current_user: MockUser = Depends(require_role(["Analyst", "Admin", "Owner"])),
     db: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Removes a metadata reference and deletes the underlying source file."""
