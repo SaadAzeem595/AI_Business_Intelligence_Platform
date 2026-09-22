@@ -219,9 +219,10 @@ async def get_current_user(
                 )
                 db.add(user)
                 await db.flush()
-            elif user.role == "Viewer" and payload.get("role") != "Viewer":
+            user_role_cap = (user.role or "").strip().capitalize()
+            if (user_role_cap in ("Viewer", "Member", "Guest", "") or not user.role) and (payload.get("role") or "").strip().capitalize() != "Viewer":
                 user.role = "Owner"
-                await db.flush()
+                await db.commit()
             return MockUser(
                 id=user.id,
                 email=user.email,
@@ -291,14 +292,15 @@ async def get_current_user(
                             explicit_role = str(meta["role"]).strip().capitalize()
                             break
 
-                if explicit_role and user.role != explicit_role:
+                user_role_cap = (user.role or "").strip().capitalize()
+                if explicit_role and user_role_cap != explicit_role:
                     user.role = explicit_role
-                    await db.flush()
+                    await db.commit()
                     logger.info(f"Updated Clerk user {user.email} role to {explicit_role}")
-                elif user.role == "Viewer" and explicit_role != "Viewer":
+                elif (user_role_cap in ("Viewer", "Member", "Guest", "") or not user.role) and explicit_role != "Viewer":
                     user.role = "Owner"
-                    await db.flush()
-                    logger.info(f"Auto-healed Clerk user {user.email} from Viewer to Owner")
+                    await db.commit()
+                    logger.info(f"Auto-healed Clerk user {user.email} to Owner")
             else:
                 email = payload.get("email")
                 name = payload.get("name")
@@ -320,9 +322,10 @@ async def get_current_user(
                 
                 if user:
                     user.clerk_user_id = clerk_user_id
-                    if user.role == "Viewer" and payload.get("role") != "Viewer":
+                    user_role_cap = (user.role or "").strip().capitalize()
+                    if (user_role_cap in ("Viewer", "Member", "Guest", "") or not user.role) and (payload.get("role") or "").strip().capitalize() != "Viewer":
                         user.role = "Owner"
-                    await db.flush()
+                    await db.commit()
                 else:
                     role = extract_role_from_payload(payload, user_details)
                     user = User(
@@ -335,7 +338,7 @@ async def get_current_user(
                         hashed_password="dev_auth_bypass_hash"
                     )
                     db.add(user)
-                    await db.flush()
+                    await db.commit()
                     logger.info(f"Synchronized new Clerk user: {email} with role {role}")
             
             return MockUser(

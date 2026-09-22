@@ -185,7 +185,7 @@ async def startup_event():
             if col_names:
                 new_cols = {
                     "clerk_user_id": "VARCHAR",
-                    "role": "VARCHAR DEFAULT 'Viewer'",
+                    "role": "VARCHAR DEFAULT 'Owner'",
                     "created_at": "TIMESTAMP",
                     "updated_at": "TIMESTAMP"
                 }
@@ -203,6 +203,12 @@ async def startup_event():
                         startup_logger.info("Successfully dropped NOT NULL constraint on users.hashed_password")
                     except Exception as e:
                         startup_logger.warning(f"Could not drop NOT NULL on users.hashed_password: {e}")
+
+                try:
+                    sync_conn.execute(text("UPDATE users SET role='Owner' WHERE role IS NULL OR LOWER(role) IN ('viewer', 'member', 'guest', '')"))
+                    startup_logger.info("Successfully auto-healed existing user roles to Owner on startup")
+                except Exception as e:
+                    startup_logger.warning(f"Could not auto-heal user roles on startup: {e}")
 
         def check_and_upgrade_projects_table(sync_conn):
             try:
