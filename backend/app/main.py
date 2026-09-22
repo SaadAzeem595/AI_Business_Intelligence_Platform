@@ -124,10 +124,11 @@ async def startup_event():
     except ImportError:
         pass
         
-    async with async_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        
-        from sqlalchemy import text
+    try:
+        async with async_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+            
+            from sqlalchemy import text
         def check_and_upgrade_datasets_table(sync_conn):
             try:
                 # SQLite
@@ -320,6 +321,9 @@ async def startup_event():
         await conn.run_sync(check_and_upgrade_projects_table)
         await conn.run_sync(check_and_upgrade_reports_table)
         await conn.run_sync(check_and_upgrade_stripe_processed_events_table)
+    except Exception as e:
+        startup_logger.exception(f"CRITICAL ERROR during database initialization: {e}")
+        raise
 
     if settings.DEV_AUTH_BYPASS and not is_prod:
         startup_logger.warning("!" * 80)

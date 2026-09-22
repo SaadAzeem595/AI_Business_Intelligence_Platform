@@ -30,8 +30,8 @@ def check_postgres_availability() -> bool:
     import socket
     host, port = get_target_db_host_and_port()
     try:
-        # Simple TCP connection probe with a 1.0s timeout
-        with socket.create_connection((host, port), timeout=1.0):
+        # Simple TCP connection probe with a 5.0s timeout
+        with socket.create_connection((host, port), timeout=5.0):
             return True
     except Exception:
         return False
@@ -64,14 +64,28 @@ if USE_SQLITE:
         future=True
     )
 else:
-    # Async PostgreSQL Engine Setup
+    # Async PostgreSQL Engine Setup with robust SSL support for Azure
+    db_url = settings.DATABASE_URL
+    connect_args = {}
+    if "postgres" in db_url.lower() and ("azure.com" in db_url.lower() or "ssl=" in db_url.lower() or "sslmode=" in db_url.lower()):
+        import ssl
+        from urllib.parse import urlparse, urlunparse
+        ssl_ctx = ssl.create_default_context()
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = ssl.CERT_NONE
+        connect_args["ssl"] = ssl_ctx
+        # Strip query params like ssl=require from URL since we configure via connect_args
+        parsed = urlparse(db_url)
+        db_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, "", parsed.fragment))
+
     async_engine = create_async_engine(
-        settings.DATABASE_URL,
+        db_url,
         echo=False,
         future=True,
         pool_pre_ping=True,
         pool_size=20,
         max_overflow=10,
+        connect_args=connect_args,
     )
 
 # Async Session Factory
