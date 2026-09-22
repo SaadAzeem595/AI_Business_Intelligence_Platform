@@ -1,5 +1,4 @@
-# Multi-stage build stage
-FROM python:3.12-slim AS builder
+FROM python:3.12-slim
 
 WORKDIR /app
 
@@ -9,17 +8,10 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 # Copy dependencies list
 COPY pyproject.toml .
 
-# Compile and install dependencies system-wide (eliminates virtualenv inside container)
-RUN uv pip install --system --no-cache -r pyproject.toml
-
-# Final lightweight stage
-FROM python:3.12-slim
-
-WORKDIR /app
-
-# Copy python dependencies packages
-COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
-COPY --from=builder /usr/local/bin /usr/local/bin
+# Create virtual environment and install dependencies
+ENV VIRTUAL_ENV=/opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+RUN uv venv /opt/venv && uv pip install --no-cache -r pyproject.toml
 
 # Copy source folders and migration definitions
 COPY app app
@@ -31,7 +23,7 @@ COPY alembic.ini alembic.ini
 RUN groupadd -g 10001 appgroup && \
     useradd -r -u 10001 -g appgroup -d /app -s /sbin/nologin appuser && \
     mkdir -p storage uploads && \
-    chown -R appuser:appgroup /app
+    chown -R appuser:appgroup /app /opt/venv
 
 USER appuser
 
