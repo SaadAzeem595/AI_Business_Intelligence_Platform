@@ -113,6 +113,16 @@ def generate_sql(
     rel_graph = build_project_relationship_graph(catalog)
     rel_summary = rel_graph.get_summary()
 
+    # Check if this is a schema / metadata query
+    from app.features.agents.schema_inspector import is_schema_metadata_query, classify_schema_query
+    if is_schema_metadata_query(user_query):
+        primary_table = target_dataset["table_name"] if target_dataset and "table_name" in target_dataset else catalog[0]["table_name"]
+        schema_type = classify_schema_query(user_query)
+        if schema_type == "row_count":
+            return f'SELECT COUNT(*) AS total_rows FROM "{primary_table}"', "Calculates total row count."
+        else:
+            return f'DESCRIBE "{primary_table}"', "Inspects dataset column schema and types."
+
     # If LLM is configured, construct prompt with actual schemas
     if LLMService.is_configured():
         try:

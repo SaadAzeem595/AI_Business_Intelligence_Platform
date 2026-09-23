@@ -113,6 +113,9 @@ def is_analytical_query(query: str) -> bool:
     """
     Determines if the user's question requires analytical SQL (aggregation, ranking, comparison, trends).
     """
+    from app.features.agents.schema_inspector import is_schema_metadata_query
+    if is_schema_metadata_query(query):
+        return False
     q = query.lower()
     analytical_keywords = [
         "highest", "most", "top", "lowest", "least", "best", "worst",
@@ -176,6 +179,37 @@ def parse_and_generate_semantic_sql(query: str, catalog: List[Dict[str, Any]]) -
                 "explanation": None,
                 "missing_dataset_msg": f"I couldn't analyze the requested dataset because '{req_file}' was not found in the active project.",
                 "tables_used": []
+            }
+
+    # Schema & Metadata query check
+    from app.features.agents.schema_inspector import is_schema_metadata_query, classify_schema_query
+    if is_schema_metadata_query(query):
+        schema_type = classify_schema_query(query)
+        target_tbl = None
+        for t in catalog:
+            fn = t.get("filename", "").lower()
+            tb = t.get("table_name", "").lower()
+            fn_base = os.path.splitext(fn)[0] if fn else ""
+            if (fn and fn in q_lower) or (fn_base and len(fn_base) > 3 and fn_base in q_lower) or (tb and tb in q_lower):
+                target_tbl = t
+                break
+        if not target_tbl and catalog:
+            target_tbl = catalog[0]
+        tbl_name = target_tbl["table_name"] if target_tbl else "dataset"
+
+        if schema_type == "row_count":
+            return {
+                "success": True,
+                "sql": f'SELECT COUNT(*) AS total_rows FROM "{tbl_name}"',
+                "explanation": f"Calculates total row count for {tbl_name}.",
+                "tables_used": [tbl_name]
+            }
+        else:
+            return {
+                "success": True,
+                "sql": f'DESCRIBE "{tbl_name}"',
+                "explanation": f"Inspects dataset column schema and types for {tbl_name}.",
+                "tables_used": [tbl_name]
             }
 
     # 1. Detect requested dimension & metrics

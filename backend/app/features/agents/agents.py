@@ -504,6 +504,39 @@ def planner_agent(state: AgentState) -> Dict[str, Any]:
         dataset_context = f"Resolved Dataset: {resolved.get('display_name') or resolved.get('view_name')} (Table: {resolved['view_name']}, File: {resolved.get('filename')}, Rows: {resolved.get('rows', 'unknown')})"
         dataset_schema = resolved.get("schema", {})
 
+    # Schema & Metadata direct resolution (column count, column list, row count, table schema)
+    from app.features.agents.schema_inspector import is_schema_metadata_query, inspect_dataset_schema, format_schema_response
+    if is_schema_metadata_query(query) and resolved:
+        schema_info = inspect_dataset_schema(
+            view_name=resolved["view_name"],
+            filename=resolved.get("filename") or resolved.get("display_name") or resolved["view_name"],
+            resolved=resolved,
+            project_id=state.get("active_project")
+        )
+        res_data = format_schema_response(query, schema_info)
+        
+        return {
+            "plan": ["response_synthesizer"],
+            "completed_steps": ["sql_agent", "response_synthesizer"],
+            "next_agent": "response_synthesizer",
+            "final_response": res_data["response"],
+            "intent": "schema_metadata",
+            "sql_query": res_data["sql_query"],
+            "sql": res_data["sql_query"],
+            "sql_result": res_data["sql_result"],
+            "table": res_data["table"],
+            "data": res_data["data"],
+            "columns": res_data["columns"],
+            "row_count": res_data["row_count"],
+            "workspace_id": workspace,
+            "dataset_id": resolved.get("id"),
+            "dataset": resolved.get("filename"),
+            "dataset_context": dataset_context,
+            "dataset_schema": resolved.get("schema", {}),
+            "execution_logs": log_execution(state, "planner_agent", start_time, status="success", details=f"Resolved schema metadata query for {resolved.get('filename')}"),
+            "reasoning_path": ["planner_agent", "sql_agent", "response_synthesizer"]
+        }
+
     # Intent classification
     plan = []
     intent = "sql"  # Default read analytics
@@ -1271,8 +1304,8 @@ def response_synthesizer(state: AgentState) -> Dict[str, Any]:
     query = state.get("query", "")
     completed = state.get("completed_steps", [])
     
-    # Check if a final response is already populated (conversational greeting, dataset error, missing dataset msg)
-    if state.get("final_response") and (state.get("intent") in ["conversation", "clarification"] or not state.get("sql_result")):
+    # Check if a final response is already populated (conversational greeting, dataset error, missing dataset msg, schema metadata)
+    if state.get("final_response") and (state.get("intent") in ["conversation", "clarification", "schema_metadata"] or not state.get("sql_result")):
         completed_steps = list(completed) + ["response_synthesizer"]
         return {
             "final_response": state["final_response"],
