@@ -90,8 +90,26 @@ export default function AIChatPage() {
     setInput("");
     setIsTyping(true);
 
-    const matched = datasets.find((d: any) => d.id === selectedDatasetId || d.filename === selectedDataset);
-    const effectiveProject = activeProject || matched?.project_id || (datasets.length > 0 && datasets[0]?.project_id ? datasets[0].project_id : undefined);
+    let activeDatasetName = selectedDataset;
+    let activeDatasetId = selectedDatasetId;
+    if (!activeDatasetId && !activeDatasetName) {
+      const textLower = text.toLowerCase();
+      const inText = datasets.find((d: any) => {
+        const fn = (d.filename || "").toLowerCase();
+        const disp = (d.display_name || "").toLowerCase();
+        const base = fn.replace(/\.[^/.]+$/, "");
+        return (fn && textLower.includes(fn)) || (disp && textLower.includes(disp)) || (base && textLower.includes(base));
+      });
+      if (inText) {
+        activeDatasetId = inText.id;
+        activeDatasetName = inText.filename;
+        setSelectedDatasetId(inText.id);
+        setSelectedDataset(inText.filename);
+      }
+    }
+
+    const matched = datasets.find((d: any) => d.id === activeDatasetId || d.filename === activeDatasetName);
+    const effectiveProject = activeProject || matched?.project_id || undefined;
 
     try {
       const response = await sendMessage({
@@ -99,9 +117,9 @@ export default function AIChatPage() {
         sessionId: sessionId,
         workspace: activeOrg,
         workspaceId: activeOrg,
-        dataset: selectedDataset || undefined,
-        datasetId: selectedDatasetId || undefined,
-        selectedDatasetIds: selectedDatasetId ? [selectedDatasetId] : [],
+        dataset: activeDatasetName || undefined,
+        datasetId: activeDatasetId || undefined,
+        selectedDatasetIds: activeDatasetId ? [activeDatasetId] : [],
         activeProject: effectiveProject,
         projectId: effectiveProject,
         history: messages.map(m => ({ role: m.role as "user" | "assistant", content: m.content })),

@@ -1,3 +1,4 @@
+import os
 import uuid
 import logging
 from typing import Dict, Any, Optional
@@ -190,12 +191,29 @@ async def chat_with_agents(
         from app.features.datasets.models import Dataset
         
         # 1. PROJECT_RESOLVED / DATASETS_LOADED stage
+        from sqlalchemy import func
+        from app.features.agents.agents import extract_requested_dataset_name
+        
         target_ds_id = payload.dataset_id or payload.dataset
+        if not target_ds_id and payload.message:
+            extracted = extract_requested_dataset_name(payload.message)
+            if extracted:
+                target_ds_id = extracted
+
         target_ds = None
         if target_ds_id and target_ds_id != "all":
+            clean_target = str(target_ds_id).strip()
+            clean_base = os.path.splitext(clean_target)[0].lower()
             try:
                 ds_stmt = select(Dataset).where(
-                    (Dataset.id == target_ds_id) | (Dataset.filename == target_ds_id) | (Dataset.display_name == target_ds_id)
+                    (Dataset.id == clean_target)
+                    | (func.lower(Dataset.filename) == clean_target.lower())
+                    | (func.lower(Dataset.display_name) == clean_target.lower())
+                    | (func.lower(Dataset.duckdb_table) == clean_target.lower())
+                    | (func.lower(Dataset.filename) == f"{clean_base}.csv")
+                    | (func.lower(Dataset.display_name) == clean_base)
+                    | (func.lower(Dataset.duckdb_table) == clean_base)
+                    | (Dataset.duckdb_table.ilike(f"%{clean_base}%"))
                 )
                 ds_res = await db.execute(ds_stmt)
                 target_ds = ds_res.scalars().first()
@@ -216,8 +234,18 @@ async def chat_with_agents(
                 stmt = select(Dataset).where(Dataset.project_id == active_proj)
         else:
             logger.info("PROJECT_RESOLVED: project_id=None (Workspace global mode)")
+            ws_candidates = {"default"}
+            if getattr(current_user, "workspace_id", None):
+                ws_candidates.add(str(current_user.workspace_id))
+            if getattr(payload, "workspace_id", None):
+                ws_candidates.add(str(payload.workspace_id))
+            if getattr(payload, "workspace", None):
+                ws_candidates.add(str(payload.workspace))
+
             stmt = select(Dataset).where(
-                (Dataset.workspace_id == current_user.workspace_id) | (Dataset.workspace_id == "default")
+                (Dataset.workspace_id.in_(list(ws_candidates)))
+                | (Dataset.workspace_id == None)
+                | (Dataset.owner_id == getattr(current_user, "id", None))
             )
 
         if getattr(payload, "available_datasets", None):
@@ -225,6 +253,11 @@ async def chat_with_agents(
         else:
             result = await db.execute(stmt)
             db_items = list(result.scalars().all())
+
+            # Resilient fallback: If db_items is empty in workspace global mode, query all datasets
+            if not db_items and not active_proj:
+                fallback_res = await db.execute(select(Dataset))
+                db_items = list(fallback_res.scalars().all())
 
             # If an explicit target dataset was found and isn't in db_items (e.g. project scoping mismatch), include it
             if target_ds:

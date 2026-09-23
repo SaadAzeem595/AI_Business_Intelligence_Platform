@@ -120,7 +120,7 @@ def resolve_dataset(query: str, selected_dataset_id: Optional[str] = None, avail
     import json
     
     db_items = []
-    if available_datasets is not None:
+    if available_datasets:
         db_items = available_datasets
     elif project_id:
         async def fetch_project_datasets_async():
@@ -133,7 +133,9 @@ def resolve_dataset(query: str, selected_dataset_id: Optional[str] = None, avail
         except Exception as e:
             logger.error(f"Failed to fetch project datasets from DB for resolution: {e}")
             db_items = []
-    else:
+
+    # Resilient fallback: if db_items is empty, fetch all datasets from database
+    if not db_items:
         async def fetch_all_datasets_async():
             async with AsyncSessionLocal() as db:
                 stmt = select(Dataset)
@@ -194,8 +196,17 @@ def resolve_dataset(query: str, selected_dataset_id: Optional[str] = None, avail
 
     # 1. Resolve via explicit selection
     if selected_dataset_id:
+        sel_lower = str(selected_dataset_id).strip().lower()
+        sel_base = os.path.splitext(sel_lower)[0]
         for dataset in catalog:
-            if dataset["id"].lower() == selected_dataset_id.lower() or dataset["filename"].lower() == selected_dataset_id.lower() or dataset["view_name"].lower() == selected_dataset_id.lower():
+            d_id = dataset["id"].lower()
+            d_fn = dataset["filename"].lower()
+            d_vn = dataset["view_name"].lower()
+            d_disp = (dataset.get("display_name") or "").lower()
+            if (sel_lower in (d_id, d_fn, d_vn, d_disp)
+                or sel_base in (d_fn, d_vn, d_disp, os.path.splitext(d_fn)[0])
+                or d_vn.endswith(sel_base)
+                or sel_base in d_vn):
                 return dataset
 
     # 2. Check if query contains explicit filename or dataset ID
@@ -372,7 +383,7 @@ def planner_agent(state: AgentState) -> Dict[str, Any]:
     import json
     
     db_items = state.get("available_datasets")
-    if db_items is None:
+    if not db_items:
         async def fetch_all_datasets_async():
             async with AsyncSessionLocal() as db:
                 return await dataset_repo.get_multi(db, limit=1000)

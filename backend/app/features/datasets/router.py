@@ -227,6 +227,8 @@ async def list_datasets(
                 duckdb_table=item.duckdb_table,
                 columns_json=item.columns_json,
                 schema_json=item.schema_json,
+                project_id=item.project_id,
+                owner_id=getattr(item, "owner_id", None),
                 created_at=item.created_at,
                 updated_at=item.updated_at
             )
