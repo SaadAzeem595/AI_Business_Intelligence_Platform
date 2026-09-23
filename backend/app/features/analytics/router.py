@@ -872,7 +872,9 @@ async def get_sql_schema(
         if project_id:
             stmt = stmt.where(Dataset.project_id == project_id)
         else:
-            stmt = stmt.where(Dataset.project_id == None)
+            stmt = stmt.where(
+                (Dataset.workspace_id == current_user.workspace_id) | (Dataset.workspace_id == "default")
+            )
         result = await db.execute(stmt)
         db_items = list(result.scalars().all())
 

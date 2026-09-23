@@ -190,6 +190,21 @@ async def chat_with_agents(
         from app.features.datasets.models import Dataset
         
         # 1. PROJECT_RESOLVED / DATASETS_LOADED stage
+        target_ds_id = payload.dataset_id or payload.dataset
+        target_ds = None
+        if target_ds_id and target_ds_id != "all":
+            try:
+                ds_stmt = select(Dataset).where(
+                    (Dataset.id == target_ds_id) | (Dataset.filename == target_ds_id) | (Dataset.display_name == target_ds_id)
+                )
+                ds_res = await db.execute(ds_stmt)
+                target_ds = ds_res.scalars().first()
+                if target_ds and not active_proj and target_ds.project_id:
+                    active_proj = target_ds.project_id
+                    logger.info(f"INFERRED_ACTIVE_PROJECT: project_id={active_proj} from dataset={target_ds.filename}")
+            except Exception as dse:
+                logger.warning(f"Could not infer target dataset: {dse}")
+
         if active_proj:
             try:
                 from app.features.projects.router import get_project_and_verify_access
@@ -202,8 +217,7 @@ async def chat_with_agents(
         else:
             logger.info("PROJECT_RESOLVED: project_id=None (Workspace global mode)")
             stmt = select(Dataset).where(
-                (Dataset.project_id == None) & 
-                ((Dataset.workspace_id == current_user.workspace_id) | (Dataset.workspace_id == "default"))
+                (Dataset.workspace_id == current_user.workspace_id) | (Dataset.workspace_id == "default")
             )
 
         if getattr(payload, "available_datasets", None):
@@ -211,6 +225,12 @@ async def chat_with_agents(
         else:
             result = await db.execute(stmt)
             db_items = list(result.scalars().all())
+
+            # If an explicit target dataset was found and isn't in db_items (e.g. project scoping mismatch), include it
+            if target_ds:
+                existing_ids = {str(item.id) for item in db_items}
+                if str(target_ds.id) not in existing_ids:
+                    db_items.append(target_ds)
 
             available_datasets = [
                 {

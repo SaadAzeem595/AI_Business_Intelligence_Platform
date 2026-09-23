@@ -35,6 +35,7 @@ def register_all_datasets_in_duckdb(conn: duckdb.DuckDBPyConnection, project_id:
     from app.features.datasets.models import Dataset
     from app.core.database import AsyncSessionLocal
     from app.features.datasets.router import UPLOADED_PATHS_CACHE
+    from app.core.config import settings
     
     logger = logging.getLogger(__name__)
     root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
@@ -44,7 +45,7 @@ def register_all_datasets_in_duckdb(conn: duckdb.DuckDBPyConnection, project_id:
             if project_id:
                 stmt = select(Dataset).where(Dataset.project_id == project_id)
             else:
-                stmt = select(Dataset).where(Dataset.project_id == None)
+                stmt = select(Dataset)
             result = await db.execute(stmt)
             return list(result.scalars().all())
 
@@ -91,7 +92,23 @@ def register_all_datasets_in_duckdb(conn: duckdb.DuckDBPyConnection, project_id:
     for item in db_items:
         file_path = item.storage_path
         if not file_path or not os.path.exists(file_path):
-            continue
+            candidate = None
+            for fn in [item.filename, os.path.basename(file_path) if file_path else None]:
+                if not fn:
+                    continue
+                cand1 = os.path.join(settings.resolved_uploads_dir, fn)
+                cand2 = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads", fn)
+                if os.path.exists(cand1):
+                    candidate = cand1
+                    break
+                elif os.path.exists(cand2):
+                    candidate = cand2
+                    break
+            if candidate:
+                file_path = candidate
+            else:
+                continue
+
         registered_paths.add(file_path)
         
         view_names = set()
@@ -115,8 +132,6 @@ def register_all_datasets_in_duckdb(conn: duckdb.DuckDBPyConnection, project_id:
             continue
         if project_id and item.get("project_id") != project_id:
             continue
-        if not project_id and item.get("project_id") is not None:
-            continue
             
         view_names = set()
         if item.get("duckdb_table"):
@@ -128,11 +143,18 @@ def register_all_datasets_in_duckdb(conn: duckdb.DuckDBPyConnection, project_id:
             create_duckdb_view(file_path, view_name)
 
     # 3. Register from uploads directory
-    uploads_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
-    if os.path.exists(uploads_dir):
-        for f in os.listdir(uploads_dir):
+    candidate_upload_dirs = [
+        settings.resolved_uploads_dir,
+        os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
+    ]
+    seen_upload_dirs = set()
+    for u_dir in candidate_upload_dirs:
+        if not u_dir or not os.path.exists(u_dir) or u_dir in seen_upload_dirs:
+            continue
+        seen_upload_dirs.add(u_dir)
+        for f in os.listdir(u_dir):
             if f.endswith(('.csv', '.xlsx', '.xls', '.json', '.parquet')):
-                file_path = os.path.join(uploads_dir, f)
+                file_path = os.path.join(u_dir, f)
                 if file_path in registered_paths:
                     continue
                 # Extract clean view name (e.g. reviews from <uuid>_reviews.csv)

@@ -133,6 +133,17 @@ def resolve_dataset(query: str, selected_dataset_id: Optional[str] = None, avail
         except Exception as e:
             logger.error(f"Failed to fetch project datasets from DB for resolution: {e}")
             db_items = []
+    else:
+        async def fetch_all_datasets_async():
+            async with AsyncSessionLocal() as db:
+                stmt = select(Dataset)
+                res = await db.execute(stmt)
+                return list(res.scalars().all())
+        try:
+            db_items = run_async_as_sync(fetch_all_datasets_async())
+        except Exception as e:
+            logger.error(f"Failed to fetch all datasets from DB for resolution: {e}")
+            db_items = []
 
     # Build unique catalog of available datasets in active project
     catalog = []
@@ -423,7 +434,7 @@ def planner_agent(state: AgentState) -> Dict[str, Any]:
     # Check if a dataset was explicitly requested (e.g. olist_orders_dataset.csv) but couldn't be resolved
     requested_dataset = extract_requested_dataset_name(query)
     if requested_dataset and not resolved and not (sem_res.get("success")):
-        available_names = get_available_dataset_names()
+        available_names = get_available_dataset_names(available_datasets=unique_items)
         err_msg = f"I couldn't analyze the requested dataset because the dataset '{requested_dataset}' was not found in the active workspace. Available datasets: {', '.join(available_names)}."
         return {
             "plan": ["response_synthesizer"],

@@ -33,7 +33,7 @@ export default function AIChatPage() {
   const initialPrompt = searchParams.get("prompt");
   const datasetIdParam = searchParams.get("datasetId") || searchParams.get("dataset");
   
-  const { activeOrg, activeProject } = useUIStore();
+  const { activeOrg, activeProject, setActiveProject } = useUIStore();
   const { datasets } = useDatasets();
   const [selectedDatasetId, setSelectedDatasetId] = useState("");
   const [selectedDataset, setSelectedDataset] = useState("");
@@ -51,9 +51,12 @@ export default function AIChatPage() {
       if (matched) {
         setSelectedDatasetId(matched.id);
         setSelectedDataset(matched.filename);
+        if (matched.project_id && !activeProject) {
+          setActiveProject(matched.project_id);
+        }
       }
     }
-  }, [datasetIdParam, datasets]);
+  }, [datasetIdParam, datasets, activeProject, setActiveProject]);
 
   const [messages, setMessages] = useState<Message[]>([
     {
@@ -87,6 +90,9 @@ export default function AIChatPage() {
     setInput("");
     setIsTyping(true);
 
+    const matched = datasets.find((d: any) => d.id === selectedDatasetId || d.filename === selectedDataset);
+    const effectiveProject = activeProject || matched?.project_id || (datasets.length > 0 && datasets[0]?.project_id ? datasets[0].project_id : undefined);
+
     try {
       const response = await sendMessage({
         message: text,
@@ -96,7 +102,8 @@ export default function AIChatPage() {
         dataset: selectedDataset || undefined,
         datasetId: selectedDatasetId || undefined,
         selectedDatasetIds: selectedDatasetId ? [selectedDatasetId] : [],
-        activeProject: activeProject,
+        activeProject: effectiveProject,
+        projectId: effectiveProject,
         history: messages.map(m => ({ role: m.role as "user" | "assistant", content: m.content })),
       });
       
@@ -154,6 +161,9 @@ export default function AIChatPage() {
               setSelectedDatasetId(val);
               const matched = datasets.find((d: any) => d.id === val);
               setSelectedDataset(matched ? matched.filename : "");
+              if (matched?.project_id) {
+                setActiveProject(matched.project_id);
+              }
             }}
             className="text-xs border border-brand-indigo/35 rounded-lg bg-card text-foreground px-3 py-1.5 outline-none cursor-pointer hover:border-brand-indigo/70 transition-all mr-2 shadow-sm font-medium focus:ring-1 focus:ring-brand-indigo"
           >
