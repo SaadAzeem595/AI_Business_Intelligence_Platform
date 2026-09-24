@@ -113,39 +113,9 @@ def resolve_dataset(query: str, selected_dataset_id: Optional[str] = None, avail
     Resolves a dataset strictly from the current project's available datasets or user selection.
     Returns metadata dict: {'id', 'path', 'filename', 'view_name', 'type', 'display_name', 'schema'}
     """
-    from app.core.database import AsyncSessionLocal
-    from sqlalchemy import select
-    from app.features.datasets.models import Dataset
-    from app.core.cache import run_async_as_sync
     import json
     
-    db_items = []
-    if available_datasets:
-        db_items = available_datasets
-    elif project_id:
-        async def fetch_project_datasets_async():
-            async with AsyncSessionLocal() as db:
-                stmt = select(Dataset).where(Dataset.project_id == project_id)
-                res = await db.execute(stmt)
-                return list(res.scalars().all())
-        try:
-            db_items = run_async_as_sync(fetch_project_datasets_async())
-        except Exception as e:
-            logger.error(f"Failed to fetch project datasets from DB for resolution: {e}")
-            db_items = []
-
-    # Resilient fallback: if db_items is empty, fetch all datasets from database
-    if not db_items:
-        async def fetch_all_datasets_async():
-            async with AsyncSessionLocal() as db:
-                stmt = select(Dataset)
-                res = await db.execute(stmt)
-                return list(res.scalars().all())
-        try:
-            db_items = run_async_as_sync(fetch_all_datasets_async())
-        except Exception as e:
-            logger.error(f"Failed to fetch all datasets from DB for resolution: {e}")
-            db_items = []
+    db_items = available_datasets or []
 
     # Build unique catalog of available datasets in active project
     catalog = []
@@ -377,20 +347,9 @@ def planner_agent(state: AgentState) -> Dict[str, Any]:
         }
 
     # Build unique catalog of available datasets to check for ambiguity or presence
-    from app.core.database import AsyncSessionLocal
-    from app.features.datasets.repository import dataset_repo
-    from app.core.cache import run_async_as_sync
     import json
     
-    db_items = state.get("available_datasets")
-    if not db_items:
-        async def fetch_all_datasets_async():
-            async with AsyncSessionLocal() as db:
-                return await dataset_repo.get_multi(db, limit=1000)
-        try:
-            db_items = run_async_as_sync(fetch_all_datasets_async())
-        except Exception:
-            db_items = []
+    db_items = state.get("available_datasets") or []
             
     unique_items = []
     seen = set()
@@ -522,7 +481,8 @@ def planner_agent(state: AgentState) -> Dict[str, Any]:
             view_name=resolved["view_name"],
             filename=resolved.get("filename") or resolved.get("display_name") or resolved["view_name"],
             resolved=resolved,
-            project_id=state.get("active_project")
+            project_id=state.get("active_project"),
+            available_datasets=state.get("available_datasets")
         )
         res_data = format_schema_response(query, schema_info)
         
@@ -736,7 +696,7 @@ def sql_agent(state: AgentState) -> Dict[str, Any]:
                 continue
 
             try:
-                exec_res_dict = execute_duckdb_query(generated_q, project_id=active_proj)
+                exec_res_dict = execute_duckdb_query(generated_q, project_id=active_proj, datasets_catalog=available_datasets)
                 sql_query = generated_q
                 
                 is_aligned, alignment_err = analyze_query_result(
@@ -758,7 +718,7 @@ def sql_agent(state: AgentState) -> Dict[str, Any]:
 
     if not exec_result and sql_query:
         try:
-            exec_result = execute_duckdb_query(sql_query, project_id=active_proj)
+            exec_result = execute_duckdb_query(sql_query, project_id=active_proj, datasets_catalog=available_datasets)
         except Exception as e:
             exec_result = {"error": str(e), "columns": [], "rows": [], "elapsed_ms": 0, "row_count": 0}
 

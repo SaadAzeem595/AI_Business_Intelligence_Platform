@@ -146,7 +146,7 @@ class LLMService:
             }
 
     @classmethod
-    def generate_response(cls, system_prompt: str, user_prompt: str, model_override: str = None) -> str:
+    def generate_response(cls, system_prompt: str, user_prompt: str, model_override: str = None, max_tokens: int = 1500) -> str:
         """Sends chat completion query to the configured LLM provider synchronously with model fallbacks."""
         key, provider = cls.get_api_key_and_provider()
         if not key:
@@ -187,6 +187,7 @@ class LLMService:
                             {"role": "user", "content": user_prompt}
                         ],
                         "temperature": 0.1,
+                        "max_tokens": max_tokens,
                     }
                     try:
                         logger.info(f"OPENROUTER_LLM_REQUEST: model={model_name} url={url}")
@@ -266,6 +267,7 @@ class LLMService:
                     {"role": "user", "content": user_prompt}
                 ],
                 "temperature": 0.1,
+                "max_tokens": max_tokens,
             }
             try:
                 with httpx.Client(timeout=30.0) as client:
@@ -317,7 +319,8 @@ class LLMService:
                     }
                 ],
                 "generationConfig": {
-                    "temperature": 0.1
+                    "temperature": 0.1,
+                    "maxOutputTokens": max_tokens
                 }
             }
             try:

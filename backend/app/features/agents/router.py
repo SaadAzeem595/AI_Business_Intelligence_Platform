@@ -1,7 +1,9 @@
 import os
+import re
 import uuid
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Tuple
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,6 +15,124 @@ from app.features.agents.graph import agent_graph
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/agents", tags=["LangGraph Multi-Agent Platform"])
+
+
+def auto_detect_dataset_from_query(
+    user_query: str,
+    available_datasets: List[Dict[str, Any]]
+) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]], str]:
+    """
+    Performs multi-stage deterministic + semantic auto-detection:
+    1. Exact / substring match of dataset filename, display_name, duckdb_table, or base name in query.
+    2. Word token match.
+    3. Column / Schema name matching with semantic synonyms.
+    Returns: (detected_dataset, candidate_matches, detection_mode)
+    """
+    if not available_datasets:
+        return None, [], "none_available"
+
+    if len(available_datasets) == 1:
+        return available_datasets[0], available_datasets, "single_available"
+
+    q_lower = user_query.lower()
+    q_tokens = set(re.findall(r'[a-zA-Z0-9]+', q_lower))
+
+    # Stage 1: Exact / Substring filename or table match in query
+    stage1_candidates = []
+    for ds in available_datasets:
+        fn = (ds.get("filename") or "").lower()
+        disp = (ds.get("display_name") or "").lower()
+        tbl = (ds.get("duckdb_table") or "").lower()
+        base = os.path.splitext(fn)[0].lower() if fn else ""
+
+        if (fn and fn in q_lower) or (disp and disp in q_lower) or (tbl and tbl in q_lower) or (base and len(base) > 3 and base in q_lower):
+            stage1_candidates.append(ds)
+
+    if len(stage1_candidates) == 1:
+        return stage1_candidates[0], stage1_candidates, "exact_name_match"
+    elif len(stage1_candidates) > 1:
+        return None, stage1_candidates, "multiple_name_matches"
+
+    # Stage 2: Token match (e.g. 'olist', 'geolocation')
+    stage2_candidates = []
+    stopwords = {"csv", "xlsx", "json", "parquet", "dataset", "table", "data", "file", "records", "the", "in", "and", "or", "of", "to", "for"}
+    for ds in available_datasets:
+        fn = (ds.get("filename") or "").lower()
+        disp = (ds.get("display_name") or "").lower()
+        tbl = (ds.get("duckdb_table") or "").lower()
+        name_tokens = (set(re.findall(r'[a-zA-Z0-9]+', f"{fn} {disp} {tbl}")) - stopwords)
+        if name_tokens:
+            overlap = name_tokens & q_tokens
+            if len(overlap) >= 2 or (len(name_tokens) == 1 and overlap):
+                stage2_candidates.append(ds)
+
+    if len(stage2_candidates) == 1:
+        return stage2_candidates[0], stage2_candidates, "token_match"
+    elif len(stage2_candidates) > 1:
+        return None, stage2_candidates, "multiple_token_matches"
+
+    # Stage 3: Column / Schema name matching with semantic synonyms
+    synonyms = {
+        "lat": ["latitude"],
+        "latitude": ["lat", "geolocation_lat"],
+        "lng": ["longitude"],
+        "lon": ["longitude"],
+        "longitude": ["lng", "lon", "geolocation_lng"],
+        "zip": ["zip_code", "zipcode", "postal_code", "prefix"],
+        "city": ["city", "town", "municipality"],
+        "state": ["state", "province", "region"],
+        "price": ["cost", "amount", "charge", "sales", "revenue"],
+        "score": ["rating", "stars", "feedback"],
+        "customer": ["client", "buyer", "user"],
+        "order": ["purchase", "transaction"],
+    }
+
+    col_scores = []
+    for ds in available_datasets:
+        cols = []
+        c_raw = ds.get("columns_json")
+        if c_raw:
+            try:
+                import json
+                cols = json.loads(c_raw) if isinstance(c_raw, str) else c_raw
+            except Exception:
+                cols = []
+        if not cols and ds.get("schema_json"):
+            try:
+                import json
+                s_dict = json.loads(ds["schema_json"]) if isinstance(ds["schema_json"], str) else ds["schema_json"]
+                cols = list(s_dict.keys())
+            except Exception:
+                cols = []
+
+        score = 0
+        for col in cols:
+            col_str = str(col).lower()
+            col_parts = set(re.findall(r'[a-zA-Z0-9]+', col_str))
+            if col_str in q_lower:
+                score += 4
+            elif any(part in q_tokens and len(part) > 2 for part in col_parts):
+                score += 2
+
+            for syn_key, syn_vals in synonyms.items():
+                if syn_key in col_parts or col_str == syn_key:
+                    if any(sv in q_tokens or sv in q_lower for sv in syn_vals):
+                        score += 3
+
+        if score > 0:
+            col_scores.append((score, ds))
+
+    if col_scores:
+        col_scores.sort(key=lambda x: x[0], reverse=True)
+        top_score, top_ds = col_scores[0]
+        if len(col_scores) == 1 or top_score >= col_scores[1][0] + 2:
+            return top_ds, [top_ds], "schema_match"
+        elif len(col_scores) > 1 and top_score == col_scores[1][0]:
+            candidates = [ds for s, ds in col_scores if s == top_score]
+            return None, candidates, "multiple_schema_matches"
+
+    # Default fallback to first available
+    return available_datasets[0], available_datasets, "default_fallback"
 
 
 def build_response_from_state(thread_id: str, graph_state: Any, execution_time_ms: Optional[float] = None) -> AgentChatResponse:
@@ -190,7 +310,18 @@ async def chat_with_agents(
         from sqlalchemy import select
         from app.features.datasets.models import Dataset
         
-        # 1. PROJECT_RESOLVED / DATASETS_LOADED stage
+        # 1. Thread context recovery & conversation memory
+        current_state = agent_graph.get_state(config)
+        start_time = time.perf_counter()
+        
+        prev_dataset_id = current_state.values.get("dataset_id") if current_state and current_state.values else None
+        prev_dataset = current_state.values.get("dataset") if current_state and current_state.values else None
+        prev_project_id = current_state.values.get("active_project") if current_state and current_state.values else None
+
+        if not active_proj and prev_project_id:
+            active_proj = prev_project_id
+
+        # 2. Extract requested dataset name or ID
         from sqlalchemy import func
         from app.features.agents.agents import extract_requested_dataset_name
         
@@ -201,7 +332,7 @@ async def chat_with_agents(
                 target_ds_id = extracted
 
         target_ds = None
-        if target_ds_id and target_ds_id != "all":
+        if target_ds_id and target_ds_id not in ("all", "auto"):
             clean_target = str(target_ds_id).strip()
             clean_base = os.path.splitext(clean_target)[0].lower()
             try:
@@ -223,6 +354,7 @@ async def chat_with_agents(
             except Exception as dse:
                 logger.warning(f"Could not infer target dataset: {dse}")
 
+        # 3. Load accessible datasets
         if active_proj:
             try:
                 from app.features.projects.router import get_project_and_verify_access
@@ -261,40 +393,138 @@ async def chat_with_agents(
 
             # If an explicit target dataset was found and isn't in db_items (e.g. project scoping mismatch), include it
             if target_ds:
-                existing_ids = {str(item.id) for item in db_items}
-                if str(target_ds.id) not in existing_ids:
+                existing_ids = {str(item.id) if hasattr(item, "id") else str(item["id"]) for item in db_items}
+                target_id = str(target_ds.id) if hasattr(target_ds, "id") else str(target_ds["id"])
+                if target_id not in existing_ids:
                     db_items.append(target_ds)
 
             available_datasets = [
                 {
-                    "id": str(item.id),
-                    "filename": item.filename,
-                    "display_name": item.display_name,
-                    "storage_path": item.storage_path,
-                    "duckdb_table": item.duckdb_table,
-                    "type": item.type,
-                    "columns_json": item.columns_json,
-                    "schema_json": item.schema_json,
-                    "rows": item.rows,
-                    "status": item.status,
-                    "project_id": item.project_id,
+                    "id": str(item.id) if hasattr(item, "id") else str(item["id"]),
+                    "filename": item.filename if hasattr(item, "filename") else item.get("filename"),
+                    "display_name": item.display_name if hasattr(item, "display_name") else item.get("display_name"),
+                    "storage_path": item.storage_path if hasattr(item, "storage_path") else item.get("storage_path"),
+                    "duckdb_table": item.duckdb_table if hasattr(item, "duckdb_table") else item.get("duckdb_table"),
+                    "type": item.type if hasattr(item, "type") else item.get("type"),
+                    "columns_json": item.columns_json if hasattr(item, "columns_json") else item.get("columns_json"),
+                    "schema_json": item.schema_json if hasattr(item, "schema_json") else item.get("schema_json"),
+                    "rows": item.rows if hasattr(item, "rows") else item.get("rows"),
+                    "status": item.status if hasattr(item, "status") else item.get("status"),
+                    "project_id": item.project_id if hasattr(item, "project_id") else item.get("project_id"),
                 }
                 for item in db_items
             ]
-        
+
+        # 4. Storage path verification across candidate upload directories
+        from app.core.config import settings
+        root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
+        cand_dirs = [
+            getattr(settings, "resolved_uploads_dir", None),
+            os.path.join(os.getcwd(), "uploads"),
+            os.path.join(os.getcwd(), "backend", "uploads"),
+            os.path.join(os.getcwd(), "backend", "app", "uploads"),
+            os.path.join(os.getcwd(), "app", "uploads"),
+            os.path.join(root_dir, "uploads"),
+            os.path.join(root_dir, "backend", "uploads"),
+            os.path.join(root_dir, "backend", "app", "uploads"),
+            "/app/uploads",
+            "/app/app/uploads",
+            "/app/backend/uploads",
+            "/app/backend/app/uploads",
+        ]
+        for ds in available_datasets:
+            sp = ds.get("storage_path")
+            fn = ds.get("filename")
+            orig = ds.get("original_filename")
+            if not sp or not os.path.exists(sp):
+                candidate_fns = [f for f in [fn, os.path.basename(sp) if sp else None, orig] if f]
+                for candidate_fn in candidate_fns:
+                    for cdir in cand_dirs:
+                        if cdir and os.path.isdir(cdir):
+                            target_file = os.path.join(cdir, candidate_fn)
+                            if os.path.exists(target_file):
+                                ds["storage_path"] = target_file
+                                break
+                            # Also check files with UUID prefix
+                            try:
+                                for actual_f in os.listdir(cdir):
+                                    if actual_f == candidate_fn or actual_f.endswith(f"_{candidate_fn}") or actual_f.lower().endswith(candidate_fn.lower()):
+                                        ds["storage_path"] = os.path.join(cdir, actual_f)
+                                        break
+                            except Exception:
+                                pass
+                            if ds.get("storage_path") and os.path.exists(ds["storage_path"]):
+                                break
+                    if ds.get("storage_path") and os.path.exists(ds["storage_path"]):
+                        break
+
+        # 5. Multi-stage auto-detection & clarification check
+        detection_mode = "manual" if target_ds else "auto_detect"
+        if not target_ds:
+            # Check conversation memory for follow-up questions
+            extracted = extract_requested_dataset_name(payload.message) if payload.message else None
+            if not extracted and prev_dataset_id:
+                for ds in available_datasets:
+                    if ds.get("id") == prev_dataset_id or ds.get("filename") == prev_dataset:
+                        target_ds = ds
+                        detection_mode = "conversation_memory"
+                        break
+
+            # If still unresolved, run multi-stage auto-detection
+            if not target_ds:
+                detected, candidates, mode = auto_detect_dataset_from_query(payload.message, available_datasets)
+                detection_mode = mode
+                if detected:
+                    target_ds = detected
+                elif candidates and mode.startswith("multiple"):
+                    candidate_names = [d.get("display_name") or d.get("filename") for d in candidates]
+                    clarification_msg = (
+                        f"I found multiple datasets matching your question: {', '.join(candidate_names)}. "
+                        "Please select which dataset you would like to analyze from the dropdown or mention it directly in your message."
+                    )
+                    logger.info(f"MULTIPLE_DATASETS_MATCHED: candidates={candidate_names}")
+                    return AgentChatResponse(
+                        thread_id=thread_id,
+                        status="needs_clarification",
+                        response=clarification_msg,
+                        content=clarification_msg,
+                        reasoning_path=["dataset_auto_detector"],
+                        execution_logs=[
+                            ExecutionLogItem(
+                                agent_name="dataset_auto_detector",
+                                status="needs_clarification",
+                                duration_ms=round((time.perf_counter() - start_time) * 1000, 2),
+                                timestamp=datetime.now().isoformat(),
+                                details=f"Multiple candidates matched: {candidate_names}"
+                            )
+                        ],
+                        dataset_names=candidate_names,
+                        dataset_ids=[str(d.get("id")) for d in candidates]
+                    )
+
+        # 6. Final resolution metadata logging
+        resolved_ds_id = None
+        resolved_ds_fn = None
+        if target_ds:
+            resolved_ds_id = str(target_ds.get("id")) if isinstance(target_ds, dict) else str(target_ds.id)
+            resolved_ds_fn = target_ds.get("filename") if isinstance(target_ds, dict) else target_ds.filename
+            t_proj = target_ds.get("project_id") if isinstance(target_ds, dict) else target_ds.project_id
+            if t_proj and not active_proj:
+                active_proj = t_proj
+
+        logger.info(
+            f"CHAT_DATASET_RESOLUTION: mode={detection_mode} resolved_id={resolved_ds_id} "
+            f"resolved_file='{resolved_ds_fn}' active_project={active_proj}"
+        )
         logger.info(f"DATASETS_LOADED: project_id={active_proj} count={len(available_datasets)} datasets={[d['filename'] for d in available_datasets]}")
         logger.info(f"SCHEMA_LOADED: tables={[d['duckdb_table'] for d in available_datasets]}")
-
-        # Check if thread already exists
-        current_state = agent_graph.get_state(config)
-        start_time = time.perf_counter()
 
         # Run or update agent graph
         if not current_state or not current_state.values:
             initial_state = {
                 "query": payload.message,
                 "workspace": current_user.workspace_id,
-                "dataset": payload.dataset_id or payload.dataset,
+                "dataset": resolved_ds_fn or payload.dataset_id or payload.dataset,
                 "selected_dataset_ids": payload.selected_dataset_ids,
                 "available_datasets": available_datasets,
                 "active_project": active_proj,
@@ -316,7 +546,7 @@ async def chat_with_agents(
                 "execution_logs": [],
                 "reasoning_path": [],
                 "workspace_id": current_user.workspace_id,
-                "dataset_id": payload.dataset_id or payload.dataset,
+                "dataset_id": resolved_ds_id or payload.dataset_id or payload.dataset,
                 "dataset_context": None,
                 "dataset_schema": None,
                 "user_message": payload.message,
@@ -330,7 +560,7 @@ async def chat_with_agents(
         else:
             agent_graph.update_state(config, {
                 "query": payload.message,
-                "dataset": payload.dataset_id or payload.dataset,
+                "dataset": resolved_ds_fn or payload.dataset_id or payload.dataset,
                 "selected_dataset_ids": payload.selected_dataset_ids,
                 "available_datasets": available_datasets,
                 "active_project": active_proj,
@@ -353,7 +583,7 @@ async def chat_with_agents(
                 "reasoning_path": [],
                 "errors": [],
                 "workspace_id": current_user.workspace_id,
-                "dataset_id": payload.dataset_id or payload.dataset,
+                "dataset_id": resolved_ds_id or payload.dataset_id or payload.dataset,
                 "user_message": payload.message,
                 "intent": None,
                 "user_id": current_user.id,

@@ -102,7 +102,8 @@ def inspect_dataset_schema(
     view_name: str,
     filename: str,
     resolved: Dict[str, Any],
-    project_id: Optional[str] = None
+    project_id: Optional[str] = None,
+    available_datasets: Optional[List[Dict[str, Any]]] = None
 ) -> Dict[str, Any]:
     """
     Inspects DuckDB (with fallbacks to resolved metadata) to retrieve exact column names,
@@ -118,7 +119,7 @@ def inspect_dataset_schema(
 
     try:
         try:
-            register_all_datasets_in_duckdb(conn, project_id)
+            register_all_datasets_in_duckdb(conn, project_id, datasets_catalog=available_datasets)
         except Exception as e:
             logger.warning(f"DuckDB registration warning in schema inspector: {e}")
 

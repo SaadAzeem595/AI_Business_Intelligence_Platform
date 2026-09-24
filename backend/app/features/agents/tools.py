@@ -204,12 +204,16 @@ def validate_sql(
     return validate_semantic_sql(sql_query, user_query, catalog, target_dataset=target_dataset)
 
 
-def execute_duckdb_query(sql_query: str, project_id: Optional[str] = None) -> Dict[str, Any]:
+def execute_duckdb_query(
+    sql_query: str,
+    project_id: Optional[str] = None,
+    datasets_catalog: Optional[List[Dict[str, Any]]] = None
+) -> Dict[str, Any]:
     """
     Tool function: execute_duckdb_query()
     Executes the validated SQL against DuckDB service and returns rows, columns, and elapsed time.
     """
-    res = AnalyticsService.execute_duckdb_query(sql_query, project_id=project_id)
+    res = AnalyticsService.execute_duckdb_query(sql_query, project_id=project_id, datasets_catalog=datasets_catalog)
     return {
         "columns": res.columns,
         "rows": res.rows,

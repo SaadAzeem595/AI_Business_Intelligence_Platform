@@ -23,9 +23,14 @@ from app.features.analytics.engine.anomaly import AnomalyDetectionService
 from app.features.analytics.engine.explainability import ExplainabilityService
 
 
-def register_all_datasets_in_duckdb(conn: duckdb.DuckDBPyConnection, project_id: Optional[str] = None):
+def register_all_datasets_in_duckdb(
+    conn: duckdb.DuckDBPyConnection,
+    project_id: Optional[str] = None,
+    datasets_catalog: Optional[List[Any]] = None
+):
     """
-    Registers all uploaded datasets belonging strictly to project_id as views in DuckDB.
+    Registers all uploaded datasets belonging strictly to project_id (or catalog) as views in DuckDB.
+    Registers both project-scoped and clean table aliases to maximize query compatibility.
     """
     import os
     import logging
@@ -40,22 +45,25 @@ def register_all_datasets_in_duckdb(conn: duckdb.DuckDBPyConnection, project_id:
     logger = logging.getLogger(__name__)
     root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
 
-    async def fetch_all_datasets_async():
-        async with AsyncSessionLocal() as db:
-            if project_id:
-                stmt = select(Dataset).where(Dataset.project_id == project_id)
-            else:
-                stmt = select(Dataset)
-            result = await db.execute(stmt)
-            return list(result.scalars().all())
-
     db_items = []
-    try:
-        from app.core.cache import run_async_as_sync
-        db_items = run_async_as_sync(fetch_all_datasets_async())
-    except Exception as e:
-        logger.error(f"Failed to fetch datasets from DB for DuckDB registration: {e}")
-        db_items = []
+    if datasets_catalog is not None:
+        db_items = list(datasets_catalog)
+    else:
+        async def fetch_all_datasets_async():
+            async with AsyncSessionLocal() as db:
+                if project_id:
+                    stmt = select(Dataset).where(Dataset.project_id == project_id)
+                else:
+                    stmt = select(Dataset)
+                result = await db.execute(stmt)
+                return list(result.scalars().all())
+
+        try:
+            from app.core.cache import run_async_as_sync
+            db_items = run_async_as_sync(fetch_all_datasets_async())
+        except Exception as e:
+            logger.warning(f"Could not fetch datasets via sync wrapper for DuckDB registration: {e}")
+            db_items = []
 
     # Map for deduplication
     registered_paths = set()
@@ -64,7 +72,7 @@ def register_all_datasets_in_duckdb(conn: duckdb.DuckDBPyConnection, project_id:
     def create_duckdb_view(file_path: str, view_name: str):
         if not view_name or not file_path or not os.path.exists(file_path):
             return
-        clean_v = view_name.strip().lower().replace(" ", "_").replace("-", "_")
+        clean_v = view_name.strip().lower().replace(" ", "_").replace("-", "_").replace(".", "_")
         clean_v = "".join(c for c in clean_v if c.isalnum() or c == "_")
         if not clean_v:
             return
@@ -88,39 +96,88 @@ def register_all_datasets_in_duckdb(conn: duckdb.DuckDBPyConnection, project_id:
         except Exception as e:
             logger.warning(f"Failed to register view '{clean_v}' in DuckDB: {str(e)}")
 
-    # 1. Register uploaded files from DB
+    # Candidate upload directories for file path search
+    cand_dirs = [
+        getattr(settings, "resolved_uploads_dir", None),
+        os.path.join(os.getcwd(), "uploads"),
+        os.path.join(os.getcwd(), "backend", "uploads"),
+        os.path.join(os.getcwd(), "backend", "app", "uploads"),
+        os.path.join(os.getcwd(), "app", "uploads"),
+        os.path.join(root_dir, "uploads"),
+        os.path.join(root_dir, "backend", "uploads"),
+        os.path.join(root_dir, "backend", "app", "uploads"),
+        "/app/uploads",
+        "/app/app/uploads",
+        "/app/backend/uploads",
+        "/app/backend/app/uploads",
+    ]
+
+    # 1. Register uploaded files from DB / Catalog
     for item in db_items:
-        file_path = item.storage_path
+        is_dict = isinstance(item, dict)
+        storage_path = item.get("storage_path") if is_dict else getattr(item, "storage_path", None)
+        filename = item.get("filename") if is_dict else getattr(item, "filename", None)
+        duckdb_table = item.get("duckdb_table") if is_dict else getattr(item, "duckdb_table", None)
+        display_name = item.get("display_name") if is_dict else getattr(item, "display_name", None)
+        orig_fn = item.get("original_filename") if is_dict else getattr(item, "original_filename", None)
+        item_proj = item.get("project_id") if is_dict else getattr(item, "project_id", None)
+
+        file_path = storage_path
         if not file_path or not os.path.exists(file_path):
             candidate = None
-            for fn in [item.filename, os.path.basename(file_path) if file_path else None]:
-                if not fn:
-                    continue
-                cand1 = os.path.join(settings.resolved_uploads_dir, fn)
-                cand2 = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads", fn)
-                if os.path.exists(cand1):
-                    candidate = cand1
-                    break
-                elif os.path.exists(cand2):
-                    candidate = cand2
+            fns = [f for f in [filename, os.path.basename(file_path) if file_path else None, orig_fn] if f]
+            for fn in fns:
+                for cdir in cand_dirs:
+                    if cdir and os.path.isdir(cdir):
+                        target = os.path.join(cdir, fn)
+                        if os.path.exists(target):
+                            candidate = target
+                            break
+                        # Also check files with UUID prefix: <uuid>_<fn>
+                        try:
+                            for actual_f in os.listdir(cdir):
+                                if actual_f == fn or actual_f.endswith(f"_{fn}") or actual_f.lower().endswith(fn.lower()):
+                                    candidate = os.path.join(cdir, actual_f)
+                                    break
+                        except Exception:
+                            pass
+                        if candidate:
+                            break
+                if candidate:
                     break
             if candidate:
                 file_path = candidate
             else:
+                logger.warning(f"Storage file for dataset '{filename}' not found at '{storage_path}'")
                 continue
 
         registered_paths.add(file_path)
         
         view_names = set()
-        if item.duckdb_table:
-            view_names.add(item.duckdb_table)
-        if item.display_name:
-            view_names.add(item.display_name)
-        if item.filename:
-            view_names.add(os.path.splitext(item.filename)[0])
-            view_names.add(item.filename)
-        if item.original_filename:
-            view_names.add(os.path.splitext(item.original_filename)[0])
+        if duckdb_table:
+            view_names.add(duckdb_table)
+            # If project-prefixed table name, also add clean un-prefixed alias
+            if duckdb_table.startswith("project_"):
+                parts = duckdb_table.split("_", 2)
+                if len(parts) >= 3:
+                    view_names.add(parts[2])
+        if display_name:
+            view_names.add(display_name)
+        if filename:
+            view_names.add(os.path.splitext(filename)[0])
+            view_names.add(filename)
+        if orig_fn:
+            view_names.add(os.path.splitext(orig_fn)[0])
+
+        # Also register project-scoped aliases if project_id is known
+        eff_proj = project_id or item_proj
+        if eff_proj:
+            clean_proj = eff_proj.replace("-", "_")
+            if duckdb_table and not duckdb_table.startswith("project_"):
+                view_names.add(f"project_{clean_proj}_{duckdb_table}")
+            if filename:
+                clean_fn = os.path.splitext(filename)[0].replace("-", "_").replace(" ", "_")
+                view_names.add(f"project_{clean_proj}_{clean_fn}")
 
         for view_name in view_names:
             create_duckdb_view(file_path, view_name)
@@ -204,7 +261,7 @@ class AnalyticsService:
         self.explainability = explainability or ExplainabilityService()
 
     @staticmethod
-    def execute_duckdb_query(query: str, project_id: Optional[str] = None) -> SQLResponse:
+    def execute_duckdb_query(query: str, project_id: Optional[str] = None, datasets_catalog: Optional[List[Any]] = None) -> SQLResponse:
         """Loads active cached datasets into temporary views inside DuckDB and executes SQL queries."""
         import hashlib
         import re
@@ -244,7 +301,7 @@ class AnalyticsService:
 
         try:
             # Dynamically register all uploaded and sample files as temporary views in DuckDB
-            register_all_datasets_in_duckdb(conn, project_id)
+            register_all_datasets_in_duckdb(conn, project_id, datasets_catalog=datasets_catalog)
         except Exception:
             pass
 

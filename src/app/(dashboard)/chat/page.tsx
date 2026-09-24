@@ -13,6 +13,9 @@ import { useChat } from "@/features/chat/hooks/useChat";
 import { useUIStore } from "@/shared/services/uiStore";
 import { useDatasets } from "@/features/datasets/hooks/useDatasets";
 
+import { useProjects } from "@/features/projects/hooks/useProjects";
+import { FolderGit2, CheckCircle2, AlertCircle, Compass, Database } from "lucide-react";
+
 interface Message {
   role: "user" | "assistant";
   content: string;
@@ -34,9 +37,14 @@ export default function AIChatPage() {
   const datasetIdParam = searchParams.get("datasetId") || searchParams.get("dataset");
   
   const { activeOrg, activeProject, setActiveProject } = useUIStore();
-  const { datasets } = useDatasets();
+  const { projects } = useProjects();
+  const { datasets } = useDatasets(undefined, activeProject || undefined);
+  
   const [selectedDatasetId, setSelectedDatasetId] = useState("");
   const [selectedDataset, setSelectedDataset] = useState("");
+  const [detectedDataset, setDetectedDataset] = useState<string | null>(null);
+  const [detectedDatasetId, setDetectedDatasetId] = useState<string | null>(null);
+  const [candidates, setCandidates] = useState<{ id: string; name: string }[]>([]);
   const [sessionId, setSessionId] = useState<string | undefined>(undefined);
 
   // Auto-select dataset based on query parameter from navigation
@@ -82,32 +90,17 @@ export default function AIChatPage() {
 
   const { sendMessage } = useChat();
 
-  const handleSendMessage = async (text: string) => {
+  const handleSendMessage = async (text: string, overrideDatasetId?: string, overrideDatasetName?: string) => {
     if (!text.trim()) return;
     
     const userMessage: Message = { role: "user", content: text };
     setMessages((prev) => [...prev, userMessage]);
     setInput("");
     setIsTyping(true);
+    setCandidates([]);
 
-    let activeDatasetName = selectedDataset;
-    let activeDatasetId = selectedDatasetId;
-    if (!activeDatasetId && !activeDatasetName) {
-      const textLower = text.toLowerCase();
-      const inText = datasets.find((d: any) => {
-        const fn = (d.filename || "").toLowerCase();
-        const disp = (d.display_name || "").toLowerCase();
-        const base = fn.replace(/\.[^/.]+$/, "");
-        return (fn && textLower.includes(fn)) || (disp && textLower.includes(disp)) || (base && textLower.includes(base));
-      });
-      if (inText) {
-        activeDatasetId = inText.id;
-        activeDatasetName = inText.filename;
-        setSelectedDatasetId(inText.id);
-        setSelectedDataset(inText.filename);
-      }
-    }
-
+    const activeDatasetId = overrideDatasetId !== undefined ? overrideDatasetId : selectedDatasetId;
+    const activeDatasetName = overrideDatasetName !== undefined ? overrideDatasetName : selectedDataset;
     const matched = datasets.find((d: any) => d.id === activeDatasetId || d.filename === activeDatasetName);
     const effectiveProject = activeProject || matched?.project_id || undefined;
 
@@ -115,8 +108,8 @@ export default function AIChatPage() {
       const response = await sendMessage({
         message: text,
         sessionId: sessionId,
-        workspace: activeOrg,
-        workspaceId: activeOrg,
+        workspace: activeOrg || "default",
+        workspaceId: activeOrg || "default",
         dataset: activeDatasetName || undefined,
         datasetId: activeDatasetId || undefined,
         selectedDatasetIds: activeDatasetId ? [activeDatasetId] : [],
@@ -127,6 +120,22 @@ export default function AIChatPage() {
       
       if (response.sessionId) {
         setSessionId(response.sessionId);
+      }
+
+      if (response.datasetName) {
+        setDetectedDataset(response.datasetName);
+        if (response.datasetId) {
+          setDetectedDatasetId(response.datasetId);
+        }
+      }
+
+      if (response.status === "needs_clarification" && response.datasetNames && response.datasetNames.length > 0) {
+        setCandidates(
+          response.datasetNames.map((name: string, i: number) => ({
+            id: response.datasetIds?.[i] || name,
+            name: name,
+          }))
+        );
       }
 
       setMessages((prev) => [
@@ -144,7 +153,7 @@ export default function AIChatPage() {
         ...prev,
         {
           role: "assistant",
-          content: `❌ ${errMsg}`,
+          content: `❌ ${typeof errMsg === "string" ? errMsg : JSON.stringify(errMsg)}`,
         },
       ]);
     } finally {
@@ -152,9 +161,20 @@ export default function AIChatPage() {
     }
   };
 
+  const handleSelectCandidate = (candidate: { id: string; name: string }) => {
+    setSelectedDatasetId(candidate.id);
+    setSelectedDataset(candidate.name);
+    setDetectedDataset(candidate.name);
+    setDetectedDatasetId(candidate.id);
+    setCandidates([]);
+    handleSendMessage(`Analyze ${candidate.name}`, candidate.id, candidate.name);
+  };
 
   const handleClearChat = () => {
     setSessionId(undefined);
+    setDetectedDataset(null);
+    setDetectedDatasetId(null);
+    setCandidates([]);
     setMessages([
       {
         role: "assistant",
@@ -166,32 +186,60 @@ export default function AIChatPage() {
   return (
     <div className="flex flex-col h-[calc(100vh-8.5rem)] relative border border-border bg-card rounded-xl overflow-hidden select-none">
       {/* Thread Controls Header */}
-      <div className="flex h-13 w-full items-center justify-between border-b border-border bg-card/85 px-4 shrink-0">
+      <div className="flex flex-wrap gap-2 min-h-13 w-full items-center justify-between border-b border-border bg-card/85 px-4 py-2 shrink-0">
         <span className="text-xs font-semibold text-foreground/80 flex items-center gap-1.5">
           <Sparkles className="h-4 w-4 text-brand-indigo" /> AI Chat Session
         </span>
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Project Selector Dropdown */}
+          <div className="flex items-center gap-1">
+            <FolderGit2 className="h-3.5 w-3.5 text-muted-foreground" />
+            <select
+              value={activeProject || ""}
+              onChange={(e) => {
+                const val = e.target.value;
+                setActiveProject(val || null);
+                setSelectedDatasetId("");
+                setSelectedDataset("");
+                setDetectedDataset(null);
+              }}
+              className="text-xs border border-border rounded-lg bg-card text-foreground px-2.5 py-1.5 outline-none cursor-pointer hover:border-brand-indigo/60 transition-all shadow-sm font-medium focus:ring-1 focus:ring-brand-indigo"
+            >
+              <option value="">📁 All Projects (Global)</option>
+              {projects.map((p: any) => (
+                <option key={p.id} value={p.id}>
+                  📁 {p.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
           {/* Active Dataset Selector Dropdown */}
-          <select
-            value={selectedDatasetId}
-            onChange={(e) => {
-              const val = e.target.value;
-              setSelectedDatasetId(val);
-              const matched = datasets.find((d: any) => d.id === val);
-              setSelectedDataset(matched ? matched.filename : "");
-              if (matched?.project_id) {
-                setActiveProject(matched.project_id);
-              }
-            }}
-            className="text-xs border border-brand-indigo/35 rounded-lg bg-card text-foreground px-3 py-1.5 outline-none cursor-pointer hover:border-brand-indigo/70 transition-all mr-2 shadow-sm font-medium focus:ring-1 focus:ring-brand-indigo"
-          >
-            <option value="">🔮 Auto-detect Dataset</option>
-            {datasets.map((d: any) => (
-              <option key={d.id} value={d.id}>
-                📊 {d.display_name || d.filename}
-              </option>
-            ))}
-          </select>
+          <div className="flex items-center gap-1">
+            <Database className="h-3.5 w-3.5 text-muted-foreground" />
+            <select
+              value={selectedDatasetId}
+              onChange={(e) => {
+                const val = e.target.value;
+                setSelectedDatasetId(val);
+                const matched = datasets.find((d: any) => d.id === val);
+                setSelectedDataset(matched ? matched.filename : "");
+                setDetectedDataset(matched ? matched.filename : null);
+                setCandidates([]);
+                if (matched?.project_id && matched.project_id !== activeProject) {
+                  setActiveProject(matched.project_id);
+                }
+              }}
+              className="text-xs border border-brand-indigo/35 rounded-lg bg-card text-foreground px-3 py-1.5 outline-none cursor-pointer hover:border-brand-indigo/70 transition-all shadow-sm font-medium focus:ring-1 focus:ring-brand-indigo"
+            >
+              <option value="">🔮 Auto-detect Dataset</option>
+              {datasets.map((d: any) => (
+                <option key={d.id} value={d.id}>
+                  📊 {d.display_name || d.filename} {d.type ? `(${d.type})` : ""}
+                </option>
+              ))}
+            </select>
+          </div>
 
           <Button size="icon" variant="ghost" className="h-8 w-8 hover:bg-muted text-muted-foreground hover:text-foreground" onClick={handleClearChat} title="Clear conversation">
             <Trash2 className="h-4 w-4" />
@@ -201,6 +249,62 @@ export default function AIChatPage() {
           </Button>
         </div>
       </div>
+
+      {/* Auto-detect Status Banner */}
+      <div className="px-4 py-2 bg-muted/40 border-b border-border/60 text-xs flex items-center justify-between gap-3 shrink-0">
+        <div className="flex items-center gap-2 overflow-hidden text-ellipsis whitespace-nowrap">
+          {!selectedDatasetId ? (
+            detectedDataset ? (
+              <span className="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400 font-medium">
+                <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+                <span>Auto-detected: <strong>{detectedDataset}</strong></span>
+              </span>
+            ) : (
+              <span className="flex items-center gap-1.5 text-brand-indigo font-medium">
+                <Compass className="h-3.5 w-3.5 shrink-0 animate-spin" style={{ animationDuration: '6s' }} />
+                <span>Auto-detect ON — Datasets and columns will be resolved dynamically from your query.</span>
+              </span>
+            )
+          ) : (
+            <span className="flex items-center gap-1.5 text-foreground/80 font-medium">
+              <Database className="h-3.5 w-3.5 text-brand-indigo shrink-0" />
+              <span>Manually Scoped: <strong>{selectedDataset || "Selected Dataset"}</strong></span>
+            </span>
+          )}
+        </div>
+        
+        {selectedDatasetId ? (
+          <button
+            onClick={() => {
+              setSelectedDatasetId("");
+              setSelectedDataset("");
+              setDetectedDataset(null);
+            }}
+            className="text-[11px] text-brand-indigo hover:underline shrink-0 font-medium cursor-pointer"
+          >
+            Switch to Auto-detect
+          </button>
+        ) : null}
+      </div>
+
+      {/* Candidates Clarification Bar (appears if backend requests clarification) */}
+      {candidates.length > 0 && (
+        <div className="px-4 py-2.5 bg-amber-500/10 border-b border-amber-500/20 text-xs flex items-center gap-2 flex-wrap shrink-0">
+          <AlertCircle className="h-4 w-4 text-amber-500 shrink-0" />
+          <span className="font-semibold text-amber-600 dark:text-amber-400">Multiple datasets matched your query. Which one did you mean?</span>
+          <div className="flex items-center gap-1.5 flex-wrap ml-2">
+            {candidates.map((c) => (
+              <button
+                key={c.id}
+                onClick={() => handleSelectCandidate(c)}
+                className="px-2.5 py-1 rounded-md bg-amber-500/20 hover:bg-amber-500/30 text-amber-700 dark:text-amber-300 font-medium text-xs transition-colors cursor-pointer"
+              >
+                📊 {c.name}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Messages Feed View */}
       <div className="flex-1 overflow-y-auto p-4 space-y-6 custom-scrollbar bg-background/25">

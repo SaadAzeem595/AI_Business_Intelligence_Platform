@@ -1,4 +1,4 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import uuid
 import os
 import logging
@@ -199,15 +199,27 @@ def analyze_file_schema(file_path: str, file_type: str):
 
 @router.get("", response_model=List[DatasetResponse])
 async def list_datasets(
+    project_id: Optional[str] = None,
     current_user: MockUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ) -> List[DatasetResponse]:
-    """Returns all metadata registries for uploaded sheets."""
-    stmt = select(Dataset).where(
-        (Dataset.workspace_id == current_user.workspace_id) | (Dataset.workspace_id == "default")
-    )
+    """Returns all metadata registries for uploaded sheets, optionally filtered by project_id."""
+    if project_id:
+        stmt = select(Dataset).where(Dataset.project_id == project_id).order_by(Dataset.created_at.desc())
+    else:
+        stmt = select(Dataset).where(
+            (Dataset.workspace_id == current_user.workspace_id)
+            | (Dataset.workspace_id == "default")
+            | (Dataset.workspace_id == None)
+            | (Dataset.owner_id == getattr(current_user, "id", None))
+        ).order_by(Dataset.created_at.desc())
     result = await db.execute(stmt)
     db_items = list(result.scalars().all())
+
+    # Resilient fallback: if no items found in workspace global mode, retrieve all available datasets
+    if not db_items and not project_id:
+        fallback_res = await db.execute(select(Dataset).order_by(Dataset.created_at.desc()))
+        db_items = list(fallback_res.scalars().all())
     
     results = []
     for item in db_items:

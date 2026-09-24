@@ -23,6 +23,9 @@ export interface ChatMessageResponse {
   sessionId?: string;
   datasetId?: string;
   datasetName?: string;
+  datasetNames?: string[];
+  datasetIds?: string[];
+  status?: string;
   sqlQuery?: string;
   data?: any[];
   columns?: string[];
@@ -85,6 +88,9 @@ export const ChatService = {
         sessionId: response.data.thread_id,
         datasetId: response.data.dataset_id,
         datasetName: response.data.dataset_name,
+        datasetNames: response.data.dataset_names,
+        datasetIds: response.data.dataset_ids,
+        status: response.data.status,
         sqlQuery: response.data.sql_query,
         data: response.data.data,
         columns: response.data.columns,
