@@ -3,6 +3,7 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 COPY . .
+RUN rm -f .env*
 # Inject public build-time env vars
 ARG NEXT_PUBLIC_API_URL=https://datapilot-api.ashyriver-d1eb08b9.uaenorth.azurecontainerapps.io/api/v1
 ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_YWNjZXB0ZWQtcmFtLTYyLmNsZXJrLmFjY291bnRzLmRldiQ
@@ -12,6 +13,7 @@ ENV NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
 ENV NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=$NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY
 ENV NEXT_PUBLIC_DEV_AUTH_BYPASS=false
 ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
 FROM node:20-alpine AS runner

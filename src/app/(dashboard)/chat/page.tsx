@@ -198,7 +198,7 @@ export default function AIChatPage() {
               value={activeProject || ""}
               onChange={(e) => {
                 const val = e.target.value;
-                setActiveProject(val || null);
+                setActiveProject(val || "");
                 setSelectedDatasetId("");
                 setSelectedDataset("");
                 setDetectedDataset(null);
