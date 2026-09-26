@@ -46,7 +46,9 @@ async def get_subscription(
     effective_plan = await EntitlementService.get_workspace_plan(
         db, current_user.workspace_id
     )
-    entitlements = EntitlementService.get_plan_entitlements(effective_plan)
+    entitlements = await EntitlementService.get_workspace_entitlements(
+        db, current_user.workspace_id
+    )
     return SubscriptionResponse(
         plan=effective_plan,
         status=sub.status,
@@ -121,16 +123,17 @@ async def create_checkout(
 
 @router.post("/portal", response_model=PortalResponse)
 async def create_portal(
-    payload: PortalRequest,
+    payload: Optional[PortalRequest] = None,
     current_user: MockUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ) -> PortalResponse:
     """Generates a Stripe Customer Portal session link for subscription management."""
+    return_url = payload.return_url if payload else None
     try:
         url = await StripeService.create_portal_session(
             db=db,
             workspace_id=current_user.workspace_id,
-            return_url=payload.return_url,
+            return_url=return_url,
         )
         return PortalResponse(portal_url=url)
     except ValueError as val_err:

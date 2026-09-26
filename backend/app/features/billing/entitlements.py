@@ -36,10 +36,14 @@ PLAN_FEATURES = {
     "advanced_forecasting": [PLAN_GROWTH, PLAN_ENTERPRISE],
     "advanced_anomaly_detection": [PLAN_GROWTH, PLAN_ENTERPRISE],
     "scheduled_reports": [PLAN_GROWTH, PLAN_ENTERPRISE],
+    "team_collaboration": [PLAN_GROWTH, PLAN_ENTERPRISE],
     "shared_collaboration": [PLAN_GROWTH, PLAN_ENTERPRISE],
     # Enterprise Tier Features
+    "enterprise_integrations": [PLAN_ENTERPRISE],
     "custom_integrations": [PLAN_ENTERPRISE],
+    "sso_saml": [PLAN_ENTERPRISE],
     "sso": [PLAN_ENTERPRISE],
+    "advanced_auditing": [PLAN_ENTERPRISE],
     "audit_logging": [PLAN_ENTERPRISE],
     "dedicated_scaling": [PLAN_ENTERPRISE],
 }
@@ -144,6 +148,13 @@ class EntitlementService:
             )
 
     @classmethod
+    async def check_feature_access(
+        cls, db: AsyncSession, workspace_id: str, feature: str
+    ) -> None:
+        """Alias for check_feature_entitlement for centralized access verification."""
+        await cls.check_feature_entitlement(db, workspace_id, feature)
+
+    @classmethod
     async def get_active_dataset_count(
         cls, db: AsyncSession, workspace_id: str
     ) -> int:
@@ -187,6 +198,18 @@ class EntitlementService:
             feat: norm_plan in allowed
             for feat, allowed in PLAN_FEATURES.items()
         }
+
+    @classmethod
+    async def get_workspace_entitlements(
+        cls, db: AsyncSession, workspace_id: str
+    ) -> Dict[str, Any]:
+        """Returns structured entitlement map and quotas for workspace."""
+        plan = await cls.get_workspace_plan(db, workspace_id)
+        entitlements = cls.get_plan_entitlements(plan)
+        entitlements["active_datasets"] = (
+            "unlimited" if DATASET_LIMITS.get(plan) is None else DATASET_LIMITS.get(plan)
+        )
+        return entitlements
 
     @classmethod
     async def get_workspace_usage(

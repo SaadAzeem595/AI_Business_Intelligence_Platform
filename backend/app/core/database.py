@@ -27,11 +27,13 @@ def get_target_db_host_and_port() -> tuple[str, int]:
     return settings.POSTGRES_SERVER, settings.POSTGRES_PORT
 
 def check_postgres_availability() -> bool:
+    if IS_TESTING:
+        return False
     import socket
     host, port = get_target_db_host_and_port()
     try:
-        # Simple TCP connection probe with a 5.0s timeout
-        with socket.create_connection((host, port), timeout=5.0):
+        # Simple TCP connection probe with a 2.0s timeout
+        with socket.create_connection((host, port), timeout=2.0):
             return True
     except Exception:
         return False

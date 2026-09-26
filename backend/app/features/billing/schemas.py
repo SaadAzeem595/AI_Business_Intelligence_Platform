@@ -1,4 +1,4 @@
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 from datetime import datetime
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 
@@ -39,7 +39,7 @@ class SubscriptionResponse(BaseModel):
     cancel_at_period_end: bool = False
     stripe_customer_id: Optional[str] = None
     stripe_subscription_id: Optional[str] = None
-    entitlements: Optional[Dict[str, bool]] = None
+    entitlements: Optional[Dict[str, Any]] = None
 
 
 class UsageDatasets(BaseModel):

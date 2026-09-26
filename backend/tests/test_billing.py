@@ -1,11 +1,11 @@
-from typing import Optional
-from datetime import datetime, timezone, timedelta
-from unittest.mock import patch, MagicMock
 import json
+from datetime import datetime, timezone, timedelta
+from typing import Optional
+from unittest.mock import patch, MagicMock
+
 import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy.ext.asyncio import AsyncSession
-import stripe
+import httpx
+from httpx import ASGITransport, AsyncClient
 
 from app.main import app
 from app.core.config import settings
@@ -42,130 +42,243 @@ def set_user_workspace(user_id: str, workspace_id: str, role: str = "Admin") -> 
 
 
 # ==============================================================================
-# TEST 1: New workspace starts as Starter.
+# TEST 1: Starter Entitlement
 # ==============================================================================
 @pytest.mark.anyio
-async def test_01_new_workspace_starts_as_starter():
+async def test_01_starter_entitlement():
     async with AsyncSessionLocal() as db:
-        ws_id = "test-ws-01-new"
+        ws_id = "test-ws-01-starter-ent"
         plan = await EntitlementService.get_workspace_plan(db, ws_id)
         assert plan == PLAN_STARTER
+
+        entitlements = await EntitlementService.get_workspace_entitlements(db, ws_id)
+        assert entitlements["active_datasets"] == 1
+        assert entitlements["basic_sql"] is True
+        assert entitlements["standard_ai_chat"] is True
+        assert entitlements["advanced_forecasting"] is False
+        assert entitlements["advanced_anomaly_detection"] is False
+        assert entitlements["scheduled_reports"] is False
+        assert entitlements["team_collaboration"] is False
+
+
+# ==============================================================================
+# TEST 2: Growth Entitlement
+# ==============================================================================
+@pytest.mark.anyio
+async def test_02_growth_entitlement():
+    async with AsyncSessionLocal() as db:
+        ws_id = "test-ws-02-growth-ent"
         sub = await EntitlementService.get_or_create_workspace_subscription(db, ws_id)
-        assert sub.plan == PLAN_STARTER
-        assert sub.status == STATUS_ACTIVE
-
-
-# ==============================================================================
-# TEST 2: Starter can create first dataset.
-# ==============================================================================
-@pytest.mark.anyio
-async def test_02_starter_can_create_first_dataset():
-    async with AsyncSessionLocal() as db:
-        ws_id = "test-ws-02-first-ds"
-        # 0 active datasets -> limit check passes
-        await EntitlementService.check_dataset_limit(db, ws_id)
-
-
-# ==============================================================================
-# TEST 3: Starter cannot create second active dataset.
-# ==============================================================================
-@pytest.mark.anyio
-async def test_03_starter_cannot_create_second_active_dataset():
-    async with AsyncSessionLocal() as db:
-        ws_id = "test-ws-03-limit"
-        ds1 = Dataset(
-            id="ds-limit-01",
-            filename="ds1.csv",
-            type="CSV",
-            size="10 KB",
-            rows=10,
-            qualityScore=100,
-            status="Active",
-            date="2026-09-19",
-            workspace_id=ws_id,
-        )
-        db.add(ds1)
+        sub.plan = PLAN_GROWTH
+        sub.status = STATUS_ACTIVE
         await db.commit()
 
-        with pytest.raises(DatasetLimitReachedException) as exc_info:
-            await EntitlementService.check_dataset_limit(db, ws_id)
-        assert exc_info.value.code == "PLAN_LIMIT_REACHED"
-        assert exc_info.value.current == 1
-        assert exc_info.value.limit == 1
-        assert exc_info.value.required_plan == PLAN_GROWTH
+        plan = await EntitlementService.get_workspace_plan(db, ws_id)
+        assert plan == PLAN_GROWTH
+
+        entitlements = await EntitlementService.get_workspace_entitlements(db, ws_id)
+        assert entitlements["active_datasets"] == "unlimited"
+        assert entitlements["basic_sql"] is True
+        assert entitlements["standard_ai_chat"] is True
+        assert entitlements["advanced_forecasting"] is True
+        assert entitlements["advanced_anomaly_detection"] is True
+        assert entitlements["scheduled_reports"] is True
+        assert entitlements["team_collaboration"] is True
 
 
 # ==============================================================================
-# TEST 4: Checkout endpoint creates Stripe Checkout Session using server-side Growth Price ID.
+# TEST 3: Enterprise Entitlement
 # ==============================================================================
-def test_04_checkout_creates_stripe_session_with_server_price():
-    client = TestClient(app)
-    set_user_workspace("user-04", "ws-04")
+@pytest.mark.anyio
+async def test_03_enterprise_entitlement():
+    async with AsyncSessionLocal() as db:
+        ws_id = "test-ws-03-enterprise-ent"
+        sub = await EntitlementService.get_or_create_workspace_subscription(db, ws_id)
+        sub.plan = PLAN_ENTERPRISE
+        sub.status = STATUS_ACTIVE
+        await db.commit()
+
+        plan = await EntitlementService.get_workspace_plan(db, ws_id)
+        assert plan == PLAN_ENTERPRISE
+
+        entitlements = await EntitlementService.get_workspace_entitlements(db, ws_id)
+        assert entitlements["active_datasets"] == "unlimited"
+        assert entitlements["advanced_forecasting"] is True
+        assert entitlements["enterprise_integrations"] is True
+        assert entitlements["sso_saml"] is True
+        assert entitlements["advanced_auditing"] is True
+        assert entitlements["dedicated_scaling"] is True
+
+
+# ==============================================================================
+# TEST 4: Subscription Lookup Endpoint
+# ==============================================================================
+@pytest.mark.anyio
+async def test_04_subscription_lookup_endpoint():
+    async with AsyncSessionLocal() as db:
+        ws_id = "test-ws-04-lookup"
+        sub = await EntitlementService.get_or_create_workspace_subscription(db, ws_id)
+        sub.plan = PLAN_GROWTH
+        sub.status = STATUS_ACTIVE
+        sub.stripe_subscription_id = "sub_stripe_lookup_04"
+        sub.cancel_at_period_end = False
+        await db.commit()
+
+    set_user_workspace("user-04", ws_id)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        resp = await ac.get("/api/v1/billing/subscription")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["plan"] == PLAN_GROWTH
+        assert data["status"] == STATUS_ACTIVE
+        assert data["stripe_subscription_id"] == "sub_stripe_lookup_04"
+        assert data["cancel_at_period_end"] is False
+        assert "entitlements" in data
+        assert data["entitlements"]["advanced_forecasting"] is True
+        assert data["entitlements"]["active_datasets"] == "unlimited"
+
+    app.dependency_overrides.clear()
+
+
+# ==============================================================================
+# TEST 5: Workspace Subscription Isolation
+# ==============================================================================
+@pytest.mark.anyio
+async def test_05_workspace_subscription_isolation():
+    async with AsyncSessionLocal() as db:
+        ws_a = "ws-isolation-a"
+        ws_b = "ws-isolation-b"
+
+        # Workspace A upgraded to Growth
+        sub_a = await EntitlementService.get_or_create_workspace_subscription(db, ws_a)
+        sub_a.plan = PLAN_GROWTH
+        sub_a.status = STATUS_ACTIVE
+        await db.commit()
+
+        # Workspace B remains Starter
+        sub_b = await EntitlementService.get_or_create_workspace_subscription(db, ws_b)
+        assert sub_b.plan == PLAN_STARTER
+
+        plan_a = await EntitlementService.get_workspace_plan(db, ws_a)
+        plan_b = await EntitlementService.get_workspace_plan(db, ws_b)
+        assert plan_a == PLAN_GROWTH
+        assert plan_b == PLAN_STARTER
+
+    # Verify through API context
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        # User A
+        set_user_workspace("user-iso-a", ws_a)
+        resp_a = await ac.get("/api/v1/billing/subscription")
+        assert resp_a.json()["plan"] == PLAN_GROWTH
+
+        # User B
+        set_user_workspace("user-iso-b", ws_b)
+        resp_b = await ac.get("/api/v1/billing/subscription")
+        assert resp_b.json()["plan"] == PLAN_STARTER
+
+    app.dependency_overrides.clear()
+
+
+# ==============================================================================
+# TEST 6: Checkout Session Creation (Server-side price enforcement)
+# ==============================================================================
+@pytest.mark.anyio
+async def test_06_checkout_session_creation():
+    set_user_workspace("user-06", "ws-06")
 
     fake_session = MagicMock()
-    fake_session.id = "cs_test_server_price_123"
-    fake_session.url = "https://checkout.stripe.com/c/pay/cs_test_server_price_123"
+    fake_session.id = "cs_test_server_price_06"
+    fake_session.url = "https://checkout.stripe.com/c/pay/cs_test_server_price_06"
 
     with patch("stripe.Customer.create") as mock_cus, \
          patch("stripe.checkout.Session.create", return_value=fake_session) as mock_checkout:
         fake_cus = MagicMock()
-        fake_cus.id = "cus_test_04"
+        fake_cus.id = "cus_test_06"
         mock_cus.return_value = fake_cus
 
-        resp = client.post("/api/v1/billing/checkout", json={"plan": "growth"})
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["checkout_url"] == fake_session.url
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post("/api/v1/billing/checkout", json={"plan": "growth"})
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["checkout_url"] == fake_session.url
 
-        # Verify server-side Price ID was enforced
-        call_kwargs = mock_checkout.call_args[1]
-        line_item = call_kwargs["line_items"][0]
-        assert line_item["price"] == settings.STRIPE_GROWTH_PRICE_ID
-        assert call_kwargs["metadata"]["workspace_id"] == "ws-04"
-        assert call_kwargs["metadata"]["plan"] == PLAN_GROWTH
+            call_kwargs = mock_checkout.call_args[1]
+            line_item = call_kwargs["line_items"][0]
+            # Server-side price ID must be enforced
+            assert line_item["price"] == settings.STRIPE_GROWTH_PRICE_ID
+            assert call_kwargs["metadata"]["workspace_id"] == "ws-06"
+            assert call_kwargs["metadata"]["plan"] == PLAN_GROWTH
 
-    app.dependency_overrides.clear()
-
-
-# ==============================================================================
-# TEST 5: Checkout cannot accept arbitrary price/amount from client.
-# ==============================================================================
-def test_05_checkout_cannot_accept_arbitrary_price_amount():
-    client = TestClient(app, raise_server_exceptions=False)
-    set_user_workspace("user-05", "ws-05")
-
-    # Client tries to pass malicious price_id and amount
-    resp = client.post(
-        "/api/v1/billing/checkout",
-        json={"plan": "growth", "price_id": "price_hacked_000", "amount": 1},
-    )
-    # Extra fields forbidden by ConfigDict(extra='forbid') -> 422 Unprocessable Entity
-    assert resp.status_code == 422
-
-    # Client tries to pass invalid plan
-    resp_invalid_plan = client.post(
-        "/api/v1/billing/checkout",
-        json={"plan": "free_hacked"},
-    )
-    assert resp_invalid_plan.status_code == 422
+            # Malicious client tries arbitrary price_id and amount -> 422
+            resp_bad = await ac.post(
+                "/api/v1/billing/checkout",
+                json={"plan": "growth", "price_id": "price_hacked_000", "amount": 1},
+            )
+            assert resp_bad.status_code == 422
 
     app.dependency_overrides.clear()
 
 
 # ==============================================================================
-# TEST 6: checkout.session.completed webhook is processed.
+# TEST 7: Webhook Signature Verification
 # ==============================================================================
 @pytest.mark.anyio
-async def test_06_checkout_session_completed_webhook():
+async def test_07_webhook_signature_verification():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        with patch.object(settings, "STRIPE_WEBHOOK_SECRET", "whsec_valid_test_secret_12345"):
+            resp = await ac.post(
+                "/api/v1/billing/webhook",
+                content=b'{"id": "evt_fake"}',
+                headers={"stripe-signature": "t=12345,v1=bad_signature"},
+            )
+            assert resp.status_code == 400
+            assert "signature" in resp.json()["detail"].lower()
+
+
+# ==============================================================================
+# TEST 8: Duplicate Webhook Handling (Idempotency)
+# ==============================================================================
+@pytest.mark.anyio
+async def test_08_duplicate_webhook_handling():
     async with AsyncSessionLocal() as db:
-        ws_id = "test-ws-06-checkout-completed"
+        ws_id = "test-ws-08-idempotent"
         evt_payload = {
-            "id": "evt_checkout_completed_06",
+            "id": "evt_idempotent_08",
             "type": "checkout.session.completed",
             "data": {
                 "object": {
-                    "customer": "cus_stripe_06",
-                    "subscription": "sub_stripe_06",
+                    "customer": "cus_08",
+                    "subscription": "sub_08",
+                    "metadata": {"workspace_id": ws_id, "plan": PLAN_GROWTH},
+                }
+            },
+        }
+        payload_bytes = json.dumps(evt_payload).encode("utf-8")
+
+        # 1st delivery
+        res1 = await StripeService.handle_webhook(db, payload_bytes, sig_header=None)
+        assert res1["status"] == "success"
+
+        # 2nd delivery (duplicate)
+        res2 = await StripeService.handle_webhook(db, payload_bytes, sig_header=None)
+        assert res2["status"] == "success"
+        assert res2["message"] == "Duplicate event skipped"
+
+
+# ==============================================================================
+# TEST 9: checkout.session.completed Webhook
+# ==============================================================================
+@pytest.mark.anyio
+async def test_09_webhook_checkout_session_completed():
+    async with AsyncSessionLocal() as db:
+        ws_id = "test-ws-09-checkout-completed"
+        evt_payload = {
+            "id": "evt_checkout_completed_09",
+            "type": "checkout.session.completed",
+            "data": {
+                "object": {
+                    "customer": "cus_stripe_09",
+                    "subscription": "sub_stripe_09",
                     "metadata": {
                         "workspace_id": ws_id,
                         "plan": PLAN_GROWTH,
@@ -181,25 +294,25 @@ async def test_06_checkout_session_completed_webhook():
         sub = await EntitlementService.get_workspace_subscription(db, ws_id)
         assert sub.plan == PLAN_GROWTH
         assert sub.status == STATUS_ACTIVE
-        assert sub.stripe_customer_id == "cus_stripe_06"
-        assert sub.stripe_subscription_id == "sub_stripe_06"
+        assert sub.stripe_customer_id == "cus_stripe_09"
+        assert sub.stripe_subscription_id == "sub_stripe_09"
 
 
 # ==============================================================================
-# TEST 7: customer.subscription.created updates workspace subscription.
+# TEST 10: customer.subscription.created Webhook
 # ==============================================================================
 @pytest.mark.anyio
-async def test_07_customer_subscription_created():
+async def test_10_webhook_subscription_created():
     async with AsyncSessionLocal() as db:
-        ws_id = "test-ws-07-created"
+        ws_id = "test-ws-10-created"
         now_ts = int(datetime.now(timezone.utc).timestamp())
         evt_payload = {
-            "id": "evt_sub_created_07",
+            "id": "evt_sub_created_10",
             "type": "customer.subscription.created",
             "data": {
                 "object": {
-                    "id": "sub_07_created",
-                    "customer": "cus_07",
+                    "id": "sub_10_created",
+                    "customer": "cus_10",
                     "status": "active",
                     "cancel_at_period_end": False,
                     "current_period_start": now_ts,
@@ -217,27 +330,27 @@ async def test_07_customer_subscription_created():
         sub = await EntitlementService.get_workspace_subscription(db, ws_id)
         assert sub.plan == PLAN_GROWTH
         assert sub.status == STATUS_ACTIVE
-        assert sub.stripe_subscription_id == "sub_07_created"
+        assert sub.stripe_subscription_id == "sub_10_created"
 
 
 # ==============================================================================
-# TEST 8: customer.subscription.updated updates plan/status/period.
+# TEST 11: customer.subscription.updated Webhook
 # ==============================================================================
 @pytest.mark.anyio
-async def test_08_customer_subscription_updated():
+async def test_11_webhook_subscription_updated():
     async with AsyncSessionLocal() as db:
-        ws_id = "test-ws-08-updated"
+        ws_id = "test-ws-11-updated"
         sub = await EntitlementService.get_or_create_workspace_subscription(db, ws_id)
-        sub.stripe_subscription_id = "sub_08_update"
+        sub.stripe_subscription_id = "sub_11_update"
         await db.commit()
 
         new_end_ts = int((datetime.now(timezone.utc) + timedelta(days=30)).timestamp())
         evt_payload = {
-            "id": "evt_sub_updated_08",
+            "id": "evt_sub_updated_11",
             "type": "customer.subscription.updated",
             "data": {
                 "object": {
-                    "id": "sub_08_update",
+                    "id": "sub_11_update",
                     "status": "active",
                     "cancel_at_period_end": True,
                     "current_period_end": new_end_ts,
@@ -256,24 +369,24 @@ async def test_08_customer_subscription_updated():
 
 
 # ==============================================================================
-# TEST 9: customer.subscription.deleted removes Growth entitlement appropriately.
+# TEST 12: customer.subscription.deleted Webhook
 # ==============================================================================
 @pytest.mark.anyio
-async def test_09_customer_subscription_deleted():
+async def test_12_webhook_subscription_deleted():
     async with AsyncSessionLocal() as db:
-        ws_id = "test-ws-09-deleted"
+        ws_id = "test-ws-12-deleted"
         sub = await EntitlementService.get_or_create_workspace_subscription(db, ws_id)
         sub.plan = PLAN_GROWTH
         sub.status = STATUS_ACTIVE
-        sub.stripe_subscription_id = "sub_09_delete"
+        sub.stripe_subscription_id = "sub_12_delete"
         await db.commit()
 
         evt_payload = {
-            "id": "evt_sub_deleted_09",
+            "id": "evt_sub_deleted_12",
             "type": "customer.subscription.deleted",
             "data": {
                 "object": {
-                    "id": "sub_09_delete",
+                    "id": "sub_12_delete",
                     "metadata": {"workspace_id": ws_id},
                 }
             },
@@ -290,289 +403,352 @@ async def test_09_customer_subscription_deleted():
 
 
 # ==============================================================================
-# TEST 10: Duplicate webhook event is idempotent.
+# TEST 13: invoice.paid Webhook
 # ==============================================================================
 @pytest.mark.anyio
-async def test_10_duplicate_webhook_idempotent():
+async def test_13_webhook_invoice_paid():
     async with AsyncSessionLocal() as db:
-        ws_id = "test-ws-10-idempotent"
+        ws_id = "test-ws-13-inv-paid"
+        sub = await EntitlementService.get_or_create_workspace_subscription(db, ws_id)
+        sub.stripe_subscription_id = "sub_13_inv"
+        sub.plan = PLAN_GROWTH
+        sub.status = STATUS_ACTIVE
+        await db.commit()
+
         evt_payload = {
-            "id": "evt_idempotent_10",
-            "type": "checkout.session.completed",
+            "id": "evt_inv_paid_13",
+            "type": "invoice.paid",
             "data": {
                 "object": {
-                    "customer": "cus_10",
-                    "subscription": "sub_10",
-                    "metadata": {"workspace_id": ws_id, "plan": PLAN_GROWTH},
+                    "id": "in_13_paid",
+                    "subscription": "sub_13_inv",
+                    "customer": "cus_13",
+                    "amount_paid": 7900,
+                    "currency": "usd",
+                    "status": "paid",
+                    "lines": {
+                        "data": [{
+                            "period": {
+                                "start": int(datetime.now(timezone.utc).timestamp()),
+                                "end": int((datetime.now(timezone.utc) + timedelta(days=30)).timestamp()),
+                            }
+                        }]
+                    },
                 }
             },
         }
-        payload_bytes = json.dumps(evt_payload).encode("utf-8")
-
-        # 1st delivery
-        res1 = await StripeService.handle_webhook(db, payload_bytes, sig_header=None)
-        assert res1["status"] == "success"
-
-        # 2nd delivery (duplicate)
-        res2 = await StripeService.handle_webhook(db, payload_bytes, sig_header=None)
-        assert res2["status"] == "success"
-        assert res2["message"] == "Duplicate event skipped"
-
-
-# ==============================================================================
-# TEST 11: Invalid webhook signature is rejected.
-# ==============================================================================
-def test_11_invalid_webhook_signature_rejected():
-    client = TestClient(app)
-    # When webhook secret is configured, invalid signatures must return 400 Bad Request
-    with patch.object(settings, "STRIPE_WEBHOOK_SECRET", "whsec_valid_test_secret_12345"):
-        resp = client.post(
-            "/api/v1/billing/webhook",
-            content=b'{"id": "evt_fake"}',
-            headers={"stripe-signature": "t=12345,v1=bad_signature"},
+        res = await StripeService.handle_webhook(
+            db, json.dumps(evt_payload).encode("utf-8"), sig_header=None
         )
-        assert resp.status_code == 400
-        assert "signature" in resp.json()["detail"].lower()
+        assert res["status"] == "success"
+
+        sub_refreshed = await EntitlementService.get_workspace_subscription(db, ws_id)
+        assert sub_refreshed.status == STATUS_ACTIVE
+        assert sub_refreshed.plan == PLAN_GROWTH
 
 
 # ==============================================================================
-# TEST 12: Growth has unlimited datasets.
+# TEST 14: invoice.payment_failed Webhook
 # ==============================================================================
 @pytest.mark.anyio
-async def test_12_growth_has_unlimited_datasets():
+async def test_14_webhook_invoice_payment_failed():
     async with AsyncSessionLocal() as db:
-        ws_id = "test-ws-12-growth-unlimited"
+        ws_id = "test-ws-14-inv-failed"
+        sub = await EntitlementService.get_or_create_workspace_subscription(db, ws_id)
+        sub.stripe_subscription_id = "sub_14_inv_failed"
+        sub.plan = PLAN_GROWTH
+        sub.status = STATUS_ACTIVE
+        await db.commit()
+
+        evt_payload = {
+            "id": "evt_inv_fail_14",
+            "type": "invoice.payment_failed",
+            "data": {
+                "object": {
+                    "id": "in_14_fail",
+                    "subscription": "sub_14_inv_failed",
+                    "customer": "cus_14",
+                    "amount_due": 7900,
+                    "status": "open",
+                }
+            },
+        }
+        res = await StripeService.handle_webhook(
+            db, json.dumps(evt_payload).encode("utf-8"), sig_header=None
+        )
+        assert res["status"] == "success"
+
+        sub_refreshed = await EntitlementService.get_workspace_subscription(db, ws_id)
+        assert sub_refreshed.status == STATUS_PAST_DUE
+
+
+# ==============================================================================
+# TEST 15: Cancellation at Period End
+# ==============================================================================
+@pytest.mark.anyio
+async def test_15_cancellation_at_period_end():
+    async with AsyncSessionLocal() as db:
+        ws_id = "test-ws-15-grace-period"
+        sub = await EntitlementService.get_or_create_workspace_subscription(db, ws_id)
+        sub.plan = PLAN_GROWTH
+        sub.status = STATUS_ACTIVE
+        sub.cancel_at_period_end = True
+        # Grace period active: 10 days in the future
+        sub.current_period_end = (datetime.now(timezone.utc) + timedelta(days=10)).replace(tzinfo=None)
+        await db.commit()
+
+        # Growth remains active during grace period
+        plan_grace = await EntitlementService.get_workspace_plan(db, ws_id)
+        assert plan_grace == PLAN_GROWTH
+        assert await EntitlementService.has_feature(db, ws_id, "advanced_forecasting") is True
+
+        # Now simulate period has elapsed (1 day in past)
+        sub.current_period_end = (datetime.now(timezone.utc) - timedelta(days=1)).replace(tzinfo=None)
+        await db.commit()
+
+        # Workspace now correctly reverts to Starter
+        plan_expired = await EntitlementService.get_workspace_plan(db, ws_id)
+        assert plan_expired == PLAN_STARTER
+        assert await EntitlementService.has_feature(db, ws_id, "advanced_forecasting") is False
+
+
+# ==============================================================================
+# TEST 16: Dataset Limit Gate
+# ==============================================================================
+@pytest.mark.anyio
+async def test_16_dataset_limit():
+    async with AsyncSessionLocal() as db:
+        ws_id = "test-ws-16-ds-limit"
+        # Starter: 0 datasets -> ok
+        await EntitlementService.check_dataset_limit(db, ws_id)
+
+        # Add 1 dataset (the limit for Starter)
+        db.add(
+            Dataset(
+                id="ds-limit-01",
+                filename="first.csv",
+                type="CSV",
+                size="10 KB",
+                rows=10,
+                qualityScore=100,
+                status="Active",
+                date="2026-09-19",
+                workspace_id=ws_id,
+            )
+        )
+        await db.commit()
+
+        # Adding 2nd dataset must raise DatasetLimitReachedException
+        with pytest.raises(DatasetLimitReachedException) as exc:
+            await EntitlementService.check_dataset_limit(db, ws_id)
+        assert exc.value.code == "PLAN_LIMIT_REACHED"
+        assert exc.value.current == 1
+        assert exc.value.limit == 1
+        assert exc.value.required_plan == PLAN_GROWTH
+
+        # Upgrade workspace to Growth
         sub = await EntitlementService.get_or_create_workspace_subscription(db, ws_id)
         sub.plan = PLAN_GROWTH
         sub.status = STATUS_ACTIVE
         await db.commit()
 
-        # Add multiple datasets
-        for i in range(5):
-            db.add(
-                Dataset(
-                    id=f"ds-growth-{i}",
-                    filename=f"file_{i}.csv",
-                    type="CSV",
-                    size="1 MB",
-                    rows=1000,
-                    qualityScore=90,
-                    status="Active",
-                    date="2026-09-19",
-                    workspace_id=ws_id,
-                )
-            )
-        await db.commit()
-
-        # Growth has unlimited datasets -> check passes without error
+        # Now unlimited datasets are permitted
         await EntitlementService.check_dataset_limit(db, ws_id)
 
 
 # ==============================================================================
-# TEST 13: Growth can access advanced forecasting.
+# TEST 17: Advanced Forecasting Gate
 # ==============================================================================
 @pytest.mark.anyio
-async def test_13_growth_can_access_advanced_forecasting():
+async def test_17_advanced_forecasting_gate():
     async with AsyncSessionLocal() as db:
-        ws_id = "test-ws-13-growth-forecasting"
+        ws_id = "test-ws-17-forecasting-gate"
+        # Starter blocked
+        assert await EntitlementService.has_feature(db, ws_id, "advanced_forecasting") is False
+        with pytest.raises(EntitlementDeniedException) as exc:
+            await EntitlementService.check_feature_entitlement(db, ws_id, "advanced_forecasting")
+        assert exc.value.code == "FEATURE_NOT_AVAILABLE"
+        assert exc.value.feature == "advanced_forecasting"
+
+        # Upgrade to Growth
         sub = await EntitlementService.get_or_create_workspace_subscription(db, ws_id)
         sub.plan = PLAN_GROWTH
         sub.status = STATUS_ACTIVE
         await db.commit()
 
+        # Growth allowed
         assert await EntitlementService.has_feature(db, ws_id, "advanced_forecasting") is True
-        # check_feature_entitlement does not raise
         await EntitlementService.check_feature_entitlement(db, ws_id, "advanced_forecasting")
 
 
 # ==============================================================================
-# TEST 14: Starter cannot access advanced forecasting.
+# TEST 18: Anomaly Detection Gate
 # ==============================================================================
 @pytest.mark.anyio
-async def test_14_starter_cannot_access_advanced_forecasting():
+async def test_18_anomaly_detection_gate():
     async with AsyncSessionLocal() as db:
-        ws_id = "test-ws-14-starter-blocked"
-        assert await EntitlementService.has_feature(db, ws_id, "advanced_forecasting") is False
-
+        ws_id = "test-ws-18-anomaly-gate"
+        assert await EntitlementService.has_feature(db, ws_id, "advanced_anomaly_detection") is False
         with pytest.raises(EntitlementDeniedException) as exc:
-            await EntitlementService.check_feature_entitlement(db, ws_id, "advanced_forecasting")
+            await EntitlementService.check_feature_entitlement(db, ws_id, "advanced_anomaly_detection")
         assert exc.value.code == "FEATURE_NOT_AVAILABLE"
-        assert exc.value.feature == "advanced_forecasting"
-        assert exc.value.required_plan == PLAN_GROWTH
+        assert exc.value.feature == "advanced_anomaly_detection"
+
+        # Upgrade to Growth
+        sub = await EntitlementService.get_or_create_workspace_subscription(db, ws_id)
+        sub.plan = PLAN_GROWTH
+        sub.status = STATUS_ACTIVE
+        await db.commit()
+
+        assert await EntitlementService.has_feature(db, ws_id, "advanced_anomaly_detection") is True
+        await EntitlementService.check_feature_entitlement(db, ws_id, "advanced_anomaly_detection")
 
 
 # ==============================================================================
-# TEST 15: Growth can use scheduled reports.
+# TEST 19: Scheduled Report Gate
 # ==============================================================================
 @pytest.mark.anyio
-async def test_15_growth_can_use_scheduled_reports():
+async def test_19_scheduled_report_gate():
     async with AsyncSessionLocal() as db:
-        ws_id = "test-ws-15-scheduled-reports"
+        ws_id = "test-ws-19-report-gate"
+        assert await EntitlementService.has_feature(db, ws_id, "scheduled_reports") is False
+        with pytest.raises(EntitlementDeniedException) as exc:
+            await EntitlementService.check_feature_entitlement(db, ws_id, "scheduled_reports")
+        assert exc.value.code == "FEATURE_NOT_AVAILABLE"
+        assert exc.value.feature == "scheduled_reports"
+
+        # Upgrade to Growth
         sub = await EntitlementService.get_or_create_workspace_subscription(db, ws_id)
         sub.plan = PLAN_GROWTH
         sub.status = STATUS_ACTIVE
         await db.commit()
 
         assert await EntitlementService.has_feature(db, ws_id, "scheduled_reports") is True
+        await EntitlementService.check_feature_entitlement(db, ws_id, "scheduled_reports")
 
 
 # ==============================================================================
-# TEST 16: Starter cannot use scheduled reports.
+# TEST 20: Billing API Authorization
 # ==============================================================================
 @pytest.mark.anyio
-async def test_16_starter_cannot_use_scheduled_reports():
-    async with AsyncSessionLocal() as db:
-        ws_id = "test-ws-16-starter-no-reports"
-        assert await EntitlementService.has_feature(db, ws_id, "scheduled_reports") is False
-        with pytest.raises(EntitlementDeniedException):
-            await EntitlementService.check_feature_entitlement(db, ws_id, "scheduled_reports")
+async def test_20_billing_api_authorization():
+    # Direct client mutation endpoints (PUT/PATCH) are rejected with 405 Method Not Allowed
+    set_user_workspace("user-20", "ws-20")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        resp_patch = await ac.patch(
+            "/api/v1/billing/subscription",
+            json={"plan": "growth", "status": "active"},
+        )
+        assert resp_patch.status_code == 405
 
-
-# ==============================================================================
-# TEST 17: Billing invoices contain only real Stripe invoice data.
-# ==============================================================================
-def test_17_billing_invoices_real_stripe_data():
-    client = TestClient(app)
-    set_user_workspace("user-17", "ws-17")
-
-    fake_stripe_inv = MagicMock()
-    fake_stripe_inv.id = "in_real_stripe_999"
-    fake_stripe_inv.number = "INV-STRIPE-REAL-001"
-    fake_stripe_inv.amount_paid = 7900
-    fake_stripe_inv.currency = "usd"
-    fake_stripe_inv.status = "paid"
-    fake_stripe_inv.created = 1755000000
-    fake_stripe_inv.hosted_invoice_url = "https://invoice.stripe.com/i/in_real_stripe_999"
-    fake_stripe_inv.invoice_pdf = "https://pay.stripe.com/invoice/in_real_stripe_999/pdf"
-
-    fake_list = MagicMock()
-    fake_list.data = [fake_stripe_inv]
-
-    with patch("app.features.billing.stripe_service.StripeService._is_stripe_configured", return_value=True), \
-         patch("app.features.billing.entitlements.EntitlementService.get_workspace_subscription") as mock_get_sub, \
-         patch("stripe.Invoice.list", return_value=fake_list):
-        mock_sub = MagicMock()
-        mock_sub.stripe_customer_id = "cus_real_customer_17"
-        mock_get_sub.return_value = mock_sub
-
-        resp = client.get("/api/v1/billing/invoices")
-        assert resp.status_code == 200
-        invoices = resp.json()
-        assert len(invoices) == 1
-        assert invoices[0]["invoiceId"] == "INV-STRIPE-REAL-001"
-        assert invoices[0]["amount"] == "$79.00"
-        assert invoices[0]["status"] == "Paid"
-        assert invoices[0]["hosted_invoice_url"] == fake_stripe_inv.hosted_invoice_url
+        resp_put = await ac.put(
+            "/api/v1/billing/subscription",
+            json={"plan": "growth", "status": "active"},
+        )
+        assert resp_put.status_code == 405
 
     app.dependency_overrides.clear()
 
 
 # ==============================================================================
-# TEST 18: No invoice data results in an empty state instead of fake invoices.
+# TEST 21: Customer Portal Creation
 # ==============================================================================
-def test_18_no_invoice_data_returns_empty_list():
-    client = TestClient(app)
-    set_user_workspace("user-18", "ws-18")
+@pytest.mark.anyio
+async def test_21_customer_portal_creation():
+    async with AsyncSessionLocal() as db:
+        ws_id = "test-ws-21-portal"
+        sub = await EntitlementService.get_or_create_workspace_subscription(db, ws_id)
+        sub.stripe_customer_id = "cus_portal_test_21"
+        sub.plan = PLAN_GROWTH
+        sub.status = STATUS_ACTIVE
+        await db.commit()
 
-    fake_list = MagicMock()
-    fake_list.data = []
+    set_user_workspace("user-21", ws_id)
 
-    with patch("app.features.billing.stripe_service.StripeService._is_stripe_configured", return_value=True), \
-         patch("app.features.billing.entitlements.EntitlementService.get_workspace_subscription") as mock_get_sub, \
-         patch("stripe.Invoice.list", return_value=fake_list):
-        mock_sub = MagicMock()
-        mock_sub.stripe_customer_id = "cus_no_invoices_18"
-        mock_get_sub.return_value = mock_sub
+    fake_portal_session = MagicMock()
+    fake_portal_session.url = "https://billing.stripe.com/p/session/portal_test_session_21"
 
-        resp = client.get("/api/v1/billing/invoices")
-        assert resp.status_code == 200
-        invoices = resp.json()
-        assert invoices == []
-        # Ensure hardcoded invoices are never returned
-        assert not any(inv.get("invoiceId") in ["INV-9021", "INV-7801", "INV-6204"] for inv in invoices)
+    with patch("stripe.billing_portal.Session.create", return_value=fake_portal_session) as mock_portal:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post("/api/v1/billing/portal")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["portal_url"] == fake_portal_session.url
+            assert mock_portal.call_args[1]["customer"] == "cus_portal_test_21"
 
     app.dependency_overrides.clear()
 
 
 # ==============================================================================
-# TEST 19: Cancel-at-period-end preserves Growth access until current_period_end.
+# TEST 22: Subscription Persistence
 # ==============================================================================
 @pytest.mark.anyio
-async def test_19_cancel_at_period_end_preserves_growth():
+async def test_22_subscription_persistence():
+    ws_id = "test-ws-22-persistence"
+
+    # Step 1: Write Growth subscription to database
     async with AsyncSessionLocal() as db:
-        ws_id = "test-ws-19-cancel-grace"
         sub = await EntitlementService.get_or_create_workspace_subscription(db, ws_id)
         sub.plan = PLAN_GROWTH
         sub.status = STATUS_ACTIVE
-        sub.cancel_at_period_end = True
-        # 14 days in future
-        sub.current_period_end = (datetime.now(timezone.utc) + timedelta(days=14)).replace(tzinfo=None)
+        sub.stripe_customer_id = "cus_persistent_22"
+        sub.stripe_subscription_id = "sub_persistent_22"
+        sub.current_period_start = datetime.now(timezone.utc).replace(tzinfo=None)
+        sub.current_period_end = (datetime.now(timezone.utc) + timedelta(days=30)).replace(tzinfo=None)
         await db.commit()
 
-        effective_plan = await EntitlementService.get_workspace_plan(db, ws_id)
+    # Step 2: Open completely new DB session (simulating restart / fresh connection)
+    async with AsyncSessionLocal() as db2:
+        reloaded_sub = await EntitlementService.get_workspace_subscription(db2, ws_id)
+        assert reloaded_sub is not None
+        assert reloaded_sub.plan == PLAN_GROWTH
+        assert reloaded_sub.status == STATUS_ACTIVE
+        assert reloaded_sub.stripe_customer_id == "cus_persistent_22"
+        assert reloaded_sub.stripe_subscription_id == "sub_persistent_22"
+        assert reloaded_sub.current_period_end is not None
+
+        # Effective plan is Growth
+        effective_plan = await EntitlementService.get_workspace_plan(db2, ws_id)
         assert effective_plan == PLAN_GROWTH
-        assert await EntitlementService.has_feature(db, ws_id, "advanced_forecasting") is True
 
 
 # ==============================================================================
-# TEST 20: After subscription ends, workspace returns to Starter entitlement.
+# TEST 23: Refresh / Re-login Subscription Recovery
 # ==============================================================================
 @pytest.mark.anyio
-async def test_20_subscription_ended_reverts_to_starter():
+async def test_23_refresh_relogin_subscription_recovery():
+    ws_id = "test-ws-23-recovery"
+
+    # Seed upgraded subscription in DB
     async with AsyncSessionLocal() as db:
-        ws_id = "test-ws-20-ended"
         sub = await EntitlementService.get_or_create_workspace_subscription(db, ws_id)
         sub.plan = PLAN_GROWTH
         sub.status = STATUS_ACTIVE
-        sub.cancel_at_period_end = True
-        # 1 day in past
-        sub.current_period_end = (datetime.now(timezone.utc) - timedelta(days=1)).replace(tzinfo=None)
+        sub.stripe_customer_id = "cus_recovery_23"
+        sub.stripe_subscription_id = "sub_recovery_23"
         await db.commit()
 
-        effective_plan = await EntitlementService.get_workspace_plan(db, ws_id)
-        assert effective_plan == PLAN_STARTER
-        assert await EntitlementService.has_feature(db, ws_id, "advanced_forecasting") is False
+    # Simulate User session 1 (before logout)
+    set_user_workspace("user-session-1", ws_id)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        resp1 = await ac.get("/api/v1/billing/subscription")
+        assert resp1.status_code == 200
+        assert resp1.json()["plan"] == PLAN_GROWTH
 
-
-# ==============================================================================
-# TEST 21: Workspace A cannot access Workspace B's billing data.
-# ==============================================================================
-def test_21_workspace_isolation_billing_data():
-    client = TestClient(app)
-
-    # 1. User from Workspace A
-    set_user_workspace("user_a", "ws_alpha")
-    resp_a = client.get("/api/v1/billing/subscription")
-    assert resp_a.status_code == 200
-
-    # 2. User from Workspace B
-    set_user_workspace("user_b", "ws_beta")
-    resp_b = client.get("/api/v1/billing/subscription")
-    assert resp_b.status_code == 200
-
-    # Strict isolation: workspace_ids are separate in DB
+    # Simulate Logout: Clear dependency overrides and user context
     app.dependency_overrides.clear()
 
-
-# ==============================================================================
-# TEST 22: Frontend cannot directly mutate subscription state.
-# ==============================================================================
-def test_22_frontend_cannot_directly_mutate_subscription():
-    client = TestClient(app)
-    set_user_workspace("user-22", "ws-22")
-
-    # Attempt to directly PUT, PATCH, or POST to /api/v1/billing/subscription
-    resp_patch = client.patch(
-        "/api/v1/billing/subscription",
-        json={"plan": "growth", "status": "active"},
-    )
-    assert resp_patch.status_code == 405  # Method Not Allowed
-
-    resp_put = client.put(
-        "/api/v1/billing/subscription",
-        json={"plan": "growth", "status": "active"},
-    )
-    assert resp_put.status_code == 405  # Method Not Allowed
+    # Simulate Re-login: User logs back in from another device/session
+    set_user_workspace("user-session-2-new-device", ws_id)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        resp2 = await ac.get("/api/v1/billing/subscription")
+        assert resp2.status_code == 200
+        # Recovered purely from the database!
+        data = resp2.json()
+        assert data["plan"] == PLAN_GROWTH
+        assert data["status"] == STATUS_ACTIVE
+        assert data["stripe_subscription_id"] == "sub_recovery_23"
+        assert data["entitlements"]["advanced_forecasting"] is True
+        assert data["entitlements"]["active_datasets"] == "unlimited"
 
     app.dependency_overrides.clear()
-

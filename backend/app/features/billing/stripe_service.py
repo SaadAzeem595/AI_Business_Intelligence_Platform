@@ -155,7 +155,7 @@ class StripeService:
             }
             session = stripe.checkout.Session.create(**checkout_params)
             logger.info(
-                f"[BILLING] Checkout session created: workspace_id={workspace_id}, session_id={session.id}, plan={PLAN_GROWTH}"
+                f"[BILLING_CHECKOUT_CREATED] workspace_id={workspace_id}, session_id={session.id}, plan={PLAN_GROWTH}"
             )
             return session.url
         except Exception as e:
@@ -286,19 +286,28 @@ class StripeService:
                     sub.status = status
                     sub.plan = PLAN_GROWTH
                     sub.cancel_at_period_end = d.get("cancel_at_period_end", False)
+                    cps = d.get("current_period_start")
+                    cpe = d.get("current_period_end")
                     items = d.get("items", {}).get("data", [])
                     if items:
                         item = items[0]
-                        cps = item.get("current_period_start") or d.get("current_period_start")
-                        cpe = item.get("current_period_end") or d.get("current_period_end")
-                        if cps:
-                            sub.current_period_start = datetime.fromtimestamp(cps, tz=timezone.utc)
-                        if cpe:
-                            sub.current_period_end = datetime.fromtimestamp(cpe, tz=timezone.utc)
+                        cps = item.get("current_period_start") or cps
+                        cpe = item.get("current_period_end") or cpe
+                        price_obj = item.get("price") or {}
+                        if isinstance(price_obj, dict) and price_obj.get("id"):
+                            sub.stripe_price_id = price_obj["id"]
+                    if cps:
+                        sub.current_period_start = datetime.fromtimestamp(
+                            cps, tz=timezone.utc
+                        ).replace(tzinfo=None)
+                    if cpe:
+                        sub.current_period_end = datetime.fromtimestamp(
+                            cpe, tz=timezone.utc
+                        ).replace(tzinfo=None)
                     await db.commit()
                     await db.refresh(sub)
                     logger.info(
-                        f"[BILLING] Live reconciled subscription from Stripe: workspace_id={workspace_id}, sub_id={cs.id}, status={status}"
+                        f"[BILLING_SUBSCRIPTION_UPDATED] Live reconciled subscription from Stripe: workspace_id={workspace_id}, sub_id={cs.id}, status={status}, plan={sub.plan}"
                     )
                     return sub
 
@@ -372,7 +381,7 @@ class StripeService:
         if not event_id or not event_type:
             raise ValueError("Webhook missing required event id or type")
 
-        logger.info(f"[BILLING] Webhook received: event_id={event_id}, event_type={event_type}")
+        logger.info(f"[BILLING_WEBHOOK_RECEIVED] event_id={event_id}, event_type={event_type}")
 
         # 1. Idempotency Check
         stmt = select(StripeProcessedEvent).where(
@@ -438,7 +447,7 @@ class StripeService:
 
         # 4. Handle Specific Event Types
         if event_type == "checkout.session.completed":
-            plan = metadata.get("plan", PLAN_GROWTH)
+            plan = metadata.get("plan") or PLAN_GROWTH
             if sub:
                 sub.plan = plan
                 sub.status = STATUS_ACTIVE
@@ -446,10 +455,35 @@ class StripeService:
                     sub.stripe_customer_id = customer_id
                 if subscription_id:
                     sub.stripe_subscription_id = subscription_id
+                    try:
+                        remote_sub = stripe.Subscription.retrieve(subscription_id)
+                        d = remote_sub.to_dict() if hasattr(remote_sub, "to_dict") else dict(remote_sub)
+                        sub.status = d.get("status") or STATUS_ACTIVE
+                        sub.cancel_at_period_end = bool(d.get("cancel_at_period_end", False))
+                        cps = d.get("current_period_start")
+                        cpe = d.get("current_period_end")
+                        items = d.get("items", {}).get("data", [])
+                        if items:
+                            item = items[0]
+                            cps = item.get("current_period_start") or cps
+                            cpe = item.get("current_period_end") or cpe
+                            price_obj = item.get("price") or {}
+                            if isinstance(price_obj, dict) and price_obj.get("id"):
+                                sub.stripe_price_id = price_obj["id"]
+                        if cps:
+                            sub.current_period_start = datetime.fromtimestamp(
+                                cps, tz=timezone.utc
+                            ).replace(tzinfo=None)
+                        if cpe:
+                            sub.current_period_end = datetime.fromtimestamp(
+                                cpe, tz=timezone.utc
+                            ).replace(tzinfo=None)
+                    except Exception as sub_fetch_err:
+                        logger.warning(f"[BILLING] Pre-fetch remote subscription {subscription_id} skipped: {sub_fetch_err}")
                 sub.cancel_at_period_end = False
                 await db.flush()
                 logger.info(
-                    f"[BILLING] Subscription synchronized (checkout.session.completed): workspace_id={workspace_id}, customer_id={customer_id}, subscription_id={subscription_id}, plan={plan}"
+                    f"[BILLING_SUBSCRIPTION_UPDATED] checkout.session.completed: workspace_id={workspace_id}, customer_id={customer_id}, subscription_id={subscription_id}, plan={plan}"
                 )
 
         elif event_type in ["customer.subscription.created", "customer.subscription.updated"]:
@@ -515,13 +549,13 @@ class StripeService:
 
                 # Plan status determination:
                 if status_val in [STATUS_ACTIVE, "trialing"]:
-                    sub.plan = metadata.get("plan", PLAN_GROWTH)
+                    sub.plan = metadata.get("plan") or PLAN_GROWTH
                 elif status_val in [STATUS_CANCELED, "unpaid", "incomplete_expired"]:
                     sub.plan = PLAN_STARTER
 
                 await db.flush()
                 logger.info(
-                    f"[BILLING] Subscription synchronized ({event_type}): workspace_id={workspace_id}, plan={sub.plan}, status={sub.status}, cancel_at_period_end={sub.cancel_at_period_end}"
+                    f"[BILLING_SUBSCRIPTION_UPDATED] ({event_type}): workspace_id={workspace_id}, plan={sub.plan}, status={sub.status}, cancel_at_period_end={sub.cancel_at_period_end}"
                 )
 
         elif event_type == "customer.subscription.deleted":
@@ -531,20 +565,20 @@ class StripeService:
                 sub.cancel_at_period_end = False
                 await db.flush()
                 logger.info(
-                    f"[BILLING] Subscription ended (downgraded to Starter): workspace_id={workspace_id}, customer_id={customer_id}"
+                    f"[BILLING_SUBSCRIPTION_UPDATED] (customer.subscription.deleted): workspace_id={workspace_id}, customer_id={customer_id}"
                 )
 
         elif event_type == "invoice.paid":
             if sub and sub.status in [STATUS_PAST_DUE, "unpaid"]:
                 sub.status = STATUS_ACTIVE
                 await db.flush()
-            logger.info(f"[BILLING] Invoice synchronized (paid): customer_id={customer_id}")
+            logger.info(f"[BILLING_SUBSCRIPTION_UPDATED] (invoice.paid): customer_id={customer_id}, workspace_id={workspace_id}")
 
         elif event_type == "invoice.payment_failed":
             if sub:
                 sub.status = STATUS_PAST_DUE
                 await db.flush()
-            logger.warning(f"[BILLING] Payment failed: customer_id={customer_id}")
+            logger.warning(f"[BILLING_PAYMENT_FAILED] Payment failed: customer_id={customer_id}, workspace_id={workspace_id}")
 
         # 5. Persist Idempotent Event Log
         audit_event = StripeProcessedEvent(
@@ -555,6 +589,9 @@ class StripeService:
         )
         db.add(audit_event)
         await db.commit()
+
+        if sub:
+            logger.info(f"[BILLING_ENTITLEMENTS_UPDATED] workspace_id={workspace_id}, plan={sub.plan}")
 
         logger.info(
             f"[BILLING] Webhook processed successfully: event_id={event_id}, event_type={event_type}, workspace_id={workspace_id}"

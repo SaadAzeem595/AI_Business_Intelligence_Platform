@@ -13,13 +13,14 @@ try:
 except ImportError:
     pass
 
-@pytest.fixture(scope="session", autouse=True)
-def setup_test_database():
-    """Initializes the database schema for the entire pytest session."""
-    async def create_tables():
-        async with async_engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-            
-    # Run synchronously during fixture setup
-    asyncio.run(create_tables())
+@pytest.fixture(scope="session")
+def anyio_backend():
+    return "asyncio"
+
+
+@pytest.fixture(autouse=True)
+async def setup_test_database():
+    """Initializes the database schema for the test session."""
+    async with async_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
     yield

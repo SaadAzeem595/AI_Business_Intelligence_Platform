@@ -19,8 +19,10 @@ import {
   ChevronRight,
   Sparkles,
   Building2,
+  Lock,
 } from "lucide-react";
 import { useUIStore } from "@/shared/services/uiStore";
+import { useSubscription } from "@/features/billing/hooks/useSubscription";
 import { cn } from "@/shared/lib/utils";
 
 const navigationItems = [
@@ -28,18 +30,19 @@ const navigationItems = [
   { name: "Projects", href: "/projects", icon: FolderKanban },
   { name: "Datasets", href: "/datasets", icon: Database },
   { name: "AI Chat", href: "/chat", icon: MessageSquareCode, badge: "AI" },
-  { name: "Forecasting", href: "/forecasting", icon: TrendingUp },
+  { name: "Forecasting", href: "/forecasting", icon: TrendingUp, featureKey: "advanced_forecasting" },
   { name: "Segmentation", href: "/segmentation", icon: Users2 },
-  { name: "Anomaly Detection", href: "/anomalies", icon: AlertTriangle },
+  { name: "Anomaly Detection", href: "/anomalies", icon: AlertTriangle, featureKey: "advanced_anomaly_detection" },
   { name: "SQL Playground", href: "/sql", icon: Code2 },
   { name: "Knowledge Base", href: "/knowledge", icon: Library },
-  { name: "Executive Reports", href: "/reports", icon: FileBarChart2 },
+  { name: "Executive Reports", href: "/reports", icon: FileBarChart2, featureKey: "scheduled_reports" },
   { name: "Settings", href: "/settings/profile", icon: Settings },
 ];
 
 export function Sidebar() {
   const pathname = usePathname();
   const { isSidebarCollapsed, toggleSidebar, activeOrg, setActiveOrg } = useUIStore();
+  const { hasFeature, isGrowthOrHigher, isLoading } = useSubscription();
 
   const orgs = ["Acme Corp", "Stripe Inc.", "Vercel Ltd."];
 
@@ -104,6 +107,7 @@ export function Sidebar() {
         {navigationItems.map((item) => {
           const isActive = pathname.startsWith(item.href) || pathname === item.href;
           const Icon = item.icon;
+          const isLocked = !!(item.featureKey && !isLoading && !hasFeature(item.featureKey));
           return (
             <Link
               key={item.name}
@@ -112,19 +116,24 @@ export function Sidebar() {
                 "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all group relative select-none",
                 isActive
                   ? "bg-secondary text-foreground border border-border/40"
-                  : "text-muted-foreground hover:bg-muted/30 hover:text-foreground border border-transparent"
+                  : "text-muted-foreground hover:bg-muted/30 hover:text-foreground border border-transparent",
+                isLocked && "opacity-80"
               )}
             >
               <Icon className={cn("h-4.5 w-4.5 shrink-0 transition-colors", isActive ? "text-brand-indigo" : "text-muted-foreground group-hover:text-foreground")} />
               {!isSidebarCollapsed && <span className="flex-1 truncate">{item.name}</span>}
-              {!isSidebarCollapsed && item.badge && (
+              {!isSidebarCollapsed && isLocked && (
+                <Lock className="h-3.5 w-3.5 text-muted-foreground/60 shrink-0" aria-label="Premium feature locked" />
+              )}
+              {!isSidebarCollapsed && item.badge && !isLocked && (
                 <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-brand-indigo/10 text-brand-indigo border border-brand-indigo/20">
                   {item.badge}
                 </span>
               )}
               {isSidebarCollapsed && (
-                <div className="absolute left-full ml-4 px-2 py-1 bg-popover border border-border text-popover-foreground text-xs rounded opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50 whitespace-nowrap shadow-md">
+                <div className="absolute left-full ml-4 px-2 py-1 bg-popover border border-border text-popover-foreground text-xs rounded opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50 whitespace-nowrap shadow-md flex items-center gap-1.5">
                   {item.name}
+                  {isLocked && <Lock className="h-3 w-3 text-muted-foreground" />}
                 </div>
               )}
             </Link>
