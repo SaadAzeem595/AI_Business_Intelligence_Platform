@@ -2,7 +2,6 @@ import type { NextConfig } from "next";
 
 // Defensive check to prevent enabling dev auth bypass in production
 const isProduction =
-  process.env.NODE_ENV === "production" ||
   process.env.ENVIRONMENT === "production" ||
   process.env.APP_ENV === "production";
 

@@ -3,7 +3,6 @@ import { API_ENDPOINTS } from "./endpoints";
 
 // Defensive check to prevent enabling dev auth bypass in production
 const isProductionEnv =
-  process.env.NODE_ENV === "production" ||
   process.env.ENVIRONMENT === "production" ||
   process.env.APP_ENV === "production";
 
