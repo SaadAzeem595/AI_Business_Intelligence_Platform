@@ -53,23 +53,34 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.add_middleware(RequestLoggingMiddleware)
 
 # Setup CORS policies middleware for Next.js queries (added last to ensure it is outermost)
-cors_source = settings.FRONTEND_ORIGINS or settings.ALLOWED_ORIGINS
-raw_origins = [o.strip() for o in cors_source.split(",") if o.strip()] if cors_source else []
-origins = [o for o in raw_origins if o != "*"]
+cors_source = settings.CORS_ORIGINS or settings.FRONTEND_ORIGINS or settings.ALLOWED_ORIGINS
+raw_origins = [o.strip().rstrip("/") for o in cors_source.split(",") if o.strip()] if cors_source else []
 
-if not settings.is_production:
-    # Explicit local development origins for credentialed CORS
-    dev_origins = [
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:3001",
-        "http://127.0.0.1:3001",
-        "http://localhost:8000",
-        "http://127.0.0.1:8000",
-    ]
-    for d_origin in dev_origins:
-        if d_origin not in origins:
-            origins.append(d_origin)
+if settings.FRONTEND_URL:
+    clean_fe = settings.FRONTEND_URL.strip().rstrip("/")
+    if clean_fe and clean_fe not in raw_origins:
+        raw_origins.append(clean_fe)
+
+# Explicit production frontend origin
+prod_frontend = "https://datapilot-web.ashyriver-d1eb08b9.uaenorth.azurecontainerapps.io"
+if prod_frontend not in raw_origins:
+    raw_origins.append(prod_frontend)
+
+# Explicit local development origins for credentialed CORS
+dev_origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3001",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+]
+for d_origin in dev_origins:
+    if d_origin not in raw_origins:
+        raw_origins.append(d_origin)
+
+# Never allow wildcard "*" with credentials
+origins = [o for o in raw_origins if o != "*"]
 
 cors_regex = (
     None

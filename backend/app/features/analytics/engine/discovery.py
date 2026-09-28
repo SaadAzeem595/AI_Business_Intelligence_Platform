@@ -266,23 +266,81 @@ class DatasetDiscoveryService:
             agg_fmt = "week"
 
         # Check Olist derived join
-        if dataset_id == "olist_relational_derived" or (date_column and "order_purchase_timestamp" in date_column):
+        is_olist_derived = (
+            dataset_id == "olist_relational_derived"
+            or (date_column and "order_purchase_timestamp" in str(date_column).lower())
+            or (dataset_id and "olist" in str(dataset_id).lower() and "derived" in str(dataset_id).lower())
+        )
+        if is_olist_derived:
             date_col = date_column or "order_purchase_timestamp"
             group_sql = f', items."{group_by}"' if group_by else ""
             select_group = f', items."{group_by}" AS group_key' if group_by else ""
+
+            def resolve_actual_file(storage_path: Optional[str], filename: Optional[str]) -> Optional[str]:
+                if storage_path and os.path.exists(storage_path):
+                    return storage_path
+                cand_dirs = [
+                    "/app/uploads",
+                    "/app/backend/uploads",
+                    os.path.join(os.getcwd(), "uploads"),
+                    os.path.join(os.getcwd(), "backend", "uploads"),
+                    os.path.join(os.getcwd(), "backend", "app", "uploads"),
+                    "uploads"
+                ]
+                fns = [filename, os.path.basename(storage_path) if storage_path else None]
+                for fn in fns:
+                    if not fn:
+                        continue
+                    for cdir in cand_dirs:
+                        if os.path.isdir(cdir):
+                            target = os.path.join(cdir, fn)
+                            if os.path.exists(target):
+                                return target
+                            try:
+                                for af in os.listdir(cdir):
+                                    if af == fn or af.endswith(f"_{fn}") or af.lower().endswith(fn.lower()):
+                                        return os.path.join(cdir, af)
+                            except Exception:
+                                pass
+                return None
+
+            orders_source = "olist_orders_dataset"
+            items_source = "olist_order_items_dataset"
+
+            if db:
+                from app.features.datasets.models import Dataset
+                stmt = select(Dataset).where(Dataset.project_id == project_id)
+                res = await db.execute(stmt)
+                d_items = res.scalars().all()
+                for d in d_items:
+                    fname = (d.filename or "").lower()
+                    d_table = d.duckdb_table or ""
+                    real_file = resolve_actual_file(d.storage_path, d.filename)
+                    if "orders" in fname and "items" not in fname:
+                        if real_file:
+                            clean_p = real_file.replace("\\", "/")
+                            orders_source = f"read_csv_auto('{clean_p}')"
+                        elif d_table:
+                            orders_source = f'"{d_table}"'
+                    elif "items" in fname or "order_items" in fname:
+                        if real_file:
+                            clean_p = real_file.replace("\\", "/")
+                            items_source = f"read_csv_auto('{clean_p}')"
+                        elif d_table:
+                            items_source = f'"{d_table}"'
 
             sql = f"""
             SELECT 
               date_trunc('{agg_fmt}', CAST(orders."{date_col}" AS TIMESTAMP)) AS date_bucket,
               SUM(items.price + COALESCE(items.freight_value, 0)) AS metric_value
               {select_group}
-            FROM olist_orders_dataset orders
-            JOIN olist_order_items_dataset items ON orders.order_id = items.order_id
+            FROM {orders_source} orders
+            JOIN {items_source} items ON orders.order_id = items.order_id
             WHERE orders."{date_col}" IS NOT NULL
             GROUP BY 1 {group_sql}
             ORDER BY 1 ASC
             """
-            return sql, {"dataset_name": "Olist E-Commerce (Derived Join)", "date_column": date_col, "target_column": "total_order_value"}
+            return sql, {"dataset_name": "Olist E-Commerce — Orders + Order Items", "date_column": date_col, "target_column": "total_order_value"}
 
         # Single table query resolution
         from app.features.datasets.router import UPLOADED_PATHS_CACHE

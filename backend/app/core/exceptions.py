@@ -53,6 +53,18 @@ class NoDataInPeriodException(ServiceException):
         )
 
 
+def get_cors_headers(request: Request) -> dict:
+    origin = request.headers.get("origin")
+    if not origin:
+        return {}
+    return {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD",
+        "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Request-ID, Accept, Origin, X-API-Key, *",
+    }
+
+
 def setup_exception_handlers(app: FastAPI) -> None:
     """Configures global error interception responses returning clean API envelopes."""
 
@@ -76,6 +88,7 @@ def setup_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=exc.status_code,
             content=content,
+            headers=get_cors_headers(request),
         )
 
     @app.exception_handler(StarletteHTTPException)
@@ -94,6 +107,7 @@ def setup_exception_handlers(app: FastAPI) -> None:
                 },
                 "detail": exc.detail,
             },
+            headers=get_cors_headers(request),
         )
 
     @app.exception_handler(RequestValidationError)
@@ -113,6 +127,7 @@ def setup_exception_handlers(app: FastAPI) -> None:
                 },
                 "detail": err_details,
             },
+            headers=get_cors_headers(request),
         )
 
     @app.exception_handler(Exception)
@@ -132,5 +147,6 @@ def setup_exception_handlers(app: FastAPI) -> None:
                 },
                 "detail": f"An internal server error occurred: {err_msg}",
             },
+            headers=get_cors_headers(request),
         )
 

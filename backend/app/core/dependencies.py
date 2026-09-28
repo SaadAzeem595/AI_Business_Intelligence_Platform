@@ -42,15 +42,33 @@ async def get_clerk_jwks(jwks_url: str, secret_key: str = None) -> dict:
     if _jwks_cache is not None:
         return _jwks_cache
     
-    headers = {}
-    if secret_key:
-        headers["Authorization"] = f"Bearer {secret_key}"
-        
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        response = await client.get(jwks_url, headers=headers)
-        response.raise_for_status()
-        _jwks_cache = response.json()
-        return _jwks_cache
+    candidate_urls = [
+        jwks_url,
+        "https://accepted-ram-62.clerk.accounts.dev/.well-known/jwks.json",
+        "https://api.clerk.com/v1/jwks",
+    ]
+    # Deduplicate while preserving order
+    seen = set()
+    urls = [u for u in candidate_urls if u and (u not in seen and not seen.add(u))]
+
+    last_err = None
+    for url in urls:
+        headers = {}
+        if secret_key and "api.clerk.com" in url:
+            headers["Authorization"] = f"Bearer {secret_key}"
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(url, headers=headers)
+                response.raise_for_status()
+                _jwks_cache = response.json()
+                return _jwks_cache
+        except Exception as e:
+            last_err = e
+            continue
+
+    if last_err:
+        raise last_err
+    return {}
 
 async def fetch_clerk_user_details(user_id: str, secret_key: str) -> dict:
     url = f"https://api.clerk.com/v1/users/{user_id}"

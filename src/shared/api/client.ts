@@ -197,8 +197,20 @@ apiClient.interceptors.response.use(
     }
 
     let descriptiveMessage = "An unexpected network error occurred.";
+    let errorType: 
+      | "NETWORK_ERROR" 
+      | "CORS_ERROR" 
+      | "401_UNAUTHORIZED" 
+      | "403_FORBIDDEN" 
+      | "404_ENDPOINT_NOT_FOUND" 
+      | "422_VALIDATION_ERROR" 
+      | "500_SERVER_ERROR" 
+      | "FORECAST_DATA_ERROR" = "NETWORK_ERROR";
+
+    const isForecastRequest = config.url?.includes("/forecast");
 
     if (error.code === "ECONNABORTED") {
+      errorType = "NETWORK_ERROR";
       const isProjectCreation = config.url?.includes("/projects") && config.method?.toUpperCase() === "POST";
       if (isProjectCreation) {
         descriptiveMessage = "Project creation timed out. Please check that the backend and database are running.";
@@ -206,11 +218,16 @@ apiClient.interceptors.response.use(
         descriptiveMessage = "Request timed out. Please verify that the backend server is responding.";
       }
     } else if (!error.response) {
-      // No response was received (Connection refused or CORS error)
-      if (error.message && error.message.toLowerCase().includes("network error")) {
-        descriptiveMessage = `CORS or Network Connection Error: Unable to connect to the DataPilot API at '${apiClient.defaults.baseURL}'. Verify that the FastAPI backend is running and CORS allows requests from this origin.`;
+      // Differentiate between network disconnection, connection refusal, and CORS failures
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        errorType = "NETWORK_ERROR";
+        descriptiveMessage = "Network Offline: Your browser is currently disconnected from the internet.";
+      } else if (error.message && error.message.toLowerCase().includes("network error")) {
+        errorType = "CORS_ERROR";
+        descriptiveMessage = `CORS Error: The backend response was blocked by CORS policy or connection was refused at '${apiClient.defaults.baseURL}'.`;
       } else {
-        descriptiveMessage = `Unable to connect to the DataPilot API at '${apiClient.defaults.baseURL}'. Verify that the FastAPI backend is running.`;
+        errorType = "NETWORK_ERROR";
+        descriptiveMessage = `Network Error: Unable to establish connection to the backend at '${apiClient.defaults.baseURL}'.`;
       }
     } else {
       // Response was received with a non-2xx status code
@@ -221,26 +238,45 @@ apiClient.interceptors.response.use(
             ? detailMsg.map((e: any) => e.msg || JSON.stringify(e)).join("; ") 
             : (detailMsg ? JSON.stringify(detailMsg) : null));
 
-      if (parsedDetail) {
-        descriptiveMessage = parsedDetail;
-      } else if (status === 422) {
-        descriptiveMessage = `Validation Error (422): Invalid request parameters passed to '${config.url}'.`;
-      } else if (status === 400) {
-        descriptiveMessage = `Bad Request (400): ${JSON.stringify(responseData)}`;
-      } else if (status === 404) {
-        descriptiveMessage = `Endpoint Not Found (404): The requested path '${config.url}' does not exist on the server.`;
-      } else if (status === 500) {
-        descriptiveMessage = `Internal Server Error (500): The server encountered an error while processing the request.`;
+      if (status === 401) {
+        errorType = "401_UNAUTHORIZED";
+        descriptiveMessage = parsedDetail || "Unauthorized (401): Your session has expired or is invalid. Please log in.";
       } else if (status === 403) {
-        descriptiveMessage = "Forbidden (403): You do not have permission to access this resource.";
-      } else if (status === 401) {
-        descriptiveMessage = "Unauthorized (401): Please log in to complete this action.";
+        errorType = "403_FORBIDDEN";
+        descriptiveMessage = parsedDetail || "Forbidden (403): You do not have permission or subscription entitlement for this feature.";
+      } else if (status === 404) {
+        errorType = "404_ENDPOINT_NOT_FOUND";
+        descriptiveMessage = parsedDetail || `Endpoint Not Found (404): The requested path '${config.url}' does not exist on the server.`;
+      } else if (status === 422) {
+        if (isForecastRequest) {
+          errorType = "FORECAST_DATA_ERROR";
+          descriptiveMessage = parsedDetail || `Forecasting Data Error (422): Invalid parameters or non-temporal columns provided.`;
+        } else {
+          errorType = "422_VALIDATION_ERROR";
+          descriptiveMessage = parsedDetail || `Validation Error (422): Invalid request parameters passed to '${config.url}'.`;
+        }
+      } else if (status === 400) {
+        if (isForecastRequest) {
+          errorType = "FORECAST_DATA_ERROR";
+          descriptiveMessage = parsedDetail || "Forecasting Data Error (400): Unable to compute time-series forecast on the selected dataset.";
+        } else {
+          descriptiveMessage = parsedDetail || `Bad Request (400): ${JSON.stringify(responseData)}`;
+        }
+      } else if (status === 500) {
+        if (isForecastRequest) {
+          errorType = "FORECAST_DATA_ERROR";
+          descriptiveMessage = parsedDetail ? `Forecasting Server Error (500): ${parsedDetail}` : "Forecasting Error (500): Server encountered an error processing forecasting model.";
+        } else {
+          errorType = "500_SERVER_ERROR";
+          descriptiveMessage = parsedDetail ? `Internal Server Error (500): ${parsedDetail}` : `Internal Server Error (500): The server encountered an error while processing the request.`;
+        }
       } else {
-        descriptiveMessage = `Server Error (${status}): ${JSON.stringify(responseData)}`;
+        descriptiveMessage = parsedDetail || `Server Error (${status}): ${JSON.stringify(responseData)}`;
       }
     }
 
-    // Override message field so Axios throws have clear descriptive messages
+    // Attach errorType to error object
+    (error as any).errorType = errorType;
     error.message = descriptiveMessage;
     return Promise.reject(error);
   }

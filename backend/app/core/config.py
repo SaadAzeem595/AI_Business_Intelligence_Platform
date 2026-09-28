@@ -26,7 +26,9 @@ class Settings(BaseSettings):
 
     # Clerk integration settings
     CLERK_SECRET_KEY: Optional[str] = None
-    CLERK_JWKS_URL: Optional[str] = None
+    CLERK_JWKS_URL: Optional[str] = "https://accepted-ram-62.clerk.accounts.dev/.well-known/jwks.json"
+    FRONTEND_URL: Optional[str] = None
+    CORS_ORIGINS: Optional[str] = None
 
     # Environment settings
     ENVIRONMENT: str = "development"
@@ -127,7 +129,10 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: Optional[str] = None
 
     # Production security
-    ALLOWED_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001,http://localhost:8000,http://127.0.0.1:8000"
+    ALLOWED_ORIGINS: str = (
+        "https://datapilot-web.ashyriver-d1eb08b9.uaenorth.azurecontainerapps.io,"
+        "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001,http://localhost:8000,http://127.0.0.1:8000"
+    )
     FRONTEND_ORIGINS: Optional[str] = None
     RATE_LIMIT_PER_MINUTE: int = 100
     API_KEYS: str = "admin-secret-api-key-12345,analyst-key-54321"

@@ -1,9 +1,12 @@
 import os
+import logging
 from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, Depends, status, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 import pandas as pd
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 from app.core.database import get_db_session
 from app.core.dependencies import get_current_user, MockUser, require_role
@@ -297,6 +300,12 @@ async def run_project_forecast(
 
     await get_project_and_verify_access(project_id, current_user, db)
 
+    # Log safe FORECAST_REQUEST (No credentials or secrets)
+    logger.info(
+        "FORECAST_REQUEST: project_id=%s, dataset_id=%s, frequency=%s, target=%s, timestamp_column=%s, model=%s, horizon=%s",
+        project_id, payload.dataset_id, payload.aggregation, payload.target_column, payload.date_column, payload.model, payload.horizon
+    )
+
     # 0. Request Validation for date_column and target_column
     if payload.date_column:
         date_col_lower = payload.date_column.lower()
@@ -317,9 +326,30 @@ async def run_project_forecast(
         db=db
     )
 
-    # 2. Execute DuckDB query
-    query_res = AnalyticsService.execute_duckdb_query(sql, project_id)
-    rows = query_res.rows if hasattr(query_res, "rows") else (query_res.get("rows", []) if isinstance(query_res, dict) else [])
+    logger.info(
+        "FORECAST_DATASET_RESOLUTION: project_id=%s, dataset_id=%s, dataset_name=%s, date_col=%s, target_col=%s",
+        project_id, payload.dataset_id, meta.get("dataset_name"), meta.get("date_column"), meta.get("target_column")
+    )
+
+    # 2. Execute DuckDB query safely
+    try:
+        query_res = AnalyticsService.execute_duckdb_query(sql, project_id)
+        rows = query_res.rows if hasattr(query_res, "rows") else (query_res.get("rows", []) if isinstance(query_res, dict) else [])
+    except Exception as e:
+        logger.error("DuckDB query execution failed for project %s: %s", project_id, str(e), exc_info=True)
+        return ProjectForecastResponse(
+            status="error",
+            project_id=project_id,
+            dataset_id=payload.dataset_id,
+            dataset_name=meta.get("dataset_name"),
+            message=f"Dataset query failed: {str(e)}"
+        )
+
+    logger.info(
+        "FORECAST_QUERY: project_id=%s, dataset_id=%s, rows_returned=%d",
+        project_id, payload.dataset_id, len(rows)
+    )
+
     if not rows:
         return ProjectForecastResponse(
             status="error",
@@ -335,6 +365,11 @@ async def run_project_forecast(
     target_col = "metric_value" if "metric_value" in df.columns else (payload.target_column or meta["target_column"])
 
     # 3. Run Production Forecast Engine
+    logger.info(
+        "FORECAST_MODEL: project_id=%s, dataset_id=%s, model=%s, horizon=%s, historical_point_count=%d",
+        project_id, payload.dataset_id, payload.model, payload.horizon, len(df)
+    )
+
     forecast_res = ProductionForecastingEngine.execute_project_forecast(
         df=df,
         project_id=project_id,
@@ -347,6 +382,13 @@ async def run_project_forecast(
         requested_model=payload.model,
         confidence=payload.confidence,
         group_by=payload.group_by
+    )
+
+    hist_count = sum(1 for p in forecast_res.timeline if p.actual is not None)
+    fore_count = sum(1 for p in forecast_res.timeline if p.forecast is not None)
+    logger.info(
+        "FORECAST_RESPONSE: project_id=%s, dataset_id=%s, status=%s, selected_model=%s, historical_point_count=%d, forecast_point_count=%d",
+        project_id, payload.dataset_id, forecast_res.status, forecast_res.selected_model, hist_count, fore_count
     )
 
     return forecast_res

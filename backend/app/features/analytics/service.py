@@ -158,6 +158,10 @@ def register_all_datasets_in_duckdb(
             view_names.add(duckdb_table)
             # If project-prefixed table name, also add clean un-prefixed alias
             if duckdb_table.startswith("project_"):
+                import re
+                clean_alias = re.sub(r"^project_(?:proj_[a-zA-Z0-9]+|[a-zA-Z0-9_-]+?)_", "", duckdb_table)
+                if clean_alias:
+                    view_names.add(clean_alias)
                 parts = duckdb_table.split("_", 2)
                 if len(parts) >= 3:
                     view_names.add(parts[2])

@@ -17,9 +17,25 @@ class RedisCache:
         self.is_connected = False
         self._connect_in_progress = False
         self._connection_failed = False
+        self._loop_id = None
+
+    def _get_current_loop_id(self):
+        import asyncio
+        try:
+            return id(asyncio.get_running_loop())
+        except RuntimeError:
+            return None
 
     async def connect(self) -> None:
-        """Initializes the Redis connection client pool."""
+        """Initializes the Redis connection client pool safely bound to the current event loop."""
+        curr_loop_id = self._get_current_loop_id()
+        if self.redis is not None and self._loop_id is not None and curr_loop_id != self._loop_id:
+            # Event loop changed (e.g. new thread or worker request). Reconnect for this loop.
+            self.redis = None
+            self.is_connected = False
+            self._connect_in_progress = False
+            self._connection_failed = False
+
         if self.is_connected or self._connect_in_progress or self._connection_failed:
             return
             
@@ -36,6 +52,7 @@ class RedisCache:
             # Ping to verify
             await self.redis.ping()
             self.is_connected = True
+            self._loop_id = curr_loop_id
             logger.info("Successfully connected to Redis cache backend.")
         except Exception as e:
             self.is_connected = False
@@ -50,16 +67,24 @@ class RedisCache:
 
     async def get(self, key: str) -> Optional[Any]:
         """Retrieves a value from the cache."""
-        if not self.is_connected:
-            await self.connect()
-            
-        if self.is_connected and self.redis:
-            try:
+        try:
+            curr_loop_id = self._get_current_loop_id()
+            if self.redis is not None and self._loop_id is not None and curr_loop_id != self._loop_id:
+                self.redis = None
+                self.is_connected = False
+                self._connect_in_progress = False
+
+            if not self.is_connected:
+                await self.connect()
+                
+            if self.is_connected and self.redis:
                 val = await self.redis.get(key)
                 if val is not None:
                     return json.loads(val)
-            except Exception as e:
-                logger.warning(f"Error fetching from Redis: {str(e)}. Falling back to in-memory.")
+        except Exception as e:
+            logger.warning(f"Error fetching from Redis: {str(e)}. Falling back to in-memory.")
+            self.redis = None
+            self.is_connected = False
                 
         # In-memory fallback
         mem_item = self.memory_store.get(key)

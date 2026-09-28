@@ -96,5 +96,28 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                 f"Error: {str(exc)} in {process_time:.4f}s [ID: {request_id}]",
                 exc_info=True,
             )
-            raise
+            from fastapi.responses import JSONResponse
+            err_headers = {
+                "X-Request-ID": request_id,
+                "X-Process-Time": f"{process_time:.4f}s",
+            }
+            origin = request.headers.get("origin")
+            if origin:
+                err_headers["Access-Control-Allow-Origin"] = origin
+                err_headers["Access-Control-Allow-Credentials"] = "true"
+                err_headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD"
+                err_headers["Access-Control-Allow-Headers"] = "*"
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "error": {
+                        "code": "INTERNAL_SERVER_ERROR",
+                        "message": f"An internal server error occurred: {str(exc)}",
+                        "module": "system",
+                        "details": {"exception_type": type(exc).__name__}
+                    },
+                    "detail": f"An internal server error occurred: {str(exc)}"
+                },
+                headers=err_headers
+            )
 
