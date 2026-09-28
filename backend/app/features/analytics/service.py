@@ -1,6 +1,7 @@
 import time
 from typing import Dict, Any, List, Optional
 import duckdb
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_duckdb_conn
 from app.features.analytics.schemas import SQLResponse
