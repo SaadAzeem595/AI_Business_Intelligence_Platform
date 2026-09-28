@@ -304,6 +304,14 @@ class DatasetDiscoveryService:
                                 pass
                 return None
 
+            def check_file_has_col(file_path: str, col_name: str) -> bool:
+                try:
+                    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                        header = f.readline().lower()
+                        return col_name.lower() in [c.strip().strip('"').strip("'") for c in header.split(",")]
+                except Exception:
+                    return False
+
             orders_source = "olist_orders_dataset"
             items_source = "olist_order_items_dataset"
 
@@ -325,7 +333,10 @@ class DatasetDiscoveryService:
                     elif "items" in fname or "order_items" in fname:
                         if real_file:
                             clean_p = real_file.replace("\\", "/")
-                            items_source = f"read_csv_auto('{clean_p}')"
+                            if not check_file_has_col(real_file, "freight_value"):
+                                items_source = f"(SELECT *, CAST(0.0 AS DOUBLE) AS freight_value FROM read_csv_auto('{clean_p}'))"
+                            else:
+                                items_source = f"read_csv_auto('{clean_p}')"
                         elif d_table:
                             items_source = f'"{d_table}"'
 
@@ -340,7 +351,7 @@ class DatasetDiscoveryService:
             GROUP BY 1 {group_sql}
             ORDER BY 1 ASC
             """
-            return sql, {"dataset_name": "Olist E-Commerce — Orders + Order Items", "date_column": date_col, "target_column": "total_order_value"}
+            return sql, {"dataset_name": "Olist E-Commerce (Derived Join)", "date_column": date_col, "target_column": "total_order_value"}
 
         # Single table query resolution
         from app.features.datasets.router import UPLOADED_PATHS_CACHE

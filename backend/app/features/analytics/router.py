@@ -149,6 +149,24 @@ async def resolve_dataset_path_async(
 
 
 def resolve_dataset_path(dataset_id: Optional[str] = None) -> str:
+    import asyncio
+    loop = None
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    if loop and loop.is_running():
+        from app.features.datasets.router import UPLOADED_PATHS_CACHE
+        if dataset_id and dataset_id in UPLOADED_PATHS_CACHE:
+            return UPLOADED_PATHS_CACHE[dataset_id]["path"]
+        if UPLOADED_PATHS_CACHE:
+            first_id = list(UPLOADED_PATHS_CACHE.keys())[0]
+            return UPLOADED_PATHS_CACHE[first_id]["path"]
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No active dataset found. Please upload a dataset to run analytics."
+        )
+
     from app.core.cache import run_async_as_sync
     try:
         from app.core.database import AsyncSessionLocal
@@ -182,7 +200,7 @@ async def forecast_trend(
         db, current_user.workspace_id, "advanced_forecasting"
     )
     try:
-        dataset_path = resolve_dataset_path(dataset_id)
+        dataset_path = await resolve_dataset_path_async(dataset_id, db=db)
         df = load_dataset(dataset_path)
         if df.empty:
             raise HTTPException(status_code=400, detail="The dataset is empty.")
@@ -333,7 +351,7 @@ async def run_project_forecast(
 
     # 2. Execute DuckDB query safely
     try:
-        query_res = AnalyticsService.execute_duckdb_query(sql, project_id)
+        query_res = await AnalyticsService.execute_duckdb_query_async(sql, project_id, db=db)
         rows = query_res.rows if hasattr(query_res, "rows") else (query_res.get("rows", []) if isinstance(query_res, dict) else [])
     except Exception as e:
         logger.error("DuckDB query execution failed for project %s: %s", project_id, str(e), exc_info=True)
@@ -702,7 +720,7 @@ async def run_project_anomalies(
             aggregation="daily",
             db=db
         )
-        query_res = AnalyticsService.execute_duckdb_query(sql, project_id)
+        query_res = await AnalyticsService.execute_duckdb_query_async(sql, project_id, db=db)
         rows = query_res.rows if hasattr(query_res, "rows") else (query_res.get("rows", []) if isinstance(query_res, dict) else [])
         if rows:
             df = pd.DataFrame(rows)
@@ -773,7 +791,7 @@ async def detect_anomalies(
         db, current_user.workspace_id, "advanced_anomaly_detection"
     )
     try:
-        dataset_path = resolve_dataset_path(dataset_id)
+        dataset_path = await resolve_dataset_path_async(dataset_id, db=db)
         df = load_dataset(dataset_path)
         if df.empty:
             raise HTTPException(status_code=400, detail="The dataset is empty.")
@@ -875,7 +893,7 @@ async def run_sql_query(
             from app.features.projects.router import get_project_and_verify_access
             await get_project_and_verify_access(payload.project_id, current_user, db)
             
-        return AnalyticsService.execute_duckdb_query(payload.query, payload.project_id)
+        return await AnalyticsService.execute_duckdb_query_async(payload.query, payload.project_id, db=db)
     except HTTPException as e:
         raise e
     except Exception as e:

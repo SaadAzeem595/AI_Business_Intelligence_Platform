@@ -59,8 +59,17 @@ def register_all_datasets_in_duckdb(
                 return list(result.scalars().all())
 
         try:
-            from app.core.cache import run_async_as_sync
-            db_items = run_async_as_sync(fetch_all_datasets_async())
+            import asyncio
+            loop = None
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                pass
+            if loop and loop.is_running():
+                db_items = []
+            else:
+                from app.core.cache import run_async_as_sync
+                db_items = run_async_as_sync(fetch_all_datasets_async())
         except Exception as e:
             logger.warning(f"Could not fetch datasets via sync wrapper for DuckDB registration: {e}")
             db_items = []
@@ -79,7 +88,18 @@ def register_all_datasets_in_duckdb(
         clean_path = file_path.replace("\\", "/")
         try:
             if clean_path.endswith('.csv'):
-                conn.execute(f"CREATE OR REPLACE TEMP VIEW \"{clean_v}\" AS SELECT * FROM read_csv_auto('{clean_path}')")
+                if "order_items" in clean_v:
+                    try:
+                        desc = conn.execute(f"DESCRIBE SELECT * FROM read_csv_auto('{clean_path}')").fetchall()
+                        cols = [c[0].lower() for c in desc]
+                        if "freight_value" not in cols:
+                            conn.execute(f"CREATE OR REPLACE TEMP VIEW \"{clean_v}\" AS SELECT *, CAST(0.0 AS DOUBLE) AS freight_value FROM read_csv_auto('{clean_path}')")
+                        else:
+                            conn.execute(f"CREATE OR REPLACE TEMP VIEW \"{clean_v}\" AS SELECT * FROM read_csv_auto('{clean_path}')")
+                    except Exception:
+                        conn.execute(f"CREATE OR REPLACE TEMP VIEW \"{clean_v}\" AS SELECT * FROM read_csv_auto('{clean_path}')")
+                else:
+                    conn.execute(f"CREATE OR REPLACE TEMP VIEW \"{clean_v}\" AS SELECT * FROM read_csv_auto('{clean_path}')")
             elif clean_path.endswith(('.xlsx', '.xls')):
                 import pandas as pd
                 df = pd.read_excel(file_path)
@@ -288,15 +308,27 @@ class AnalyticsService:
 
         # 2. Try Cache Lookup
         try:
-            cached_data = run_async_as_sync(cache_client.get(cache_key))
-            if cached_data:
-                # Cache hit
-                return SQLResponse(
-                    columns=cached_data["columns"],
-                    rows=cached_data["rows"],
-                    elapsedMs=0,  # Cache is fast/instant
-                )
-        except Exception as e:
+            import asyncio
+            loop = None
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                pass
+            if loop and loop.is_running():
+                mem_item = cache_client.memory_store.get(cache_key)
+                if mem_item:
+                    val, exp = mem_item
+                    if exp is None or anyio.current_time() < exp:
+                        return SQLResponse(columns=val["columns"], rows=val["rows"], elapsedMs=0)
+            else:
+                cached_data = run_async_as_sync(cache_client.get(cache_key))
+                if cached_data:
+                    return SQLResponse(
+                        columns=cached_data["columns"],
+                        rows=cached_data["rows"],
+                        elapsedMs=0,
+                    )
+        except Exception:
             pass
 
         gen = get_duckdb_conn()
@@ -304,7 +336,6 @@ class AnalyticsService:
         start_time = time.perf_counter()
 
         try:
-            # Dynamically register all uploaded and sample files as temporary views in DuckDB
             register_all_datasets_in_duckdb(conn, project_id, datasets_catalog=datasets_catalog)
         except Exception:
             pass
@@ -337,7 +368,17 @@ class AnalyticsService:
             # 2. Save cache
             try:
                 cache_payload = {"columns": columns, "rows": rows}
-                run_async_as_sync(cache_client.set(cache_key, cache_payload, ttl=300))
+                import asyncio
+                loop = None
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    pass
+                if loop and loop.is_running():
+                    expire_time = anyio.current_time() + 300
+                    cache_client.memory_store[cache_key] = (cache_payload, expire_time)
+                else:
+                    run_async_as_sync(cache_client.set(cache_key, cache_payload, ttl=300))
             except Exception:
                 pass
 
@@ -349,5 +390,111 @@ class AnalyticsService:
                 gen.close()
             except Exception:
                 pass
+
+    @classmethod
+    async def execute_duckdb_query_async(
+        cls,
+        query: str,
+        project_id: Optional[str] = None,
+        datasets_catalog: Optional[List[Any]] = None,
+        db: Optional[AsyncSession] = None
+    ) -> SQLResponse:
+        """Asynchronously loads active cached datasets into temporary views inside DuckDB and executes SQL queries."""
+        import hashlib
+        import re
+        from app.core.cache import cache_client
+        from app.core.telemetry import SQL_LATENCY
+        from app.core.database import AsyncSessionLocal
+        from app.features.datasets.models import Dataset
+        from sqlalchemy import select
+
+        # 1. SQL Safety Validation Layer
+        clean_q = query.strip().upper()
+        forbidden_keywords = ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "TRUNCATE", "CREATE", "GRANT", "REVOKE", "COPY"]
+        for kw in forbidden_keywords:
+            if re.search(r'\b' + re.escape(kw) + r'\b', clean_q):
+                if kw == "CREATE" and ("VIEW" in clean_q or "TEMP" in clean_q or "TABLE" in clean_q):
+                    continue
+                raise Exception("The generated query was rejected for safety.")
+
+        query_hash = hashlib.md5(query.strip().encode("utf-8")).hexdigest()
+        cache_key = f"sql_query:{project_id or 'global'}:{query_hash}"
+
+        # 2. Try Cache Lookup
+        try:
+            cached_data = await cache_client.get(cache_key)
+            if cached_data:
+                return SQLResponse(
+                    columns=cached_data["columns"],
+                    rows=cached_data["rows"],
+                    elapsedMs=0,
+                )
+        except Exception:
+            pass
+
+        # 3. Load datasets catalog
+        if datasets_catalog is None:
+            try:
+                if db is not None:
+                    stmt = select(Dataset).where(Dataset.project_id == project_id) if project_id else select(Dataset)
+                    res = await db.execute(stmt)
+                    datasets_catalog = list(res.scalars().all())
+                else:
+                    async with AsyncSessionLocal() as session:
+                        stmt = select(Dataset).where(Dataset.project_id == project_id) if project_id else select(Dataset)
+                        res = await session.execute(stmt)
+                        datasets_catalog = list(res.scalars().all())
+            except Exception as e:
+                logger.warning(f"Could not fetch datasets for DuckDB async registration: {e}")
+                datasets_catalog = []
+
+        gen = get_duckdb_conn()
+        conn = next(gen)
+        start_time = time.perf_counter()
+
+        try:
+            register_all_datasets_in_duckdb(conn, project_id, datasets_catalog=datasets_catalog)
+        except Exception:
+            pass
+
+        try:
+            from app.core.json_utils import make_json_serializable
+            res = conn.execute(query)
+            columns = [desc[0] for desc in res.description] if res.description else []
+            rows = []
+            
+            if res.description:
+                for row in res.fetchall():
+                    row_dict = {}
+                    for idx, col_name in enumerate(columns):
+                        row_dict[col_name] = make_json_serializable(row[idx])
+                    rows.append(row_dict)
+
+            process_time_ms = int((time.perf_counter() - start_time) * 1000)
+            duration_sec = time.perf_counter() - start_time
+            
+            SQL_LATENCY.labels(query_hash=query_hash).observe(duration_sec)
+
+            response_obj = SQLResponse(
+                columns=columns,
+                rows=rows,
+                elapsedMs=process_time_ms,
+            )
+
+            try:
+                cache_payload = {"columns": columns, "rows": rows}
+                await cache_client.set(cache_key, cache_payload, ttl=300)
+            except Exception:
+                pass
+
+            return response_obj
+        except Exception as e:
+            raise Exception(f"SQL execution error: {str(e)}")
+        finally:
+            try:
+                gen.close()
+            except Exception:
+                pass
+
 
 

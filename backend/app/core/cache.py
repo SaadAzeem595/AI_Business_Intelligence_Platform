@@ -176,13 +176,6 @@ def run_async_as_sync(coro):
             loop = None
 
     if loop and loop.is_running():
-        try:
-            import nest_asyncio
-            nest_asyncio.apply(loop)
-            return loop.run_until_complete(coro)
-        except Exception:
-            pass
-
         future = Future()
 
         def start_loop():
@@ -194,11 +187,14 @@ def run_async_as_sync(coro):
             except Exception as e:
                 future.set_exception(e)
             finally:
-                new_loop.close()
+                try:
+                    new_loop.close()
+                except Exception:
+                    pass
 
         t = threading.Thread(target=start_loop, daemon=True)
         t.start()
-        t.join()
+        t.join(timeout=15.0)
         return future.result()
     else:
         if loop is None:
