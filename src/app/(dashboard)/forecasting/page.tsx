@@ -116,9 +116,23 @@ export default function ForecastingPage() {
     setSelectedCandidateId(candId);
     const cand = candidates.find(c => c.dataset_id === candId);
     if (cand) {
-      setDateColumn(cand.suggested_date || cand.date_columns[0] || "");
-      setTargetMetric(cand.suggested_metric || cand.metric_columns[0] || "");
+      const dCol = cand.suggested_date || cand.date_columns[0] || "";
+      const mCol = cand.suggested_metric || cand.metric_columns[0] || "";
+      setDateColumn(dCol);
+      setTargetMetric(mCol);
       setGroupBy("");
+      if (dCol && mCol && cand.is_time_series_capable) {
+        setActiveConfig({
+          dataset_id: cand.dataset_id,
+          date_column: dCol,
+          target_column: mCol,
+          aggregation: aggregation,
+          horizon: horizon,
+          group_by: undefined,
+          model: modelChoice,
+          confidence: confidence / 100.0
+        });
+      }
     }
   };
 

@@ -21,83 +21,131 @@ EXPLICIT_NON_DATE_KEYWORDS = [
     "cm", "mm", "kg", "g", "meter", "size", "dimension", "description", "category"
 ]
 
+NON_DATE_UNIT_SUFFIXES = (
+    "_cm", "_mm", "_kg", "_g", "_qty", "_quantity", "_price", "_cost",
+    "_amount", "_score", "_count", "_id", "_size", "_dimension",
+    "_description", "_category", "_name", "_lenght", "_length", "_weight",
+    "_width", "_height", "_pct", "_percent"
+)
+
 METRIC_KEYWORDS = ["revenue", "sales", "price", "amount", "cost", "total", "spend", "freight_value", "quantity", "order_count", "units", "profit"]
 ID_EXCLUDE_KEYWORDS = ["id", "zip", "code", "index", "phone", "lat", "lng", "geo", "cpf", "cnpj"]
-STRICT_DATE_REGEX = re.compile(r'\b(date|time|timestamp|datetime|created_at|updated_at|order_date|purchase_timestamp|approved_at|delivered_date)\b', re.IGNORECASE)
+STRICT_DATE_REGEX = re.compile(
+    r'(?:^|[\W_])(date|time|timestamp|datetime|created|updated|purchased|approved|delivered|shipped|invoiced|trans|event|period|day|month|year|week|quarter|dt|ds|ts)(?:[\W_]|$)',
+    re.IGNORECASE
+)
 
 
 def is_valid_date_column(df: pd.DataFrame, col_name: str) -> bool:
     """
-    Strictly validates if a column is temporal.
-    - Rejects numeric columns (float, int, DOUBLE, DECIMAL) unless column name explicitly indicates date/time and values fall into Excel serial or Unix timestamp range.
-    - Rejects columns matching explicit non-date attribute keywords (width, height, price, cm, etc.).
-    - Rejects string columns whose non-null samples are numeric values (e.g. "25", "25.0").
-    - Validates datetime parse rate >= 80% on non-null samples with >= 3 distinct dates in reasonable year bounds (1900 - 2100).
+    Dynamically and robustly validates if a column represents temporal/date/time data.
+    - Rejects explicit non-temporal dimensions and measurement attributes (e.g. product_width_cm, price, weight).
+    - Detects native datetime dtypes.
+    - Detects numeric columns storing Excel serial dates (30000..60000) or Unix epoch timestamps.
+    - Accurately tests object/string columns across ISO, slash, hyphen, mixed date formats with safe parsing.
     """
     col_str = str(col_name)
-    col_lower = col_str.lower()
+    col_lower = col_str.lower().strip()
     series = df[col_str]
 
-    # Rule 1: Reject explicit non-date attribute keywords (e.g. product_width_cm, price, quantity, size)
-    if any(kw in col_lower for kw in EXPLICIT_NON_DATE_KEYWORDS):
+    # Rule 1: Tokenize column name to prevent substring collisions (e.g. 'g' matching 'shipping_date' or 'id' matching 'paid_at')
+    tokens = set(re.split(r'[\W_]+', col_lower))
+    has_explicit_date_term = bool(STRICT_DATE_REGEX.search(col_lower))
+
+    # Reject measurement suffixes unless column name explicitly indicates date/time (e.g. shipping_date vs product_weight_g)
+    if col_lower.endswith(NON_DATE_UNIT_SUFFIXES) and not has_explicit_date_term:
         return False
 
-    # Rule 2: Datetime dtype is inherently date
+    strong_non_date_tokens = {"width", "height", "length", "lenght", "weight", "qty", "quantity", "price", "cost", "score", "cm", "mm", "kg", "dimension", "size", "geo", "lat", "lng", "cnpj", "cpf"}
+    if any(t in strong_non_date_tokens for t in tokens) and not has_explicit_date_term:
+        return False
+
+    # Rule 2: Datetime dtype is inherently temporal
     if pd.api.types.is_datetime64_any_dtype(series):
         return True
 
-    # Rule 3: Numeric columns check
+    # Rule 3: Numeric columns check (Excel serial or Unix epoch timestamps)
     if pd.api.types.is_numeric_dtype(series):
-        # Allow numeric only if column name strongly suggests date/timestamp AND values fall in Excel date serial (30000..60000) or Unix timestamp (1e9..2e9)
-        if STRICT_DATE_REGEX.search(col_lower):
-            non_null = series.dropna()
-            if len(non_null) > 0:
-                vals = non_null.head(30)
-                if ((vals >= 30000) & (vals <= 60000)).all() or ((vals >= 1e9) & (vals <= 2e9)).all():
+        non_null = series.dropna()
+        if len(non_null) > 0:
+            vals = non_null.head(40)
+            is_excel_serial = ((vals >= 30000) & (vals <= 65000)).all()
+            is_unix_sec = ((vals >= 9.46e8) & (vals <= 2.5e9)).all()
+            is_unix_ms = ((vals >= 9.46e11) & (vals <= 2.5e12)).all()
+            if is_excel_serial or is_unix_sec or is_unix_ms:
+                if has_explicit_date_term or len(tokens.intersection({"year", "month", "day", "date", "time", "timestamp", "period"})) > 0:
                     return True
         return False
 
-    # Rule 4: String / object validation
+    # Rule 4: String / object column validation
     if series.dtype == 'object' or isinstance(series.dtype, pd.StringDtype):
         non_null_samples = series.dropna()
         if len(non_null_samples) == 0:
             return False
 
-        sample = non_null_samples.head(30)
+        sample = non_null_samples.head(40)
 
-        # Check if sample strings are purely numeric (e.g. "25", "25.0", "100")
-        is_all_numeric_strings = True
+        # Reject columns whose non-null samples are all plain numbers without date separators
+        is_all_pure_numbers = True
         for val in sample:
             s_val = str(val).strip()
             if not re.match(r'^-?\d+(\.\d+)?$', s_val):
-                is_all_numeric_strings = False
+                is_all_pure_numbers = False
                 break
-        if is_all_numeric_strings:
+        if is_all_pure_numbers:
             return False
 
-        # Attempt datetime parsing with multiple strategies (standard, format='mixed', dayfirst)
+        # Attempt robust datetime parsing across sample values
         parsed = None
-        try:
-            parsed = pd.to_datetime(sample, errors='coerce', format='mixed')
-        except Exception:
+        for parse_func in [
+            lambda s: pd.to_datetime(s, errors='coerce', format='mixed'),
+            lambda s: pd.to_datetime(s, errors='coerce'),
+            lambda s: pd.to_datetime(s, errors='coerce', dayfirst=True)
+        ]:
             try:
-                parsed = pd.to_datetime(sample, errors='coerce')
+                cand = parse_func(sample)
+                if cand is not None and cand.dropna().shape[0] > 0:
+                    parsed = cand
+                    break
             except Exception:
-                try:
-                    parsed = pd.to_datetime(sample, errors='coerce', dayfirst=True)
-                except Exception:
-                    pass
+                continue
 
         if parsed is not None:
             valid_parsed = parsed.dropna()
-            if len(valid_parsed) / len(sample) >= 0.8:
-                if valid_parsed.nunique() >= 3:
+            if len(valid_parsed) / len(sample) >= 0.7:
+                if valid_parsed.nunique() >= 2:
                     years = valid_parsed.dt.year
                     if not ((years < 1900).any() or (years > 2100).any()):
-                        if STRICT_DATE_REGEX.search(col_lower) or len(valid_parsed) == len(sample):
-                            return True
+                        return True
 
     return False
+
+
+def build_duckdb_date_expr(col_ref: str) -> str:
+    """Builds a safe, non-throwing COALESCE expression in DuckDB to parse any temporal column format."""
+    return (
+        f'COALESCE('
+        f'TRY_CAST({col_ref} AS TIMESTAMP), '
+        f'try_strptime(CAST({col_ref} AS VARCHAR), \'%Y-%m-%d %H:%M:%S\'), '
+        f'try_strptime(CAST({col_ref} AS VARCHAR), \'%Y-%m-%d %H:%M:%S.%f\'), '
+        f'try_strptime(CAST({col_ref} AS VARCHAR), \'%Y-%m-%dT%H:%M:%S\'), '
+        f'try_strptime(CAST({col_ref} AS VARCHAR), \'%Y-%m-%dT%H:%M:%S.%fZ\'), '
+        f'try_strptime(CAST({col_ref} AS VARCHAR), \'%Y-%m-%d\'), '
+        f'try_strptime(CAST({col_ref} AS VARCHAR), \'%m/%d/%Y %H:%M:%S\'), '
+        f'try_strptime(CAST({col_ref} AS VARCHAR), \'%m/%d/%Y %I:%M:%S %p\'), '
+        f'try_strptime(CAST({col_ref} AS VARCHAR), \'%m/%d/%Y\'), '
+        f'try_strptime(CAST({col_ref} AS VARCHAR), \'%d/%m/%Y %H:%M:%S\'), '
+        f'try_strptime(CAST({col_ref} AS VARCHAR), \'%d/%m/%Y\'), '
+        f'try_strptime(CAST({col_ref} AS VARCHAR), \'%Y/%m/%d %H:%M:%S\'), '
+        f'try_strptime(CAST({col_ref} AS VARCHAR), \'%Y/%m/%d\'), '
+        f'CASE '
+        f'  WHEN TRY_CAST({col_ref} AS DOUBLE) BETWEEN 30000 AND 60000 THEN TRY_CAST(to_timestamp((TRY_CAST({col_ref} AS DOUBLE) - 25569) * 86400) AS TIMESTAMP) '
+        f'  WHEN TRY_CAST({col_ref} AS DOUBLE) BETWEEN 1000000000 AND 2500000000 THEN TRY_CAST(to_timestamp(TRY_CAST({col_ref} AS DOUBLE)) AS TIMESTAMP) '
+        f'  WHEN TRY_CAST({col_ref} AS DOUBLE) BETWEEN 1000000000000 AND 2500000000000 THEN TRY_CAST(to_timestamp(TRY_CAST({col_ref} AS DOUBLE) / 1000.0) AS TIMESTAMP) '
+        f'  ELSE NULL '
+        f'END'
+        f')'
+    )
 
 
 def resolve_actual_file(storage_path: Optional[str], filename: Optional[str] = None) -> Optional[str]:
@@ -105,13 +153,23 @@ def resolve_actual_file(storage_path: Optional[str], filename: Optional[str] = N
     if storage_path and os.path.exists(storage_path):
         return storage_path
 
+    backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    root_dir = os.path.dirname(backend_dir)
+
     cand_dirs = [
+        os.path.join(backend_dir, "app", "uploads"),
+        os.path.join(backend_dir, "uploads"),
+        os.path.join(root_dir, "backend", "app", "uploads"),
+        os.path.join(root_dir, "backend", "uploads"),
+        os.path.join(root_dir, "uploads"),
+        os.path.join(os.getcwd(), "app", "uploads"),
         os.path.join(os.getcwd(), "backend", "app", "uploads"),
         os.path.join(os.getcwd(), "backend", "uploads"),
         os.path.join(os.getcwd(), "uploads"),
         os.path.join(os.getcwd(), "sample_data"),
         "/app/uploads",
         "/app/backend/uploads",
+        "/app/backend/app/uploads",
         "backend/app/uploads",
         "backend/uploads",
         "uploads",
@@ -125,7 +183,7 @@ def resolve_actual_file(storage_path: Optional[str], filename: Optional[str] = N
         fns.append(os.path.basename(filename))
 
     for cdir in cand_dirs:
-        if not os.path.isdir(cdir):
+        if not cdir or not os.path.isdir(cdir):
             continue
         for fn in fns:
             if not fn:
@@ -244,26 +302,58 @@ class DatasetDiscoveryService:
                 for col in df.columns:
                     col_str = str(col)
                     col_lower = col_str.lower()
+                    col_tokens = set(re.split(r'[\W_]+', col_lower))
 
-                    # 1. Check Date Column using strict validation
+                    # 1. Check Date Column using dynamic strict validation
                     if is_valid_date_column(df, col_str):
                         date_cols.append(col_str)
                         continue
 
                     # 2. Check Numeric Metric
-                    is_excluded_id = any(k in col_lower for k in ID_EXCLUDE_KEYWORDS)
+                    is_excluded_id = (
+                        any(k in col_tokens for k in ID_EXCLUDE_KEYWORDS)
+                        or col_lower.endswith("_id")
+                        or col_lower.startswith("id_")
+                        or col_lower in ["id", "uuid", "guid"]
+                    )
                     if pd.api.types.is_numeric_dtype(df[col_str]) and not is_excluded_id:
                         metric_cols.append(col_str)
                     elif df[col_str].dtype == 'object':
-                        # Check low cardinality category
+                        # Check if string column contains formatted numeric values (e.g. $1,200.50)
+                        sample_vals = df[col_str].dropna().head(30)
+                        if len(sample_vals) > 0 and not is_excluded_id:
+                            cleaned_nums = pd.to_numeric(
+                                sample_vals.astype(str).str.replace(r'[\$,%]', '', regex=True).str.strip(),
+                                errors='coerce'
+                            )
+                            if cleaned_nums.dropna().shape[0] / len(sample_vals) >= 0.8:
+                                metric_cols.append(col_str)
+                                continue
+
+                        # Check low cardinality category for breakdown
                         unique_cnt = df[col_str].nunique()
                         if 1 < unique_cnt < 100:
                             cat_cols.append(col_str)
 
+                # If dataset has valid temporal columns but no numeric metric, supply row_count
+                if len(date_cols) > 0 and len(metric_cols) == 0:
+                    metric_cols.append("row_count (Total Events / Volume)")
+
                 is_ts_capable = len(date_cols) > 0 and len(metric_cols) > 0
                 dataset_type = "Transactional / Time Series" if is_ts_capable else "Dimension / Master Data"
 
-                suggested_date = date_cols[0] if date_cols else None
+                # Prioritize primary timestamp/date columns
+                suggested_date = None
+                if date_cols:
+                    date_priority = ["purchase", "order", "created", "trans", "sale", "date", "timestamp", "time"]
+                    for kw in date_priority:
+                        match = next((c for c in date_cols if kw in c.lower()), None)
+                        if match:
+                            suggested_date = match
+                            break
+                    if not suggested_date:
+                        suggested_date = date_cols[0]
+
                 suggested_metric = None
                 for m in metric_cols:
                     if any(k in m.lower() for k in METRIC_KEYWORDS):
@@ -383,7 +473,13 @@ class DatasetDiscoveryService:
                 from_clause += f" LEFT JOIN {customers_source} customers ON orders.customer_id = customers.customer_id"
 
             # Determine metric aggregation expression
-            metric_expr = "SUM(items.price + COALESCE(items.freight_value, 0))"
+            target_str = str(target_column or "").lower()
+            if "row_count" in target_str or "order_count" in target_str or target_str in ["count", "orders"]:
+                metric_expr = "COUNT(DISTINCT orders.order_id)"
+            elif target_str == "freight_value":
+                metric_expr = "SUM(COALESCE(items.freight_value, 0))"
+            else:
+                metric_expr = "SUM(items.price + COALESCE(items.freight_value, 0))"
 
             # Safe group by resolution across joined tables
             select_group = ""
@@ -411,13 +507,15 @@ class DatasetDiscoveryService:
                     select_group = f", {grp_col} AS group_key"
                     group_sql = f", {grp_col}"
 
+            date_expr = build_duckdb_date_expr(f'orders."{date_col}"')
+
             sql = f"""
             SELECT 
-              date_trunc('{agg_fmt}', CAST(orders."{date_col}" AS TIMESTAMP)) AS date_bucket,
+              date_trunc('{agg_fmt}', {date_expr}) AS date_bucket,
               {metric_expr} AS metric_value
               {select_group}
             FROM {from_clause}
-            WHERE orders."{date_col}" IS NOT NULL
+            WHERE orders."{date_col}" IS NOT NULL AND CAST(orders."{date_col}" AS VARCHAR) != '' AND {date_expr} IS NOT NULL
             GROUP BY 1 {group_sql}
             ORDER BY 1 ASC
             """
@@ -476,25 +574,22 @@ class DatasetDiscoveryService:
             select_group = f', "{clean_grp}" AS group_key'
             group_sql = f', "{clean_grp}"'
 
-        date_expr = (
-            f'COALESCE('
-            f'TRY_CAST("{date_col}" AS TIMESTAMP), '
-            f'TRY_CAST(strptime(CAST("{date_col}" AS VARCHAR), \'%Y-%m-%d\') AS TIMESTAMP), '
-            f'TRY_CAST(strptime(CAST("{date_col}" AS VARCHAR), \'%m/%d/%Y\') AS TIMESTAMP), '
-            f'TRY_CAST(strptime(CAST("{date_col}" AS VARCHAR), \'%d/%m/%Y\') AS TIMESTAMP), '
-            f'TRY_CAST(strptime(CAST("{date_col}" AS VARCHAR), \'%Y/%m/%d\') AS TIMESTAMP), '
-            f'TRY_CAST(to_timestamp((TRY_CAST("{date_col}" AS DOUBLE) - 25569) * 86400) AS TIMESTAMP), '
-            f'TRY_CAST(to_timestamp(TRY_CAST("{date_col}" AS DOUBLE)) AS TIMESTAMP)'
-            f')'
-        )
+        date_expr = build_duckdb_date_expr(f'"{date_col}"')
+
+        target_str = str(target_col).lower()
+        if "row_count" in target_str or target_str in ["count", "record_count", "records"]:
+            metric_expr = "COUNT(*)"
+        else:
+            clean_target = target_col.replace('"', '')
+            metric_expr = f'SUM(COALESCE(TRY_CAST(REGEXP_REPLACE(CAST("{clean_target}" AS VARCHAR), \'[^0-9.-]\', \'\', \'g\') AS DOUBLE), 0.0))'
 
         sql = f"""
         SELECT 
           date_trunc('{agg_fmt}', {date_expr}) AS date_bucket,
-          SUM("{target_col}") AS metric_value
+          {metric_expr} AS metric_value
           {select_group}
         FROM {from_clause}
-        WHERE "{date_col}" IS NOT NULL AND "{target_col}" IS NOT NULL AND {date_expr} IS NOT NULL
+        WHERE "{date_col}" IS NOT NULL AND CAST("{date_col}" AS VARCHAR) != '' AND {date_expr} IS NOT NULL
         GROUP BY 1 {group_sql}
         ORDER BY 1 ASC
         """
@@ -527,6 +622,177 @@ class DatasetDiscoveryService:
             tbl = (dataset_id or "dataset").replace("-", "_").lower()
             date_col = date_column or "date"
             target_col = target_column or "revenue"
-            sql = f'SELECT date_trunc(\'{agg_fmt}\', CAST("{date_col}" AS TIMESTAMP)) AS date_bucket, SUM("{target_col}") AS metric_value FROM "{tbl}" WHERE "{date_col}" IS NOT NULL GROUP BY 1 ORDER BY 1 ASC'
+            date_expr = build_duckdb_date_expr(f'"{date_col}"')
+            sql = f'SELECT date_trunc(\'{agg_fmt}\', {date_expr}) AS date_bucket, SUM("{target_col}") AS metric_value FROM "{tbl}" WHERE "{date_col}" IS NOT NULL AND {date_expr} IS NOT NULL GROUP BY 1 ORDER BY 1 ASC'
             return sql, {"dataset_name": "Dataset", "date_column": date_col, "target_column": target_col}
+
+    @staticmethod
+    async def execute_time_series_pandas_fallback(
+        project_id: str,
+        dataset_id: Optional[str],
+        date_column: Optional[str],
+        target_column: Optional[str],
+        aggregation: str = "monthly",
+        group_by: Optional[str] = None,
+        db: Optional[AsyncSession] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Resilient Pandas fallback that directly reads files and computes time-series aggregation
+        if DuckDB query returns zero rows or encounters SQL syntax/path resolution edge cases.
+        """
+        from app.features.analytics.engine.forecasting import safe_parse_datetime_series
+        from app.features.datasets.models import Dataset
+        from app.core.json_utils import make_json_serializable
+
+        is_olist_derived = (
+            dataset_id == "olist_relational_derived"
+            or (dataset_id and "olist" in str(dataset_id).lower() and "derived" in str(dataset_id).lower())
+            or (not dataset_id and date_column and "order_purchase_timestamp" in str(date_column).lower())
+        )
+
+        freq_period = "M"
+        if aggregation.lower() == "daily":
+            freq_period = "D"
+        elif aggregation.lower() == "weekly":
+            freq_period = "W-MON"
+
+        try:
+            if is_olist_derived:
+                orders_file = resolve_actual_file(None, "olist_orders_dataset.csv")
+                items_file = resolve_actual_file(None, "olist_order_items_dataset.csv")
+
+                if db and (not orders_file or not items_file):
+                    stmt = select(Dataset).where(Dataset.project_id == project_id)
+                    res = await db.execute(stmt)
+                    for d in res.scalars().all():
+                        fn = (d.filename or "").lower()
+                        if "orders" in fn and "items" not in fn and not orders_file:
+                            orders_file = resolve_actual_file(d.storage_path, d.filename)
+                        elif ("items" in fn or "order_items" in fn) and not items_file:
+                            items_file = resolve_actual_file(d.storage_path, d.filename)
+
+                if not orders_file or not items_file:
+                    return []
+
+                df_orders = pd.read_csv(orders_file, low_memory=False)
+                df_items = pd.read_csv(items_file, low_memory=False)
+
+                df = pd.merge(df_orders, df_items, on="order_id", how="inner")
+                d_col = date_column or "order_purchase_timestamp"
+                if d_col not in df.columns:
+                    d_col = next((c for c in df.columns if "date" in c.lower() or "timestamp" in c.lower()), None)
+                if not d_col:
+                    return []
+
+                parsed_dates = safe_parse_datetime_series(df[d_col])
+                df["date_bucket"] = parsed_dates.dt.to_period(freq_period).dt.to_timestamp()
+
+                target_str = str(target_column or "").lower()
+                if "row_count" in target_str or "order_count" in target_str or target_str in ["count", "orders"]:
+                    df["metric_value"] = 1.0
+                elif target_str == "price":
+                    df["metric_value"] = pd.to_numeric(df["price"], errors="coerce").fillna(0.0)
+                elif target_str == "freight_value":
+                    df["metric_value"] = pd.to_numeric(df.get("freight_value", 0.0), errors="coerce").fillna(0.0)
+                else:
+                    df["metric_value"] = (
+                        pd.to_numeric(df["price"], errors="coerce").fillna(0.0) +
+                        pd.to_numeric(df.get("freight_value", 0.0), errors="coerce").fillna(0.0)
+                    )
+
+                clean_df = df.dropna(subset=["date_bucket"])
+                if clean_df.empty:
+                    return []
+
+                agg_df = clean_df.groupby("date_bucket")["metric_value"].sum().reset_index()
+                agg_df = agg_df.sort_values(by="date_bucket")
+
+                rows = []
+                for _, r in agg_df.iterrows():
+                    rows.append({
+                        "date_bucket": r["date_bucket"].isoformat() if hasattr(r["date_bucket"], "isoformat") else str(r["date_bucket"]),
+                        "metric_value": float(r["metric_value"])
+                    })
+                return rows
+
+            # Single dataset fallback
+            real_file = None
+            if db and dataset_id:
+                stmt = select(Dataset).where(Dataset.id == dataset_id)
+                res = await db.execute(stmt)
+                d_obj = res.scalar_one_or_none()
+                if d_obj:
+                    real_file = resolve_actual_file(d_obj.storage_path, d_obj.filename)
+
+            if not real_file:
+                for d_id, cached in UPLOADED_PATHS_CACHE.items():
+                    if str(d_id) == str(dataset_id) or (dataset_id is None and cached.get("project_id") == project_id):
+                        real_file = resolve_actual_file(cached.get("path"), cached.get("filename"))
+                        break
+
+            if not real_file and db:
+                stmt = select(Dataset).where(Dataset.project_id == project_id)
+                res = await db.execute(stmt)
+                d_items = res.scalars().all()
+                if d_items:
+                    real_file = resolve_actual_file(d_items[0].storage_path, d_items[0].filename)
+
+            if not real_file or not os.path.exists(real_file):
+                return []
+
+            if real_file.lower().endswith(".csv"):
+                df = pd.read_csv(real_file, low_memory=False)
+            else:
+                df = load_dataset(real_file)
+
+            if df.empty:
+                return []
+
+            d_col = date_column
+            if not d_col or d_col not in df.columns:
+                for c in df.columns:
+                    if is_valid_date_column(df, c):
+                        d_col = c
+                        break
+            if not d_col:
+                return []
+
+            parsed_dates = safe_parse_datetime_series(df[d_col])
+            df["date_bucket"] = parsed_dates.dt.to_period(freq_period).dt.to_timestamp()
+
+            t_col = target_column
+            target_str = str(t_col or "").lower()
+            if "row_count" in target_str or target_str in ["count", "record_count", "records"]:
+                df["metric_value"] = 1.0
+            else:
+                if not t_col or t_col not in df.columns:
+                    # Pick first numeric column
+                    num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+                    t_col = num_cols[0] if num_cols else df.columns[-1]
+
+                cleaned_series = (
+                    df[t_col]
+                    .astype(str)
+                    .str.replace(r'[\$,%]', '', regex=True)
+                    .str.strip()
+                )
+                df["metric_value"] = pd.to_numeric(cleaned_series, errors="coerce").fillna(0.0)
+
+            clean_df = df.dropna(subset=["date_bucket"])
+            if clean_df.empty:
+                return []
+
+            agg_df = clean_df.groupby("date_bucket")["metric_value"].sum().reset_index()
+            agg_df = agg_df.sort_values(by="date_bucket")
+
+            rows = []
+            for _, r in agg_df.iterrows():
+                rows.append({
+                    "date_bucket": r["date_bucket"].isoformat() if hasattr(r["date_bucket"], "isoformat") else str(r["date_bucket"]),
+                    "metric_value": float(r["metric_value"])
+                })
+            return rows
+        except Exception as e:
+            logger.error(f"Pandas fallback aggregation failed: {e}", exc_info=True)
+            return []
 

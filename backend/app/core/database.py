@@ -58,7 +58,18 @@ if USE_SQLITE:
             f"PostgreSQL server at {host}:{port} is unreachable. "
             f"Automatically falling back to local persistent SQLite database ('local_dev.db') for local development resiliency."
         )
-    sqlite_url = "sqlite+aiosqlite:///:memory:" if IS_TESTING else "sqlite+aiosqlite:///local_dev.db"
+    backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    candidate_db_paths = [
+        os.path.join(backend_dir, "local_dev.db"),
+        os.path.join(os.path.dirname(backend_dir), "backend", "local_dev.db"),
+        os.path.join(os.getcwd(), "backend", "local_dev.db"),
+        os.path.join(os.getcwd(), "local_dev.db"),
+    ]
+    chosen_db_path = next((p for p in candidate_db_paths if os.path.exists(p) and os.path.getsize(p) > 0), None)
+    if not chosen_db_path:
+        chosen_db_path = next((p for p in candidate_db_paths if os.path.exists(p)), os.path.join(backend_dir, "local_dev.db"))
+    clean_db_path = chosen_db_path.replace("\\", "/")
+    sqlite_url = "sqlite+aiosqlite:///:memory:" if IS_TESTING else f"sqlite+aiosqlite:///{clean_db_path}"
     async_engine = create_async_engine(
         sqlite_url,
         poolclass=StaticPool,

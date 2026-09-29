@@ -326,8 +326,17 @@ async def run_project_forecast(
 
     # 0. Request Validation for date_column and target_column
     if payload.date_column:
-        date_col_lower = payload.date_column.lower()
-        if any(kw in date_col_lower for kw in EXPLICIT_NON_DATE_KEYWORDS):
+        date_col_lower = payload.date_column.lower().strip()
+        tokens = set(re.split(r'[\W_]+', date_col_lower))
+        from app.features.analytics.engine.discovery import NON_DATE_UNIT_SUFFIXES, STRICT_DATE_REGEX
+        has_explicit_date_term = bool(STRICT_DATE_REGEX.search(date_col_lower))
+        if date_col_lower.endswith(NON_DATE_UNIT_SUFFIXES) and not has_explicit_date_term:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Column '{payload.date_column}' is a non-temporal attribute and cannot be used as a date column for time series forecasting."
+            )
+        strong_non_date_tokens = {"width", "height", "length", "lenght", "weight", "qty", "quantity", "price", "cost", "score", "cm", "mm", "kg", "dimension", "size", "geo", "lat", "lng", "cnpj", "cpf"}
+        if any(t in strong_non_date_tokens for t in tokens) and not has_explicit_date_term:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"Column '{payload.date_column}' is a non-temporal attribute and cannot be used as a date column for time series forecasting."
@@ -349,19 +358,32 @@ async def run_project_forecast(
         project_id, payload.dataset_id, meta.get("dataset_name"), meta.get("date_column"), meta.get("target_column")
     )
 
+    rows = []
     # 2. Execute DuckDB query safely
     try:
         query_res = await AnalyticsService.execute_duckdb_query_async(sql, project_id, db=db)
         rows = query_res.rows if hasattr(query_res, "rows") else (query_res.get("rows", []) if isinstance(query_res, dict) else [])
     except Exception as e:
-        logger.error("DuckDB query execution failed for project %s: %s", project_id, str(e), exc_info=True)
-        return ProjectForecastResponse(
-            status="error",
-            project_id=project_id,
-            dataset_id=payload.dataset_id,
-            dataset_name=meta.get("dataset_name"),
-            message=f"Dataset query failed: {str(e)}"
+        logger.warning("DuckDB query execution failed for project %s: %s. Attempting resilient Pandas fallback.", project_id, str(e))
+
+    # Resilient fallback: If DuckDB returned 0 rows, execute Pandas fallback
+    if not rows:
+        logger.info(
+            "Executing resilient Pandas time-series aggregation fallback for project_id=%s, dataset_id=%s, date_col=%s, target_col=%s",
+            project_id, payload.dataset_id, payload.date_column, payload.target_column
         )
+        try:
+            rows = await DatasetDiscoveryService.execute_time_series_pandas_fallback(
+                project_id=project_id,
+                dataset_id=payload.dataset_id,
+                date_column=payload.date_column or meta.get("date_column"),
+                target_column=payload.target_column or meta.get("target_column"),
+                aggregation=payload.aggregation,
+                group_by=payload.group_by,
+                db=db
+            )
+        except Exception as e:
+            logger.error("Pandas fallback execution failed: %s", str(e), exc_info=True)
 
     logger.info(
         "FORECAST_QUERY: project_id=%s, dataset_id=%s, rows_returned=%d",
