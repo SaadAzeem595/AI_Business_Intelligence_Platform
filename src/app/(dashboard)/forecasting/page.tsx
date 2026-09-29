@@ -94,11 +94,7 @@ export default function ForecastingPage() {
       const mCol = activeCandidate.suggested_metric || activeCandidate.metric_columns[0] || "";
       setDateColumn(dCol);
       setTargetMetric(mCol);
-      if (activeCandidate.categorical_columns.length > 0) {
-        setGroupBy(activeCandidate.categorical_columns[0]);
-      } else {
-        setGroupBy("");
-      }
+      setGroupBy("");
 
       if (dCol && mCol && activeCandidate.is_time_series_capable) {
         setActiveConfig({
@@ -122,11 +118,7 @@ export default function ForecastingPage() {
     if (cand) {
       setDateColumn(cand.suggested_date || cand.date_columns[0] || "");
       setTargetMetric(cand.suggested_metric || cand.metric_columns[0] || "");
-      if (cand.categorical_columns.length > 0) {
-        setGroupBy(cand.categorical_columns[0]);
-      } else {
-        setGroupBy("");
-      }
+      setGroupBy("");
     }
   };
 
@@ -406,6 +398,25 @@ export default function ForecastingPage() {
                   <option value={12}>12 Months Ahead</option>
                 </select>
               </div>
+
+              {/* Optional Category / Dimension Breakdown */}
+              {selectedCandidate && selectedCandidate.categorical_columns && selectedCandidate.categorical_columns.length > 0 && (
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-muted-foreground flex items-center gap-1">
+                    <Layers className="h-3.5 w-3.5 text-brand-indigo" /> Breakdown Dimension (Optional)
+                  </label>
+                  <select
+                    value={groupBy}
+                    onChange={(e) => setGroupBy(e.target.value)}
+                    className="text-xs p-2 rounded-md border border-border/80 bg-background w-full text-foreground cursor-pointer font-medium"
+                  >
+                    <option value="">All / Overall (No Breakdown)</option>
+                    {selectedCandidate.categorical_columns.map(cat => (
+                      <option key={cat} value={cat}>{cat}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
               {/* Model Choice */}
               <div className="space-y-1.5">

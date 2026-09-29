@@ -22,6 +22,14 @@ def set_active_user(user_id: str, role: str = "Analyst"):
     return mock_user
 
 
+@pytest.fixture(autouse=True)
+def mock_growth_entitlement(monkeypatch):
+    from app.features.billing.entitlements import EntitlementService
+    async def _mock_check(*args, **kwargs):
+        return None
+    monkeypatch.setattr(EntitlementService, "check_feature_entitlement", _mock_check)
+
+
 def test_time_series_validation_and_preparation():
     """Tests validation of invalid/insufficient observations and gap filling."""
     # 1. Test insufficient observations (<3)

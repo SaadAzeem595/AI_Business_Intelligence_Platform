@@ -100,6 +100,57 @@ def is_valid_date_column(df: pd.DataFrame, col_name: str) -> bool:
     return False
 
 
+def resolve_actual_file(storage_path: Optional[str], filename: Optional[str] = None) -> Optional[str]:
+    """Resolves dataset file path on host or container across candidate storage locations."""
+    if storage_path and os.path.exists(storage_path):
+        return storage_path
+
+    cand_dirs = [
+        os.path.join(os.getcwd(), "backend", "app", "uploads"),
+        os.path.join(os.getcwd(), "backend", "uploads"),
+        os.path.join(os.getcwd(), "uploads"),
+        os.path.join(os.getcwd(), "sample_data"),
+        "/app/uploads",
+        "/app/backend/uploads",
+        "backend/app/uploads",
+        "backend/uploads",
+        "uploads",
+        "sample_data"
+    ]
+    fns = []
+    if storage_path:
+        fns.append(os.path.basename(storage_path))
+    if filename:
+        fns.append(filename)
+        fns.append(os.path.basename(filename))
+
+    for cdir in cand_dirs:
+        if not os.path.isdir(cdir):
+            continue
+        for fn in fns:
+            if not fn:
+                continue
+            target = os.path.join(cdir, fn)
+            if os.path.exists(target):
+                return target
+            try:
+                for af in os.listdir(cdir):
+                    if af == fn or af.endswith(f"_{fn}") or af.lower().endswith(fn.lower()) or af.lower().endswith(f"_{fn.lower()}"):
+                        return os.path.join(cdir, af)
+            except Exception:
+                pass
+    return None
+
+
+def check_file_has_col(file_path: str, col_name: str) -> bool:
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            header = f.readline().lower()
+            return col_name.lower() in [c.strip().strip('"').strip("'") for c in header.split(",")]
+    except Exception:
+        return False
+
+
 class DatasetDiscoveryService:
     @staticmethod
     async def discover_project_candidates(
@@ -111,7 +162,7 @@ class DatasetDiscoveryService:
         Automatically detects date/time, numeric metric, and categorical breakdown columns.
         Supports relational discovery for multi-table datasets like Olist.
         """
-        # Fetch project datasets from Postgres DB
+        # Fetch project datasets from DB
         stmt = select(Dataset).where(Dataset.project_id == project_id)
         res = await db.execute(stmt)
         db_datasets = res.scalars().all()
@@ -156,7 +207,7 @@ class DatasetDiscoveryService:
                     dataset_id="olist_relational_derived",
                     dataset_name="Olist E-Commerce (Orders + Order Items Joined)",
                     date_columns=["order_purchase_timestamp", "order_approved_at", "order_delivered_customer_date"],
-                    metric_columns=["price", "freight_value", "total_order_value (price + freight_value)"],
+                    metric_columns=["total_order_value (price + freight_value)", "price", "freight_value"],
                     categorical_columns=["product_category_name", "order_status", "customer_state"],
                     is_derived_olist=True,
                     suggested_date="order_purchase_timestamp",
@@ -166,14 +217,23 @@ class DatasetDiscoveryService:
                 )
             )
 
-        # Inspect individual dataset files
+        # Inspect individual dataset files dynamically
         for ds in datasets_info:
             storage_path = ds.get("storage_path")
-            if not storage_path or not os.path.exists(storage_path):
+            real_file = resolve_actual_file(storage_path, ds.get("filename"))
+            if not real_file or not os.path.exists(real_file):
                 continue
 
             try:
-                df = load_dataset(storage_path)
+                # Fast sample read to avoid scanning huge datasets
+                if real_file.lower().endswith(".csv"):
+                    try:
+                        df = pd.read_csv(real_file, nrows=500, low_memory=False)
+                    except Exception:
+                        df = load_dataset(real_file)
+                else:
+                    df = load_dataset(real_file)
+
                 if df.empty:
                     continue
 
@@ -265,55 +325,18 @@ class DatasetDiscoveryService:
         elif aggregation.lower() == "weekly":
             agg_fmt = "week"
 
-        # Check Olist derived join
+        # Check Olist derived join - only if explicitly requested or derived ID
         is_olist_derived = (
             dataset_id == "olist_relational_derived"
-            or (date_column and "order_purchase_timestamp" in str(date_column).lower())
             or (dataset_id and "olist" in str(dataset_id).lower() and "derived" in str(dataset_id).lower())
+            or (not dataset_id and date_column and "order_purchase_timestamp" in str(date_column).lower())
         )
         if is_olist_derived:
             date_col = date_column or "order_purchase_timestamp"
-            group_sql = f', items."{group_by}"' if group_by else ""
-            select_group = f', items."{group_by}" AS group_key' if group_by else ""
-
-            def resolve_actual_file(storage_path: Optional[str], filename: Optional[str]) -> Optional[str]:
-                if storage_path and os.path.exists(storage_path):
-                    return storage_path
-                cand_dirs = [
-                    "/app/uploads",
-                    "/app/backend/uploads",
-                    os.path.join(os.getcwd(), "uploads"),
-                    os.path.join(os.getcwd(), "backend", "uploads"),
-                    os.path.join(os.getcwd(), "backend", "app", "uploads"),
-                    "uploads"
-                ]
-                fns = [filename, os.path.basename(storage_path) if storage_path else None]
-                for fn in fns:
-                    if not fn:
-                        continue
-                    for cdir in cand_dirs:
-                        if os.path.isdir(cdir):
-                            target = os.path.join(cdir, fn)
-                            if os.path.exists(target):
-                                return target
-                            try:
-                                for af in os.listdir(cdir):
-                                    if af == fn or af.endswith(f"_{fn}") or af.lower().endswith(fn.lower()):
-                                        return os.path.join(cdir, af)
-                            except Exception:
-                                pass
-                return None
-
-            def check_file_has_col(file_path: str, col_name: str) -> bool:
-                try:
-                    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                        header = f.readline().lower()
-                        return col_name.lower() in [c.strip().strip('"').strip("'") for c in header.split(",")]
-                except Exception:
-                    return False
-
             orders_source = "olist_orders_dataset"
             items_source = "olist_order_items_dataset"
+            products_source = None
+            customers_source = None
 
             if db:
                 from app.features.datasets.models import Dataset
@@ -324,7 +347,7 @@ class DatasetDiscoveryService:
                     fname = (d.filename or "").lower()
                     d_table = d.duckdb_table or ""
                     real_file = resolve_actual_file(d.storage_path, d.filename)
-                    if "orders" in fname and "items" not in fname:
+                    if "orders" in fname and "items" not in fname and "reviews" not in fname:
                         if real_file:
                             clean_p = real_file.replace("\\", "/")
                             orders_source = f"read_csv_auto('{clean_p}')"
@@ -339,19 +362,66 @@ class DatasetDiscoveryService:
                                 items_source = f"read_csv_auto('{clean_p}')"
                         elif d_table:
                             items_source = f'"{d_table}"'
+                    elif "products" in fname:
+                        if real_file:
+                            clean_p = real_file.replace("\\", "/")
+                            products_source = f"read_csv_auto('{clean_p}')"
+                        elif d_table:
+                            products_source = f'"{d_table}"'
+                    elif "customers" in fname:
+                        if real_file:
+                            clean_p = real_file.replace("\\", "/")
+                            customers_source = f"read_csv_auto('{clean_p}')"
+                        elif d_table:
+                            customers_source = f'"{d_table}"'
+
+            # Build FROM clause with joined tables
+            from_clause = f"{orders_source} orders JOIN {items_source} items ON orders.order_id = items.order_id"
+            if products_source:
+                from_clause += f" LEFT JOIN {products_source} products ON items.product_id = products.product_id"
+            if customers_source:
+                from_clause += f" LEFT JOIN {customers_source} customers ON orders.customer_id = customers.customer_id"
+
+            # Determine metric aggregation expression
+            metric_expr = "SUM(items.price + COALESCE(items.freight_value, 0))"
+
+            # Safe group by resolution across joined tables
+            select_group = ""
+            group_sql = ""
+            if group_by and str(group_by).strip().lower() not in ["", "none", "null", "all", "undefined"]:
+                clean_grp = group_by.strip().replace('"', '')
+                grp_col = None
+                if "category" in clean_grp.lower() or "product" in clean_grp.lower():
+                    if products_source:
+                        grp_col = f'COALESCE(products."{clean_grp}", \'Uncategorized\')'
+                elif clean_grp in ["order_status", "order_id"]:
+                    grp_col = f'orders."{clean_grp}"'
+                elif clean_grp in ["customer_state", "customer_city", "customer_zip_code_prefix"]:
+                    if customers_source:
+                        grp_col = f'COALESCE(customers."{clean_grp}", \'Unknown\')'
+                elif clean_grp in ["seller_id", "order_item_id"]:
+                    grp_col = f'items."{clean_grp}"'
+                else:
+                    if products_source:
+                        grp_col = f'COALESCE(products."{clean_grp}", \'Uncategorized\')'
+                    else:
+                        grp_col = f'items."{clean_grp}"'
+
+                if grp_col:
+                    select_group = f", {grp_col} AS group_key"
+                    group_sql = f", {grp_col}"
 
             sql = f"""
             SELECT 
               date_trunc('{agg_fmt}', CAST(orders."{date_col}" AS TIMESTAMP)) AS date_bucket,
-              SUM(items.price + COALESCE(items.freight_value, 0)) AS metric_value
+              {metric_expr} AS metric_value
               {select_group}
-            FROM {orders_source} orders
-            JOIN {items_source} items ON orders.order_id = items.order_id
+            FROM {from_clause}
             WHERE orders."{date_col}" IS NOT NULL
             GROUP BY 1 {group_sql}
             ORDER BY 1 ASC
             """
-            return sql, {"dataset_name": "Olist E-Commerce (Derived Join)", "date_column": date_col, "target_column": "total_order_value"}
+            return sql, {"dataset_name": "Olist E-Commerce (Derived Join)", "date_column": date_col, "target_column": target_column or "total_order_value"}
 
         # Single table query resolution
         from app.features.datasets.router import UPLOADED_PATHS_CACHE
@@ -359,48 +429,52 @@ class DatasetDiscoveryService:
         from app.features.projects.models import Project
         from app.features.datasets.models import Dataset
 
-        table_name = None
-        ds_name = "Dataset"
-
+        d_obj = None
         if db and dataset_id:
             stmt = select(Dataset).where(Dataset.id == dataset_id)
             res = await db.execute(stmt)
             d_obj = res.scalar_one_or_none()
-            if d_obj:
-                table_name = d_obj.duckdb_table or (d_obj.display_name and d_obj.display_name.split(".")[0]) or (d_obj.filename and d_obj.filename.split(".")[0])
-                ds_name = d_obj.filename
 
-        if db and not table_name:
+        if db and not d_obj:
             stmt = select(Dataset).where(Dataset.project_id == project_id)
             res = await db.execute(stmt)
             d_items = res.scalars().all()
             if d_items:
-                target_d = next((d for d in d_items if str(d.id) == str(dataset_id)), d_items[0])
-                table_name = target_d.duckdb_table or (target_d.display_name and target_d.display_name.split(".")[0]) or (target_d.filename and target_d.filename.split(".")[0])
-                ds_name = target_d.filename
+                d_obj = next((d for d in d_items if str(d.id) == str(dataset_id)), d_items[0])
 
-        if not table_name:
+        real_file = None
+        table_name = None
+        ds_name = "Dataset"
+
+        if d_obj:
+            ds_name = d_obj.filename or "Dataset"
+            table_name = d_obj.duckdb_table or (d_obj.display_name and d_obj.display_name.split(".")[0]) or (d_obj.filename and d_obj.filename.split(".")[0])
+            real_file = resolve_actual_file(d_obj.storage_path, d_obj.filename)
+
+        if not real_file:
             for d_id, cached in UPLOADED_PATHS_CACHE.items():
                 if str(d_id) == str(dataset_id) or (dataset_id is None and cached.get("project_id") == project_id):
                     table_name = cached.get("duckdb_table") or cached.get("filename", "").split(".")[0]
                     ds_name = cached.get("filename", "Dataset")
+                    real_file = resolve_actual_file(cached.get("path"), cached.get("filename"))
                     break
 
-        if not table_name and dataset_id:
-            table_name = dataset_id.replace("-", "_").lower()
-
-        if not table_name:
-            table_name = "dataset"
+        if real_file and os.path.exists(real_file):
+            clean_p = real_file.replace("\\", "/")
+            from_clause = f"read_csv_auto('{clean_p}')"
+        else:
+            clean_table = (table_name or dataset_id or "dataset").strip().lower().replace(" ", "_").replace("-", "_")
+            clean_table = "".join(c for c in clean_table if c.isalnum() or c == "_") or "dataset"
+            from_clause = f'"{clean_table}"'
 
         date_col = date_column or "date"
         target_col = target_column or "revenue"
-        group_sql = f', "{group_by}"' if group_by else ""
-        select_group = f', "{group_by}" AS group_key' if group_by else ""
-
-        clean_table = table_name.strip().lower().replace(" ", "_").replace("-", "_")
-        clean_table = "".join(c for c in clean_table if c.isalnum() or c == "_")
-        if not clean_table:
-            clean_table = "dataset"
+        select_group = ""
+        group_sql = ""
+        if group_by and str(group_by).strip().lower() not in ["", "none", "null", "all", "undefined"]:
+            clean_grp = group_by.strip().replace('"', '')
+            select_group = f', "{clean_grp}" AS group_key'
+            group_sql = f', "{clean_grp}"'
 
         date_expr = (
             f'COALESCE('
@@ -419,7 +493,7 @@ class DatasetDiscoveryService:
           date_trunc('{agg_fmt}', {date_expr}) AS date_bucket,
           SUM("{target_col}") AS metric_value
           {select_group}
-        FROM "{clean_table}"
+        FROM {from_clause}
         WHERE "{date_col}" IS NOT NULL AND "{target_col}" IS NOT NULL AND {date_expr} IS NOT NULL
         GROUP BY 1 {group_sql}
         ORDER BY 1 ASC

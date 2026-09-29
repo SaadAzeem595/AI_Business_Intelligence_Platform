@@ -19,8 +19,13 @@ def anyio_backend():
 
 
 @pytest.fixture(autouse=True)
-async def setup_test_database():
+def setup_test_database():
     """Initializes the database schema for the test session."""
-    async with async_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    async def _init():
+        async with async_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    try:
+        asyncio.run(_init())
+    except RuntimeError:
+        pass
     yield
