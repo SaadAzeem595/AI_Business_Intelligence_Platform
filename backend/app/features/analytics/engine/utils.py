@@ -34,11 +34,10 @@ def load_dataset(dataset_ref: str, conn: Optional[duckdb.DuckDBPyConnection] = N
             # Fallback to DuckDB if pandas reading fails
             pass
 
-    # If it is not a file or pandas fails, query DuckDB
-    close_conn = False
+    gen = None
     if conn is None:
-        conn = next(get_duckdb_conn())
-        close_conn = True
+        gen = get_duckdb_conn()
+        conn = next(gen)
         
     limit_clause = f" LIMIT {nrows}" if nrows else ""
     try:
@@ -55,6 +54,9 @@ def load_dataset(dataset_ref: str, conn: Optional[duckdb.DuckDBPyConnection] = N
                 raise Exception(f"Failed to load dataset from file path: {dataset_ref}. Error: {str(db_err)}")
         raise Exception(f"Failed to load dataset: {dataset_ref}. Error: {str(db_err)}")
     finally:
-        if close_conn:
-            conn.close()
+        if gen:
+            try:
+                next(gen, None)
+            except Exception:
+                pass
 

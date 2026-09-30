@@ -174,6 +174,19 @@ export default function SegmentationPage() {
         )}
       </div>
 
+      {/* Loading Skeleton */}
+      {isLoadingSchema && (
+        <Card className="border-border/80 bg-card/60 p-8 text-center space-y-3">
+          <div className="flex items-center justify-center gap-2 text-brand-indigo font-semibold text-sm">
+            <div className="h-4 w-4 animate-spin rounded-full border-2 border-brand-indigo border-t-transparent" />
+            <span>Discovering project datasets & analyzing features...</span>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Scanning project tables, relational schema, and analytical features for cohort segmentation...
+          </p>
+        </Card>
+      )}
+
       {/* No Datasets Banner */}
       {!isLoadingSchema && candidates.length === 0 && (
         <Card className="border-amber-500/40 bg-amber-500/5 text-amber-600 dark:text-amber-400 p-6">
@@ -218,20 +231,30 @@ export default function SegmentationPage() {
             <CardContent className="space-y-4 pt-4">
               {/* Dataset Target Selector */}
               <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-muted-foreground flex items-center gap-1">
-                  <Layers className="h-3.5 w-3.5 text-brand-indigo" /> Dataset Target
-                </label>
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-semibold text-muted-foreground flex items-center gap-1">
+                    <Layers className="h-3.5 w-3.5 text-brand-indigo" /> Dataset Target
+                  </label>
+                  <span className="text-[10px] text-muted-foreground">
+                    {candidates.filter((c: any) => c.eligible !== false).length} eligible
+                  </span>
+                </div>
                 <select
                   value={selectedDatasetId}
                   onChange={(e) => handleDatasetChange(e.target.value)}
                   className="text-xs p-2 rounded-md border border-border/80 bg-background w-full text-foreground cursor-pointer font-medium"
                 >
                   {candidates.map((c: any) => (
-                    <option key={c.dataset_id} value={c.dataset_id}>
-                      {c.dataset_name}
+                    <option key={c.dataset_id} value={c.dataset_id} disabled={c.eligible === false}>
+                      {c.dataset_name} {c.row_count ? `(${c.row_count.toLocaleString()} rows)` : ""} {c.eligible === false ? "— Ineligible" : ""}
                     </option>
                   ))}
                 </select>
+                {selectedCandidate?.reason && (
+                  <p className="text-[11px] text-amber-500 font-medium">
+                    {selectedCandidate.reason}
+                  </p>
+                )}
               </div>
 
               {/* Entity Key Column Picker */}
@@ -360,18 +383,30 @@ export default function SegmentationPage() {
                   Mode: {datasetType || modeOption} {resolvedEntityKey ? `(Key: ${resolvedEntityKey})` : ""}
                 </Badge>
               </div>
-              <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+              <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
                 <div>
                   <span className="font-semibold text-foreground">Project: </span>
                   <span>{activeProjectObj?.name || activeProject}</span>
                 </div>
                 <div>
-                  <span className="font-semibold text-foreground">Dataset ID: </span>
-                  <span className="font-mono text-[11px]">{selectedDatasetId}</span>
+                  <span className="font-semibold text-foreground">Dataset: </span>
+                  <span>{selectedCandidate?.dataset_name || selectedDatasetId}</span>
+                </div>
+                {selectedCandidate?.row_count !== undefined && selectedCandidate?.row_count > 0 && (
+                  <div>
+                    <span className="font-semibold text-foreground">Rows: </span>
+                    <span className="font-semibold text-brand-indigo">{selectedCandidate.row_count.toLocaleString()}</span>
+                  </div>
+                )}
+                <div>
+                  <span className="font-semibold text-foreground">Entity: </span>
+                  <span className="font-mono text-[11px]">{resolvedEntityKey || entityKey || selectedCandidate?.entity_key || "Auto"}</span>
                 </div>
                 <div>
-                  <span className="font-semibold text-foreground">Entity Key: </span>
-                  <span className="font-mono text-[11px]">{resolvedEntityKey || entityKey || "Auto"}</span>
+                  <span className="font-semibold text-foreground">Status: </span>
+                  <span className={`font-semibold ${selectedCandidate?.eligible !== false ? "text-emerald-600 dark:text-emerald-400" : "text-amber-500"}`}>
+                    {selectedCandidate?.eligible !== false ? "Ready" : "Ineligible"}
+                  </span>
                 </div>
                 <div>
                   <span className="font-semibold text-foreground">Features Engaged: </span>

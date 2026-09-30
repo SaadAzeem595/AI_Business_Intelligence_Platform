@@ -81,6 +81,35 @@ class SegmentResponse(BaseModel):
     message: Optional[str] = None
 
 
+class SegmentationCandidate(BaseModel):
+    dataset_id: str
+    dataset_name: str
+    filename: Optional[str] = None
+    eligible: bool = True
+    row_count: int = 0
+    column_count: int = 0
+    entity_key: Optional[str] = None
+    available_entity_keys: List[str] = []
+    numerical_features: List[str] = []
+    categorical_features: List[str] = []
+    usable_features: List[str] = []
+    excluded_features: List[str] = []
+    suggested_features: List[str] = []
+    suggested_mode: str = "auto"
+    is_rfm_capable: bool = False
+    is_derived: bool = False
+    dataset_type: str = "tabular"
+    reason: Optional[str] = None
+
+
+class ProjectSegmentSchemaResponse(BaseModel):
+    project_id: str
+    dataset_count: int
+    eligible_count: int
+    candidates: List[SegmentationCandidate] = []
+    message: Optional[str] = None
+
+
 class AnomalyPayload(BaseModel):
     sensitivity: float
 

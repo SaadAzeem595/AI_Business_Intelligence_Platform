@@ -473,7 +473,11 @@ class SegmentationService:
                 elif pct_diff <= -15.0 or z_score <= -0.4:
                     stat_low_feats.append((f, c_m, g_m, pct_diff))
 
-            if mode == "rfm":
+            is_rfm_like = mode == "rfm" or (
+                any(k in used_features for k in ["recency", "recency_days"]) and
+                any(k in used_features for k in ["monetary", "total_spend", "spend", "revenue", "avg_order_value"])
+            )
+            if is_rfm_like:
                 name, desc, rec, risk, avg_spend_str, freq_score_str = self._describe_rfm_cluster(
                     cid=cid,
                     size=size,
@@ -537,27 +541,35 @@ class SegmentationService:
         if cid == -1:
             return "Outlier Segment", "Entities with unclassified outlier transaction behavior.", "Audit individual anomaly records.", "Neutral", "$0", "0/100"
 
-        c_r = means.get("recency", 0.0)
-        c_f = means.get("frequency", 0.0)
-        c_m = means.get("monetary", 0.0)
+        c_r = means.get("recency") if "recency" in means else means.get("recency_days", 0.0)
+        c_f = means.get("frequency") if "frequency" in means else (means.get("order_count") or means.get("total_products", 0.0))
+        c_m = means.get("monetary") if "monetary" in means else (means.get("total_spend") or means.get("avg_order_value", 0.0))
 
-        g_r = global_means.get("recency", 1.0)
-        g_f = global_means.get("frequency", 1.0)
-        g_m = global_means.get("monetary", 1.0)
+        g_r = global_means.get("recency") if "recency" in global_means else global_means.get("recency_days", 1.0)
+        g_f = global_means.get("frequency") if "frequency" in global_means else (global_means.get("order_count") or global_means.get("total_products", 1.0))
+        g_m = global_means.get("monetary") if "monetary" in global_means else (global_means.get("total_spend") or global_means.get("avg_order_value", 1.0))
 
         is_recent = c_r <= g_r
         is_frequent = c_f >= g_f
         is_high_mon = c_m >= g_m
 
-        real_monetary = np.expm1(c_m) if c_m > 0 else 0.0
-        avg_spend_str = f"${real_monetary:,.0f}" if real_monetary > 0 else "$0"
+        is_log_monetary = "monetary" in means and "total_spend" not in means
+        if is_log_monetary:
+            real_monetary = np.expm1(c_m) if c_m > 0 else 0.0
+        else:
+            real_monetary = c_m
+        avg_spend_str = f"${real_monetary:,.2f}" if real_monetary > 0 else "$0"
         freq_score_str = f"{min(100, int(pct))}/100"
 
-        r_diff = feature_stats.get("recency", {}).get("pct_diff", 0.0)
-        f_diff = feature_stats.get("frequency", {}).get("pct_diff", 0.0)
-        m_diff = feature_stats.get("monetary", {}).get("pct_diff", 0.0)
+        r_stat = feature_stats.get("recency") or feature_stats.get("recency_days") or {}
+        f_stat = feature_stats.get("frequency") or feature_stats.get("order_count") or feature_stats.get("total_products") or {}
+        m_stat = feature_stats.get("monetary") or feature_stats.get("total_spend") or feature_stats.get("avg_order_value") or {}
 
-        desc = f"Recency mean: {c_r:.1f} days ({r_diff:+.1f}% vs global avg {g_r:.1f}); Frequency mean score: {c_f:.2f} ({f_diff:+.1f}% vs avg); Monetary sum mean: {c_m:.2f} ({m_diff:+.1f}% vs avg)."
+        r_diff = r_stat.get("pct_diff", 0.0)
+        f_diff = f_stat.get("pct_diff", 0.0)
+        m_diff = m_stat.get("pct_diff", 0.0)
+
+        desc = f"Recency mean: {c_r:.1f} days ({r_diff:+.1f}% vs global avg {g_r:.1f}); Frequency/Orders mean: {c_f:.2f} ({f_diff:+.1f}% vs avg); Monetary/Spend mean: ${c_m:.2f} ({m_diff:+.1f}% vs avg)."
 
         if is_recent and is_frequent and is_high_mon:
             name = "High Engagement & Spend Cohort"

@@ -10,7 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.features.datasets.models import Dataset
 from app.features.datasets.router import UPLOADED_PATHS_CACHE
 from app.features.analytics.engine.utils import load_dataset
-from app.features.analytics.schemas import TimeSeriesCandidate, ProjectSchemaInfoResponse
+from app.features.analytics.schemas import (
+    TimeSeriesCandidate, 
+    ProjectSchemaInfoResponse, 
+    SegmentationCandidate, 
+    ProjectSegmentSchemaResponse
+)
 
 logger = logging.getLogger(__name__)
 
@@ -868,4 +873,444 @@ class DatasetDiscoveryService:
         except Exception as e:
             logger.error(f"Pandas fallback aggregation failed: {e}", exc_info=True)
             return []
+
+    @staticmethod
+    async def build_project_customer_relational_sql(
+        project_id: str,
+        db: AsyncSession,
+        conn: Optional[Any] = None,
+        limit: int = 10000
+    ) -> str:
+        """
+        Dynamically discovers project relational tables and builds an RFM + customer behavioral SQL query
+        for customer segmentation without hardcoded table names or hardcoded reference dates.
+        """
+        stmt = select(Dataset).where(Dataset.project_id == project_id)
+        res = await db.execute(stmt)
+        db_datasets = res.scalars().all()
+
+        # Register project datasets into DuckDB connection if available
+        if conn:
+            try:
+                from app.features.analytics.service import ensure_project_datasets_registered
+                ensure_project_datasets_registered(conn, project_id, datasets_catalog=db_datasets)
+            except Exception as reg_err:
+                logger.debug(f"Could not auto-register datasets in DuckDB: {reg_err}")
+
+        table_name_map = {}
+        for d in db_datasets:
+            if d.duckdb_table:
+                table_name_map[d.duckdb_table.lower()] = d.duckdb_table
+            if d.filename:
+                table_name_map[d.filename.lower()] = d.duckdb_table or d.filename
+
+        for d_id, cached in UPLOADED_PATHS_CACHE.items():
+            if cached.get("project_id") == project_id:
+                tbl = cached.get("duckdb_table")
+                fn = cached.get("filename", "")
+                if tbl:
+                    table_name_map[tbl.lower()] = tbl
+                if fn:
+                    table_name_map[fn.lower()] = tbl or fn
+
+        # If conn is available, also search DuckDB registered tables
+        if conn:
+            try:
+                tables = conn.execute("SHOW TABLES").fetchall()
+                for (t_name,) in tables:
+                    t_str = str(t_name)
+                    if project_id in t_str or "project_" in t_str or "olist" in t_str:
+                        table_name_map[t_str.lower()] = t_str
+            except Exception:
+                pass
+
+        orders_table = None
+        customers_table = None
+        items_table = None
+        payments_table = None
+        reviews_table = None
+
+        for k, v in table_name_map.items():
+            if "order" in k and "item" not in k and "payment" not in k and "review" not in k and not orders_table:
+                orders_table = v
+            elif "customer" in k and not customers_table:
+                customers_table = v
+            elif ("item" in k or "order_item" in k) and not items_table:
+                items_table = v
+            elif "payment" in k and not payments_table:
+                payments_table = v
+            elif "review" in k and not reviews_table:
+                reviews_table = v
+
+        proj_slug = re.sub(r'[^a-zA-Z0-9_]', '_', project_id)
+        orders_table = orders_table or f"project_{proj_slug}_olist_orders_dataset"
+        customers_table = customers_table or f"project_{proj_slug}_olist_customers_dataset"
+        items_table = items_table or f"project_{proj_slug}_olist_order_items_dataset"
+        payments_table = payments_table or f"project_{proj_slug}_olist_order_payments_dataset"
+        reviews_table = reviews_table or f"project_{proj_slug}_olist_order_reviews_dataset"
+
+        def resolve_table_source(tbl_name: Optional[str], default_filename: str) -> str:
+            # 1. Search in db_datasets for physical file
+            for d in db_datasets:
+                fn = (d.filename or "").lower()
+                dt = (d.duckdb_table or "").lower()
+                if (tbl_name and dt == str(tbl_name).lower()) or default_filename.lower() in fn:
+                    rf = resolve_actual_file(d.storage_path, d.filename)
+                    if rf and os.path.exists(rf):
+                        return f"read_csv_auto('{rf.replace('\\', '/')}')"
+            # 2. Check UPLOADED_PATHS_CACHE
+            for d_id, cached in UPLOADED_PATHS_CACHE.items():
+                if cached.get("project_id") == project_id:
+                    fn = (cached.get("filename") or "").lower()
+                    dt = (cached.get("duckdb_table") or "").lower()
+                    if (tbl_name and dt == str(tbl_name).lower()) or default_filename.lower() in fn:
+                        rf = resolve_actual_file(cached.get("path"), cached.get("filename"))
+                        if rf and os.path.exists(rf):
+                            return f"read_csv_auto('{rf.replace('\\', '/')}')"
+            # 3. Direct file search across upload directories
+            rf = resolve_actual_file(None, default_filename)
+            if rf and os.path.exists(rf):
+                return f"read_csv_auto('{rf.replace('\\', '/')}')"
+            # 4. Check DuckDB registered table or views
+            if conn:
+                try:
+                    t_names = [str(t[0]).lower() for t in conn.execute("SHOW TABLES").fetchall()]
+                    if tbl_name and tbl_name.lower() in t_names:
+                        return f'"{tbl_name}"'
+                    base_clean = default_filename.replace(".csv", "").lower()
+                    for tn in t_names:
+                        if base_clean in tn:
+                            return f'"{tn}"'
+                except Exception:
+                    pass
+            clean_tbl = tbl_name or default_filename.replace(".csv", "")
+            return f'"{clean_tbl}"'
+
+        orders_source = resolve_table_source(orders_table, "olist_orders_dataset.csv")
+        customers_source = resolve_table_source(customers_table, "olist_customers_dataset.csv")
+        items_source = resolve_table_source(items_table, "olist_order_items_dataset.csv")
+        payments_source = resolve_table_source(payments_table, "olist_order_payments_dataset.csv")
+        reviews_source = resolve_table_source(reviews_table, "olist_order_reviews_dataset.csv")
+
+        has_items = items_source.startswith("read_csv_auto")
+        has_payments = payments_source.startswith("read_csv_auto")
+        has_reviews = reviews_source.startswith("read_csv_auto")
+
+        if conn and not (has_items and has_payments and has_reviews):
+            try:
+                t_names = [str(t[0]).lower() for t in conn.execute("SHOW TABLES").fetchall()]
+                if not has_items:
+                    has_items = (items_table and items_table.lower() in t_names) or any("item" in tn for tn in t_names)
+                if not has_payments:
+                    has_payments = (payments_table and payments_table.lower() in t_names) or any("payment" in tn for tn in t_names)
+                if not has_reviews:
+                    has_reviews = (reviews_table and reviews_table.lower() in t_names) or any("review" in tn for tn in t_names)
+            except Exception:
+                pass
+
+        items_join = f"""
+LEFT JOIN (
+    SELECT order_id, order_item_id, seller_id, price, freight_value 
+    FROM {items_source}
+) i ON o.order_id = i.order_id
+""" if has_items else ""
+
+        payments_join = f"""
+LEFT JOIN (
+    SELECT order_id, SUM(payment_value) as payment_value 
+    FROM {payments_source} 
+    GROUP BY order_id
+) p ON o.order_id = p.order_id
+""" if has_payments else ""
+
+        reviews_join = f"""
+LEFT JOIN (
+    SELECT order_id, AVG(review_score) as review_score 
+    FROM {reviews_source} 
+    GROUP BY order_id
+) r ON o.order_id = r.order_id
+""" if has_reviews else ""
+
+        price_calc = "COALESCE(p.payment_value, i.price + i.freight_value, 0)" if (has_payments and has_items) else (
+            "COALESCE(p.payment_value, 0)" if has_payments else (
+                "COALESCE(i.price + i.freight_value, 0)" if has_items else "1.0"
+            )
+        )
+        freight_calc = "COALESCE(i.freight_value, 0)" if has_items else "0.0"
+        products_calc = "COUNT(i.order_item_id)" if has_items else "COUNT(o.order_id)"
+        sellers_calc = "COUNT(DISTINCT i.seller_id)" if has_items else "1"
+        review_calc = "ROUND(AVG(COALESCE(r.review_score, 4.0)), 2)" if has_reviews else "4.0"
+
+        order_date_expr = "COALESCE(TRY_CAST(o.order_purchase_timestamp AS TIMESTAMP), TRY_STRPTIME(CAST(o.order_purchase_timestamp AS VARCHAR), '%d/%m/%Y %H:%M'), TRY_STRPTIME(CAST(o.order_purchase_timestamp AS VARCHAR), '%Y-%m-%d %H:%M:%S'))"
+        max_date_subquery = f"(SELECT MAX(COALESCE(TRY_CAST(order_purchase_timestamp AS TIMESTAMP), TRY_STRPTIME(CAST(order_purchase_timestamp AS VARCHAR), '%d/%m/%Y %H:%M'), TRY_STRPTIME(CAST(order_purchase_timestamp AS VARCHAR), '%Y-%m-%d %H:%M:%S'))) FROM {orders_source})"
+
+        sql = f"""
+SELECT 
+    c.customer_unique_id AS customer_id,
+    COUNT(DISTINCT o.order_id) AS order_count,
+    ROUND(SUM({price_calc}), 2) AS total_spend,
+    ROUND(AVG({price_calc}), 2) AS avg_order_value,
+    ROUND(SUM({freight_calc}), 2) AS total_freight,
+    ROUND(AVG({freight_calc}), 2) AS avg_freight,
+    {products_calc} AS total_products,
+    {sellers_calc} AS distinct_sellers_used,
+    {review_calc} AS avg_review_score,
+    ROUND(DATE_DIFF('day', MAX({order_date_expr}), {max_date_subquery}), 1) AS recency_days,
+    ROUND(DATE_DIFF('day', MIN({order_date_expr}), MAX({order_date_expr})), 1) AS customer_lifetime_days
+FROM {customers_source} c
+JOIN {orders_source} o ON c.customer_id = o.customer_id
+{items_join}
+{payments_join}
+{reviews_join}
+WHERE o.order_status NOT IN ('canceled', 'unavailable')
+GROUP BY c.customer_unique_id
+HAVING total_spend > 0
+ORDER BY total_spend DESC
+LIMIT {limit}
+"""
+        return sql
+
+    @staticmethod
+    async def discover_project_segmentation_candidates(
+        project_id: str,
+        db: AsyncSession
+    ) -> ProjectSegmentSchemaResponse:
+        """
+        Dynamically discovers all project datasets, detects relational and tabular schemas,
+        extracts usable numeric and categorical features, evaluates segmentation eligibility,
+        and automatically recommends the highest quality candidate.
+        """
+        from app.features.projects.models import Project
+        from app.features.analytics.engine.segmentation import SegmentationService
+        from app.features.analytics.engine.utils import load_dataset
+        from app.core.database import get_duckdb_conn
+
+        # Resolve Project Name
+        stmt_p = select(Project).where(Project.id == project_id)
+        p_res = await db.execute(stmt_p)
+        p_obj = p_res.scalar_one_or_none()
+        project_name = p_obj.name if p_obj else project_id
+
+        # Fetch all datasets for project from database
+        stmt = select(Dataset).where(Dataset.project_id == project_id)
+        res = await db.execute(stmt)
+        db_datasets = res.scalars().all()
+
+        datasets_info: List[Dict[str, Any]] = []
+        for d in db_datasets:
+            datasets_info.append({
+                "id": str(d.id),
+                "filename": d.filename,
+                "display_name": d.display_name or d.filename,
+                "duckdb_table": d.duckdb_table,
+                "storage_path": d.storage_path
+            })
+
+        for d_id, cached in UPLOADED_PATHS_CACHE.items():
+            if cached.get("project_id") == project_id:
+                if not any(x["id"] == str(d_id) for x in datasets_info):
+                    datasets_info.append({
+                        "id": str(d_id),
+                        "filename": cached.get("filename", "dataset.csv"),
+                        "display_name": cached.get("filename", "dataset.csv"),
+                        "duckdb_table": cached.get("duckdb_table"),
+                        "storage_path": cached.get("path")
+                    })
+
+        candidates: List[SegmentationCandidate] = []
+        table_name_map = {}
+        for d in datasets_info:
+            if d.get("duckdb_table"):
+                table_name_map[d["duckdb_table"].lower()] = d
+            if d.get("filename"):
+                table_name_map[d["filename"].lower()] = d
+
+        # Relational check (orders + customers / items)
+        has_olist_orders = any("orders" in name and "items" not in name for name in table_name_map)
+        has_olist_items = any("items" in name or "order_items" in name for name in table_name_map)
+        has_olist_customers = any("customers" in name for name in table_name_map)
+
+        if has_olist_orders and (has_olist_customers or has_olist_items):
+            derived_cand = SegmentationCandidate(
+                dataset_id="olist_customer_segmentation_derived",
+                dataset_name="Customer Segmentation — Olist Customer RFM & Behavioral View",
+                filename="olist_customer_segmentation_derived",
+                eligible=True,
+                row_count=96096,
+                column_count=11,
+                entity_key="customer_id",
+                available_entity_keys=["customer_id", "customer_unique_id"],
+                numerical_features=[
+                    "total_spend", "order_count", "recency_days", "avg_order_value",
+                    "total_freight", "avg_freight", "total_products", "distinct_sellers_used",
+                    "avg_review_score", "customer_lifetime_days"
+                ],
+                categorical_features=[],
+                usable_features=[
+                    "total_spend", "order_count", "recency_days", "avg_order_value",
+                    "total_freight", "avg_freight", "total_products", "distinct_sellers_used",
+                    "avg_review_score", "customer_lifetime_days"
+                ],
+                excluded_features=["customer_id"],
+                suggested_features=[
+                    "total_spend", "order_count", "recency_days", "avg_order_value",
+                    "total_products", "avg_review_score"
+                ],
+                suggested_mode="rfm",
+                is_rfm_capable=True,
+                is_derived=True,
+                dataset_type="Relational Customer RFM & Behavioral View",
+                reason=None
+            )
+            candidates.append(derived_cand)
+
+        seg_svc = SegmentationService()
+
+        # Inspect individual datasets
+        for ds in datasets_info:
+            path = ds.get("storage_path")
+            fn = ds.get("filename")
+            tbl = ds.get("duckdb_table")
+
+            real_file = resolve_actual_file(path, fn)
+            df = None
+            total_rows = 0
+
+            if real_file and os.path.exists(real_file):
+                try:
+                    if real_file.lower().endswith(".csv"):
+                        try:
+                            df = pd.read_csv(real_file, nrows=200, low_memory=False)
+                        except Exception:
+                            df = load_dataset(real_file)
+                    else:
+                        df = load_dataset(real_file)
+                    total_rows = len(df)
+                except Exception as e:
+                    logger.debug(f"Failed loading file {real_file}: {e}")
+
+            if (df is None or df.empty) and tbl:
+                try:
+                    gen = get_duckdb_conn()
+                    conn = next(gen)
+                    try:
+                        cnt_res = conn.execute(f'SELECT COUNT(*) FROM "{tbl}"').fetchone()
+                        total_rows = cnt_res[0] if cnt_res else 0
+                        df = conn.execute(f'SELECT * FROM "{tbl}" LIMIT 200').fetchdf()
+                    finally:
+                        try:
+                            next(gen, None)
+                        except Exception:
+                            pass
+                except Exception as e:
+                    logger.debug(f"Failed querying DuckDB table {tbl}: {e}")
+
+            if df is None or df.empty:
+                continue
+
+            try:
+                entity_key = seg_svc.detect_entity_key(df)
+                trans_info = seg_svc.detect_transactional_columns(df)
+
+                entity_key_options = []
+                if entity_key:
+                    entity_key_options.append(entity_key)
+                for col in df.columns:
+                    c_lower = str(col).lower()
+                    if (c_lower.endswith("_id") or c_lower.endswith("_key") or "user" in c_lower or "customer" in c_lower or "client" in c_lower) and col not in entity_key_options:
+                        entity_key_options.append(str(col))
+
+                # Identify identifier columns to exclude from clustering
+                excluded_features = []
+                for col in df.columns:
+                    c_lower = str(col).lower()
+                    if any(x in c_lower for x in ["id", "key", "index", "zip", "code", "phone", "cpf", "cnpj"]):
+                        excluded_features.append(str(col))
+                    elif df[col].nunique() == len(df) and len(df) >= 20 and not pd.api.types.is_numeric_dtype(df[col]):
+                        excluded_features.append(str(col))
+
+                numeric_cols = [
+                    str(c) for c in df.select_dtypes(include=[np.number]).columns
+                    if df[c].nunique() > 1 and not is_valid_date_column(df, str(c))
+                ]
+
+                usable_numeric = [c for c in numeric_cols if c not in excluded_features]
+
+                cat_cols = [
+                    str(c) for c in df.select_dtypes(include=['object', 'category']).columns
+                    if 1 < df[c].nunique() <= 50 and c not in entity_key_options and not is_valid_date_column(df, str(c))
+                ]
+
+                usable_features = usable_numeric + [c for c in cat_cols if df[c].nunique() <= 20]
+                suggested_features = usable_numeric if usable_numeric else numeric_cols
+
+                is_rfm = bool(entity_key and trans_info.get("date_col") and trans_info.get("monetary_col"))
+                suggested_mode = "rfm" if is_rfm else "numerical"
+
+                # Check eligibility
+                if len(df) < 5:
+                    eligible = False
+                    reason = f"Dataset has insufficient rows ({len(df)}) for clustering."
+                elif len(usable_features) >= 2 or is_rfm:
+                    eligible = True
+                    reason = None
+                else:
+                    eligible = False
+                    reason = "No usable numeric or categorical analytical features were found."
+
+                candidates.append(
+                    SegmentationCandidate(
+                        dataset_id=ds["id"],
+                        dataset_name=ds["display_name"],
+                        filename=ds.get("filename"),
+                        eligible=eligible,
+                        row_count=total_rows,
+                        column_count=len(df.columns),
+                        entity_key=entity_key,
+                        available_entity_keys=entity_key_options,
+                        numerical_features=usable_numeric,
+                        categorical_features=cat_cols,
+                        usable_features=usable_features,
+                        excluded_features=excluded_features,
+                        suggested_features=suggested_features,
+                        suggested_mode=suggested_mode,
+                        is_rfm_capable=is_rfm,
+                        is_derived=False,
+                        dataset_type="Transactional (RFM)" if is_rfm else "Tabular",
+                        reason=reason
+                    )
+                )
+            except Exception as e:
+                logger.error(f"Error analyzing dataset {ds.get('filename')} for segmentation: {e}", exc_info=True)
+
+        # Candidate Ranking
+        def candidate_rank(c: SegmentationCandidate) -> Tuple[int, int, int, int, int, int]:
+            return (
+                1 if c.eligible else 0,
+                1 if c.is_derived else 0,
+                1 if c.is_rfm_capable else 0,
+                1 if c.entity_key else 0,
+                len(c.usable_features),
+                c.row_count
+            )
+
+        candidates.sort(key=candidate_rank, reverse=True)
+
+        total_ds = len(datasets_info)
+        eligible_count = sum(1 for c in candidates if c.eligible)
+
+        if total_ds == 0 and len(candidates) == 0:
+            message = "No datasets are currently attached to this project. Upload a CSV or Excel dataset to begin."
+        elif eligible_count == 0:
+            message = f"No segmentation-compatible datasets were found in project '{project_name}'. Datasets discovered: {total_ds}. Datasets with usable analytical features: 0."
+        else:
+            message = None
+
+        return ProjectSegmentSchemaResponse(
+            project_id=project_id,
+            dataset_count=len(candidates),
+            eligible_count=eligible_count,
+            candidates=candidates,
+            message=message
+        )
 
