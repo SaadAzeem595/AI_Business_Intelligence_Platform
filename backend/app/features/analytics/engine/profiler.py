@@ -129,15 +129,16 @@ class DataProfilerService:
         if pd.api.types.is_datetime64_any_dtype(series):
             return "datetime"
             
-        # Try datetime detection for object columns
+        # Try datetime detection for object columns using DateTimeNormalizer
         if pd.api.types.is_object_dtype(series):
             sample = non_null.head(50)
             try:
                 # Exclude simple integers represented as strings (like "123")
                 is_numeric_str = all(str(x).replace(".", "", 1).isdigit() for x in sample)
                 if not is_numeric_str:
-                    parsed = pd.to_datetime(sample, errors='coerce')
-                    if parsed.notna().sum() / len(sample) > 0.8:
+                    from app.features.analytics.engine.date_normalizer import DateTimeNormalizer
+                    det = DateTimeNormalizer.detect_format(sample.tolist(), str(series.name))
+                    if det.get("detected_type") == "datetime" and det.get("parse_success_rate", 0) >= 0.7:
                         return "datetime"
             except Exception:
                 pass

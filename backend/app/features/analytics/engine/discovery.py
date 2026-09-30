@@ -77,13 +77,13 @@ def is_valid_date_column(df: pd.DataFrame, col_name: str) -> bool:
                     return True
         return False
 
-    # Rule 4: String / object column validation
+    # Rule 4: String / object column validation using DateTimeNormalizer
     if series.dtype == 'object' or isinstance(series.dtype, pd.StringDtype):
         non_null_samples = series.dropna()
         if len(non_null_samples) == 0:
             return False
 
-        sample = non_null_samples.head(40)
+        sample = non_null_samples.head(50)
 
         # Reject columns whose non-null samples are all plain numbers without date separators
         is_all_pure_numbers = True
@@ -95,63 +95,26 @@ def is_valid_date_column(df: pd.DataFrame, col_name: str) -> bool:
         if is_all_pure_numbers:
             return False
 
-        # Attempt robust datetime parsing across sample values
-        parsed = None
-        for parse_func in [
-            lambda s: pd.to_datetime(s, errors='coerce', format='mixed'),
-            lambda s: pd.to_datetime(s, errors='coerce'),
-            lambda s: pd.to_datetime(s, errors='coerce', dayfirst=True)
-        ]:
-            try:
-                cand = parse_func(sample)
-                if cand is not None and cand.dropna().shape[0] > 0:
-                    parsed = cand
-                    break
-            except Exception:
-                continue
-
-        if parsed is not None:
-            valid_parsed = parsed.dropna()
-            if len(valid_parsed) / len(sample) >= 0.7:
-                if valid_parsed.nunique() >= 2:
-                    years = valid_parsed.dt.year
-                    if not ((years < 1900).any() or (years > 2100).any()):
-                        return True
+        from app.features.analytics.engine.date_normalizer import DateTimeNormalizer
+        detection = DateTimeNormalizer.detect_format(sample.tolist(), column_name=col_str)
+        if detection.get("detected_type") == "datetime" and detection.get("parse_success_rate", 0) >= 0.7:
+            return True
 
     return False
 
 
-def build_duckdb_date_expr(col_ref: str) -> str:
-    """Builds a safe, non-throwing COALESCE expression in DuckDB to parse any temporal column format."""
-    return (
-        f'COALESCE('
-        f'TRY_CAST({col_ref} AS TIMESTAMP), '
-        f'try_strptime(CAST({col_ref} AS VARCHAR), \'%Y-%m-%d %H:%M:%S\'), '
-        f'try_strptime(CAST({col_ref} AS VARCHAR), \'%Y-%m-%d %H:%M:%S.%f\'), '
-        f'try_strptime(CAST({col_ref} AS VARCHAR), \'%Y-%m-%dT%H:%M:%S\'), '
-        f'try_strptime(CAST({col_ref} AS VARCHAR), \'%Y-%m-%dT%H:%M:%S.%fZ\'), '
-        f'try_strptime(CAST({col_ref} AS VARCHAR), \'%Y-%m-%d\'), '
-        f'try_strptime(CAST({col_ref} AS VARCHAR), \'%m/%d/%Y %H:%M:%S\'), '
-        f'try_strptime(CAST({col_ref} AS VARCHAR), \'%m/%d/%Y %I:%M:%S %p\'), '
-        f'try_strptime(CAST({col_ref} AS VARCHAR), \'%m/%d/%Y\'), '
-        f'try_strptime(CAST({col_ref} AS VARCHAR), \'%d/%m/%Y %H:%M:%S\'), '
-        f'try_strptime(CAST({col_ref} AS VARCHAR), \'%d/%m/%Y\'), '
-        f'try_strptime(CAST({col_ref} AS VARCHAR), \'%Y/%m/%d %H:%M:%S\'), '
-        f'try_strptime(CAST({col_ref} AS VARCHAR), \'%Y/%m/%d\'), '
-        f'CASE '
-        f'  WHEN TRY_CAST({col_ref} AS DOUBLE) BETWEEN 30000 AND 60000 THEN TRY_CAST(to_timestamp((TRY_CAST({col_ref} AS DOUBLE) - 25569) * 86400) AS TIMESTAMP) '
-        f'  WHEN TRY_CAST({col_ref} AS DOUBLE) BETWEEN 1000000000 AND 2500000000 THEN TRY_CAST(to_timestamp(TRY_CAST({col_ref} AS DOUBLE)) AS TIMESTAMP) '
-        f'  WHEN TRY_CAST({col_ref} AS DOUBLE) BETWEEN 1000000000000 AND 2500000000000 THEN TRY_CAST(to_timestamp(TRY_CAST({col_ref} AS DOUBLE) / 1000.0) AS TIMESTAMP) '
-        f'  ELSE NULL '
-        f'END'
-        f')'
-    )
+def build_duckdb_date_expr(col_ref: str, detected_format: Optional[str] = None) -> str:
+    """Builds a safe, non-throwing COALESCE expression in DuckDB using DateTimeNormalizer."""
+    from app.features.analytics.engine.date_normalizer import DateTimeNormalizer
+    return DateTimeNormalizer.get_duckdb_date_expression(col_ref, detected_format)
 
 
 def resolve_actual_file(storage_path: Optional[str], filename: Optional[str] = None) -> Optional[str]:
     """Resolves dataset file path on host or container across candidate storage locations."""
     if storage_path and os.path.exists(storage_path):
         return storage_path
+
+    candidates = []
 
     backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     root_dir = os.path.dirname(backend_dir)
@@ -168,6 +131,7 @@ def resolve_actual_file(storage_path: Optional[str], filename: Optional[str] = N
         os.path.join(os.getcwd(), "uploads"),
         os.path.join(os.getcwd(), "sample_data"),
         "/app/uploads",
+        "/app/app/uploads",
         "/app/backend/uploads",
         "/app/backend/app/uploads",
         "backend/app/uploads",
@@ -190,13 +154,16 @@ def resolve_actual_file(storage_path: Optional[str], filename: Optional[str] = N
                 continue
             target = os.path.join(cdir, fn)
             if os.path.exists(target):
-                return target
+                candidates.append(target)
             try:
                 for af in os.listdir(cdir):
                     if af == fn or af.endswith(f"_{fn}") or af.lower().endswith(fn.lower()) or af.lower().endswith(f"_{fn.lower()}"):
-                        return os.path.join(cdir, af)
+                        candidates.append(os.path.join(cdir, af))
             except Exception:
                 pass
+
+    if candidates:
+        return max(set(candidates), key=lambda p: os.path.getsize(p) if os.path.exists(p) else 0)
     return None
 
 
@@ -259,7 +226,22 @@ class DatasetDiscoveryService:
         has_olist_orders = any("orders" in name and "items" not in name for name in table_name_map)
         has_olist_items = any("items" in name or "order_items" in name for name in table_name_map)
 
+        from app.features.analytics.engine.date_normalizer import DateTimeNormalizer
+        from app.features.analytics.schemas import DateDetectionMetadata
+
         if has_olist_orders and has_olist_items:
+            olist_date_det = None
+            orders_info = table_name_map.get("olist_orders_dataset") or next((d for name, d in table_name_map.items() if "orders" in name), None)
+            if orders_info:
+                real_orders_file = resolve_actual_file(orders_info.get("storage_path"), orders_info.get("filename"))
+                if real_orders_file and os.path.exists(real_orders_file):
+                    try:
+                        sdf = pd.read_csv(real_orders_file, usecols=["order_purchase_timestamp"], nrows=100)
+                        raw_det = DateTimeNormalizer.detect_format(sdf["order_purchase_timestamp"].dropna().tolist(), "order_purchase_timestamp")
+                        olist_date_det = DateDetectionMetadata(**raw_det)
+                    except Exception:
+                        pass
+
             candidates.append(
                 TimeSeriesCandidate(
                     dataset_id="olist_relational_derived",
@@ -271,7 +253,8 @@ class DatasetDiscoveryService:
                     suggested_date="order_purchase_timestamp",
                     suggested_metric="total_order_value (price + freight_value)",
                     dataset_type="Transactional / Time Series",
-                    is_time_series_capable=True
+                    is_time_series_capable=True,
+                    detected_date_metadata=olist_date_det
                 )
             )
 
@@ -362,6 +345,14 @@ class DatasetDiscoveryService:
                 if not suggested_metric and metric_cols:
                     suggested_metric = metric_cols[0]
 
+                detected_date_meta = None
+                if suggested_date and suggested_date in df.columns:
+                    try:
+                        raw_det = DateTimeNormalizer.detect_format(df[suggested_date].dropna().head(100).tolist(), suggested_date)
+                        detected_date_meta = DateDetectionMetadata(**raw_det)
+                    except Exception:
+                        pass
+
                 candidates.append(
                     TimeSeriesCandidate(
                         dataset_id=ds["id"],
@@ -373,7 +364,8 @@ class DatasetDiscoveryService:
                         suggested_date=suggested_date,
                         suggested_metric=suggested_metric,
                         dataset_type=dataset_type,
-                        is_time_series_capable=is_ts_capable
+                        is_time_series_capable=is_ts_capable,
+                        detected_date_metadata=detected_date_meta
                     )
                 )
             except Exception as e:
@@ -402,13 +394,17 @@ class DatasetDiscoveryService:
         target_column: Optional[str],
         aggregation: str = "monthly",
         group_by: Optional[str] = None,
-        db: Optional[AsyncSession] = None
+        db: Optional[AsyncSession] = None,
+        user_date_format: Optional[str] = None
     ) -> Tuple[str, Dict[str, Any]]:
         """
         Constructs schema-aware DuckDB SQL query to aggregate project datasets into clean time-series.
         Supports single datasets as well as relational joins (e.g. Olist dataset).
         Resolves table name dynamically from DB metadata or uploaded cache.
+        Uses DateTimeNormalizer for dynamic format detection and safe SQL expression generation.
         """
+        from app.features.analytics.engine.date_normalizer import DateTimeNormalizer
+
         agg_fmt = "month"
         if aggregation.lower() == "daily":
             agg_fmt = "day"
@@ -427,6 +423,7 @@ class DatasetDiscoveryService:
             items_source = "olist_order_items_dataset"
             products_source = None
             customers_source = None
+            orders_real_file = None
 
             if db:
                 from app.features.datasets.models import Dataset
@@ -441,6 +438,7 @@ class DatasetDiscoveryService:
                         if real_file:
                             clean_p = real_file.replace("\\", "/")
                             orders_source = f"read_csv_auto('{clean_p}')"
+                            orders_real_file = real_file
                         elif d_table:
                             orders_source = f'"{d_table}"'
                     elif "items" in fname or "order_items" in fname:
@@ -465,8 +463,38 @@ class DatasetDiscoveryService:
                         elif d_table:
                             customers_source = f'"{d_table}"'
 
-            # Build FROM clause with joined tables
-            from_clause = f"{orders_source} orders JOIN {items_source} items ON orders.order_id = items.order_id"
+            if not orders_real_file:
+                orders_real_file = resolve_actual_file(None, "olist_orders_dataset.csv")
+
+            # Sample dates from orders file or table for dynamic format detection
+            sample_dates = []
+            if orders_real_file and os.path.exists(orders_real_file):
+                try:
+                    sdf = pd.read_csv(orders_real_file, usecols=[date_col], nrows=100)
+                    sample_dates = sdf[date_col].dropna().tolist()
+                except Exception:
+                    pass
+
+            if not sample_dates:
+                try:
+                    from app.core.database import get_duckdb_conn
+                    gen = get_duckdb_conn()
+                    c = next(gen)
+                    res = c.execute(f'SELECT CAST("{date_col}" AS VARCHAR) FROM {orders_source} WHERE "{date_col}" IS NOT NULL LIMIT 100').fetchall()
+                    sample_dates = [r[0] for r in res if r and r[0]]
+                except Exception:
+                    pass
+
+            date_meta = DateTimeNormalizer.get_cached_or_detect(
+                cache_key=f"{project_id}:olist:{date_col}",
+                sample_values=sample_dates,
+                column_name=date_col,
+                user_format=user_date_format
+            )
+            detected_duckdb_format = date_meta.get("duckdb_format")
+
+            # Build FROM clause with joined tables (LEFT JOIN to prevent dropping orders if items table is subset or sparse)
+            from_clause = f"{orders_source} orders LEFT JOIN {items_source} items ON orders.order_id = items.order_id"
             if products_source:
                 from_clause += f" LEFT JOIN {products_source} products ON items.product_id = products.product_id"
             if customers_source:
@@ -507,7 +535,7 @@ class DatasetDiscoveryService:
                     select_group = f", {grp_col} AS group_key"
                     group_sql = f", {grp_col}"
 
-            date_expr = build_duckdb_date_expr(f'orders."{date_col}"')
+            date_expr = build_duckdb_date_expr(f'orders."{date_col}"', detected_duckdb_format)
 
             sql = f"""
             SELECT 
@@ -519,7 +547,12 @@ class DatasetDiscoveryService:
             GROUP BY 1 {group_sql}
             ORDER BY 1 ASC
             """
-            return sql, {"dataset_name": "Olist E-Commerce (Derived Join)", "date_column": date_col, "target_column": target_column or "total_order_value"}
+            return sql, {
+                "dataset_name": "Olist E-Commerce (Derived Join)",
+                "date_column": date_col,
+                "target_column": target_column or "total_order_value",
+                "date_detection": date_meta
+            }
 
         # Single table query resolution
         from app.features.datasets.router import UPLOADED_PATHS_CACHE
@@ -567,6 +600,37 @@ class DatasetDiscoveryService:
 
         date_col = date_column or "date"
         target_col = target_column or "revenue"
+
+        # Sample dates from single dataset file for dynamic format detection
+        sample_dates = []
+        if real_file and os.path.exists(real_file):
+            try:
+                if real_file.lower().endswith(".csv"):
+                    sdf = pd.read_csv(real_file, usecols=[date_col], nrows=100)
+                else:
+                    sdf = load_dataset(real_file)[[date_col]].head(100)
+                sample_dates = sdf[date_col].dropna().tolist()
+            except Exception:
+                pass
+
+        if not sample_dates:
+            try:
+                from app.core.database import get_duckdb_conn
+                gen = get_duckdb_conn()
+                c = next(gen)
+                res = c.execute(f'SELECT CAST("{date_col}" AS VARCHAR) FROM {from_clause} WHERE "{date_col}" IS NOT NULL LIMIT 100').fetchall()
+                sample_dates = [r[0] for r in res if r and r[0]]
+            except Exception:
+                pass
+
+        date_meta = DateTimeNormalizer.get_cached_or_detect(
+            cache_key=f"{project_id}:{dataset_id or 'dataset'}:{date_col}",
+            sample_values=sample_dates,
+            column_name=date_col,
+            user_format=user_date_format
+        )
+        detected_duckdb_format = date_meta.get("duckdb_format")
+
         select_group = ""
         group_sql = ""
         if group_by and str(group_by).strip().lower() not in ["", "none", "null", "all", "undefined"]:
@@ -574,7 +638,7 @@ class DatasetDiscoveryService:
             select_group = f', "{clean_grp}" AS group_key'
             group_sql = f', "{clean_grp}"'
 
-        date_expr = build_duckdb_date_expr(f'"{date_col}"')
+        date_expr = build_duckdb_date_expr(f'"{date_col}"', detected_duckdb_format)
 
         target_str = str(target_col).lower()
         if "row_count" in target_str or target_str in ["count", "record_count", "records"]:
@@ -594,7 +658,12 @@ class DatasetDiscoveryService:
         ORDER BY 1 ASC
         """
 
-        return sql, {"dataset_name": ds_name, "date_column": date_col, "target_column": target_col}
+        return sql, {
+            "dataset_name": ds_name,
+            "date_column": date_col,
+            "target_column": target_col,
+            "date_detection": date_meta
+        }
 
     @staticmethod
     def build_time_series_query(
@@ -603,7 +672,8 @@ class DatasetDiscoveryService:
         date_column: Optional[str],
         target_column: Optional[str],
         aggregation: str = "monthly",
-        group_by: Optional[str] = None
+        group_by: Optional[str] = None,
+        user_date_format: Optional[str] = None
     ) -> Tuple[str, Dict[str, Any]]:
         from app.core.cache import run_async_as_sync
         try:
@@ -614,7 +684,8 @@ class DatasetDiscoveryService:
                     date_column=date_column,
                     target_column=target_column,
                     aggregation=aggregation,
-                    group_by=group_by
+                    group_by=group_by,
+                    user_date_format=user_date_format
                 )
             )
         except Exception:
@@ -634,13 +705,15 @@ class DatasetDiscoveryService:
         target_column: Optional[str],
         aggregation: str = "monthly",
         group_by: Optional[str] = None,
-        db: Optional[AsyncSession] = None
+        db: Optional[AsyncSession] = None,
+        user_date_format: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Resilient Pandas fallback that directly reads files and computes time-series aggregation
         if DuckDB query returns zero rows or encounters SQL syntax/path resolution edge cases.
+        Uses DateTimeNormalizer for dynamic date parsing and format adherence.
         """
-        from app.features.analytics.engine.forecasting import safe_parse_datetime_series
+        from app.features.analytics.engine.date_normalizer import DateTimeNormalizer
         from app.features.datasets.models import Dataset
         from app.core.json_utils import make_json_serializable
 
@@ -677,14 +750,14 @@ class DatasetDiscoveryService:
                 df_orders = pd.read_csv(orders_file, low_memory=False)
                 df_items = pd.read_csv(items_file, low_memory=False)
 
-                df = pd.merge(df_orders, df_items, on="order_id", how="inner")
+                df = pd.merge(df_orders, df_items, on="order_id", how="left")
                 d_col = date_column or "order_purchase_timestamp"
                 if d_col not in df.columns:
                     d_col = next((c for c in df.columns if "date" in c.lower() or "timestamp" in c.lower()), None)
                 if not d_col:
                     return []
 
-                parsed_dates = safe_parse_datetime_series(df[d_col])
+                parsed_dates = DateTimeNormalizer.normalize_series(df[d_col], user_format=user_date_format, column_name=d_col)
                 df["date_bucket"] = parsed_dates.dt.to_period(freq_period).dt.to_timestamp()
 
                 target_str = str(target_column or "").lower()
@@ -757,7 +830,7 @@ class DatasetDiscoveryService:
             if not d_col:
                 return []
 
-            parsed_dates = safe_parse_datetime_series(df[d_col])
+            parsed_dates = DateTimeNormalizer.normalize_series(df[d_col], user_format=user_date_format, column_name=d_col)
             df["date_bucket"] = parsed_dates.dt.to_period(freq_period).dt.to_timestamp()
 
             t_col = target_column

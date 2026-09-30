@@ -186,6 +186,61 @@ class SQLResponse(BaseModel):
 # Production-Grade Time Series Forecasting Schemas
 # ==========================================
 
+class DateDetectionMetadata(BaseModel):
+    model_config = {"extra": "ignore"}
+    column: Optional[str] = None
+    source_column: Optional[str] = None
+    type: str = "datetime"
+    detected_type: Optional[str] = "datetime"
+    format: Optional[str] = None
+    detected_format: Optional[str] = None
+    confidence: float = 1.0
+    valid_count: int = 0
+    invalid_count: int = 0
+    parse_success_rate: float = 1.0
+    min: Optional[str] = None
+    max: Optional[str] = None
+    min_timestamp: Optional[str] = None
+    max_timestamp: Optional[str] = None
+    is_ambiguous: bool = False
+    ambiguous: bool = False
+    candidate_formats: List[str] = []
+    warnings: List[str] = []
+
+    def __init__(self, **data: Any):
+        if "column" not in data and "source_column" in data:
+            data["column"] = data["source_column"]
+        elif "source_column" not in data and "column" in data:
+            data["source_column"] = data["column"]
+
+        if "format" not in data and "detected_format" in data:
+            data["format"] = data["detected_format"]
+        elif "detected_format" not in data and "format" in data:
+            data["detected_format"] = data["format"]
+
+        if "type" not in data and "detected_type" in data:
+            data["type"] = data["detected_type"]
+        elif "detected_type" not in data and "type" in data:
+            data["detected_type"] = data["type"]
+
+        if "min" not in data and "min_timestamp" in data:
+            data["min"] = data["min_timestamp"]
+        elif "min_timestamp" not in data and "min" in data:
+            data["min_timestamp"] = data["min"]
+
+        if "max" not in data and "max_timestamp" in data:
+            data["max"] = data["max_timestamp"]
+        elif "max_timestamp" not in data and "max" in data:
+            data["max_timestamp"] = data["max"]
+
+        if "ambiguous" not in data and "is_ambiguous" in data:
+            data["ambiguous"] = data["is_ambiguous"]
+        elif "is_ambiguous" not in data and "ambiguous" in data:
+            data["is_ambiguous"] = data["ambiguous"]
+
+        super().__init__(**data)
+
+
 class ProjectForecastRequest(BaseModel):
     dataset_id: Optional[str] = Field(None, description="ID of specific dataset to forecast, or auto-detect if None")
     date_column: Optional[str] = Field(None, description="Date/timestamp column name")
@@ -195,6 +250,7 @@ class ProjectForecastRequest(BaseModel):
     group_by: Optional[str] = Field(None, description="Optional column to group/breakdown forecast by (e.g. category)")
     model: str = Field("auto", description="Forecasting model choice: 'auto', 'arima', 'prophet', 'naive'")
     confidence: float = Field(0.95, description="Confidence level (0.80 - 0.99)")
+    user_date_format: Optional[str] = Field(None, description="Optional user-selected date format override (e.g. 'DD/MM/YYYY')")
 
 
 class TimelinePointDetailed(BaseModel):
@@ -252,6 +308,7 @@ class ProjectForecastResponse(BaseModel):
     category_forecasts: List[CategoryForecast] = []
     diagnostics: Dict[str, Any] = {}
     message: Optional[str] = None
+    date_detection: Optional[DateDetectionMetadata] = None
 
 
 class TimeSeriesCandidate(BaseModel):
@@ -265,6 +322,7 @@ class TimeSeriesCandidate(BaseModel):
     suggested_metric: Optional[str] = None
     dataset_type: str = Field("Transactional / Time Series", description="Classification of dataset: 'Transactional / Time Series', 'Dimension / Master Data', 'Reference Data', 'Other'")
     is_time_series_capable: bool = True
+    detected_date_metadata: Optional[DateDetectionMetadata] = None
 
 
 class ProjectSchemaInfoResponse(BaseModel):

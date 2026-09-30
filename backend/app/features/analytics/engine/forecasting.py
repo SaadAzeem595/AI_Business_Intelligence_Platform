@@ -36,40 +36,11 @@ from sklearn.metrics import mean_absolute_error, root_mean_squared_error
 
 def safe_parse_datetime_series(series: pd.Series) -> pd.Series:
     """
-    Safely parses a pandas Series to datetime64[ns], handling:
-    - Standard ISO/YYYY-MM-DD strings
-    - Slash formats (MM/DD/YYYY, DD/MM/YYYY, YYYY/MM/DD)
-    - Excel date serial numbers (e.g. 44196)
-    - Unix epoch timestamps
+    Safely parses a pandas Series to datetime64[ns] using DateTimeNormalizer,
+    handling ISO, European (DD/MM/YYYY H:MM), US, Excel serials, and Unix epochs.
     """
-    if pd.api.types.is_datetime64_any_dtype(series):
-        return series
-
-    if pd.api.types.is_numeric_dtype(series):
-        num = series.dropna()
-        if len(num) > 0 and ((num >= 30000) & (num <= 60000)).all():
-            return pd.to_datetime(series, unit='D', origin='1899-12-30', errors='coerce')
-        elif len(num) > 0 and ((num >= 1e9) & (num <= 2e9)).all():
-            return pd.to_datetime(series, unit='s', errors='coerce')
-
-    try:
-        res = pd.to_datetime(series, errors='coerce', format='mixed')
-        if res.dropna().shape[0] > 0:
-            return res
-    except Exception:
-        pass
-
-    try:
-        res = pd.to_datetime(series, errors='coerce')
-        if res.dropna().shape[0] > 0:
-            return res
-    except Exception:
-        pass
-
-    try:
-        return pd.to_datetime(series, errors='coerce', dayfirst=True)
-    except Exception:
-        return pd.to_datetime(series, errors='coerce')
+    from app.features.analytics.engine.date_normalizer import DateTimeNormalizer
+    return DateTimeNormalizer.normalize_series(series)
 
 
 def validate_and_prepare_timeseries(

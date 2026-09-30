@@ -235,12 +235,15 @@ class ExecutiveReportContextBuilder:
         # Inspect date range from DuckDB tables
         if is_olist_project:
             try:
-                min_max = duckdb_conn.execute("""
+                from app.features.analytics.engine.date_normalizer import DateTimeNormalizer
+                d_expr = DateTimeNormalizer.get_duckdb_date_expression('o.order_purchase_timestamp')
+                min_max = duckdb_conn.execute(f"""
                     SELECT 
-                        MIN(CAST(o.order_purchase_timestamp AS TIMESTAMP)), 
-                        MAX(CAST(o.order_purchase_timestamp AS TIMESTAMP)) 
+                        MIN({d_expr}), 
+                        MAX({d_expr}) 
                     FROM olist_orders_dataset o
                     JOIN olist_order_items_dataset i ON o.order_id = i.order_id
+                    WHERE {d_expr} IS NOT NULL
                 """).fetchone()
                 if min_max and min_max[0] and min_max[1]:
                     dataset_min_date = min_max[0] if isinstance(min_max[0], datetime) else datetime.fromisoformat(str(min_max[0]))
@@ -256,7 +259,9 @@ class ExecutiveReportContextBuilder:
                 date_candidates = [c for c in sample_df.columns if any(k in c.lower() for k in ['date', 'time', 'timestamp', 'created_at', 'transaction_date'])]
                 if date_candidates:
                     dc = date_candidates[0]
-                    res = duckdb_conn.execute(f"SELECT MIN(TRY_CAST({dc} AS TIMESTAMP)), MAX(TRY_CAST({dc} AS TIMESTAMP)) FROM read_csv_auto('{clean_p}')").fetchone()
+                    from app.features.analytics.engine.date_normalizer import DateTimeNormalizer
+                    d_expr = DateTimeNormalizer.get_duckdb_date_expression(f'"{dc}"')
+                    res = duckdb_conn.execute(f"SELECT MIN({d_expr}), MAX({d_expr}) FROM read_csv_auto('{clean_p}') WHERE {d_expr} IS NOT NULL").fetchone()
                     if res and res[0] and res[1]:
                         dataset_min_date = res[0] if isinstance(res[0], datetime) else datetime.fromisoformat(str(res[0]))
                         dataset_max_date = res[1] if isinstance(res[1], datetime) else datetime.fromisoformat(str(res[1]))
@@ -322,6 +327,8 @@ class ExecutiveReportContextBuilder:
             t0 = time.perf_counter()
             try:
                 if is_olist_project:
+                    from app.features.analytics.engine.date_normalizer import DateTimeNormalizer
+                    d_expr = DateTimeNormalizer.get_duckdb_date_expression('o.order_purchase_timestamp')
                     sql_agg_q = f"""
                         SELECT 
                             COUNT(DISTINCT o.order_id) as total_orders,
@@ -331,7 +338,7 @@ class ExecutiveReportContextBuilder:
                             ROUND(COALESCE(SUM(i.price) / NULLIF(COUNT(DISTINCT o.order_id), 0), 0), 2) as avg_order_value
                         FROM olist_orders_dataset o
                         JOIN olist_order_items_dataset i ON o.order_id = i.order_id
-                        WHERE CAST(o.order_purchase_timestamp AS TIMESTAMP) BETWEEN TIMESTAMP '{start_date_str}' AND TIMESTAMP '{end_date_str}'
+                        WHERE {d_expr} BETWEEN TIMESTAMP '{start_date_str}' AND TIMESTAMP '{end_date_str}'
                     """
                     agg_row = duckdb_conn.execute(sql_agg_q).fetchone()
                     total_orders = int(agg_row[0] or 0)
@@ -527,12 +534,15 @@ class ExecutiveReportContextBuilder:
             try:
                 # Construct historical time-series aggregation from DuckDB across actual dataset history
                 if is_olist_project:
-                    ts_query = """
+                    from app.features.analytics.engine.date_normalizer import DateTimeNormalizer
+                    d_expr = DateTimeNormalizer.get_duckdb_date_expression('o.order_purchase_timestamp')
+                    ts_query = f"""
                         SELECT 
-                            CAST(DATE_TRUNC('month', CAST(o.order_purchase_timestamp AS TIMESTAMP)) AS DATE) as date,
+                            CAST(DATE_TRUNC('month', {d_expr}) AS DATE) as date,
                             ROUND(SUM(i.price), 2) as revenue
                         FROM olist_orders_dataset o
                         JOIN olist_order_items_dataset i ON o.order_id = i.order_id
+                        WHERE {d_expr} IS NOT NULL
                         GROUP BY 1
                         ORDER BY 1
                     """
@@ -804,6 +814,8 @@ class ExecutiveReportContextBuilder:
             t0 = time.perf_counter()
             try:
                 if is_olist_project:
+                    from app.features.analytics.engine.date_normalizer import DateTimeNormalizer
+                    d_expr = DateTimeNormalizer.get_duckdb_date_expression('o.order_purchase_timestamp')
                     seg_query = f"""
                         SELECT 
                             o.customer_id,
@@ -811,7 +823,7 @@ class ExecutiveReportContextBuilder:
                             ROUND(SUM(i.price), 2) as total_spent
                         FROM olist_orders_dataset o
                         JOIN olist_order_items_dataset i ON o.order_id = i.order_id
-                        WHERE CAST(o.order_purchase_timestamp AS TIMESTAMP) BETWEEN TIMESTAMP '{start_date_str}' AND TIMESTAMP '{end_date_str}'
+                        WHERE {d_expr} BETWEEN TIMESTAMP '{start_date_str}' AND TIMESTAMP '{end_date_str}'
                         GROUP BY 1
                         LIMIT 10000
                     """
@@ -911,14 +923,16 @@ class ExecutiveReportContextBuilder:
             t0 = time.perf_counter()
             try:
                 if is_olist_project:
+                    from app.features.analytics.engine.date_normalizer import DateTimeNormalizer
+                    d_expr = DateTimeNormalizer.get_duckdb_date_expression('o.order_purchase_timestamp')
                     daily_q = f"""
                         SELECT 
-                            CAST(o.order_purchase_timestamp AS DATE) as purchase_date,
+                            CAST({d_expr} AS DATE) as purchase_date,
                             ROUND(SUM(i.price), 2) as daily_revenue,
                             COUNT(DISTINCT o.order_id) as order_count
                         FROM olist_orders_dataset o
                         JOIN olist_order_items_dataset i ON o.order_id = i.order_id
-                        WHERE CAST(o.order_purchase_timestamp AS TIMESTAMP) BETWEEN TIMESTAMP '{start_date_str}' AND TIMESTAMP '{end_date_str}'
+                        WHERE {d_expr} BETWEEN TIMESTAMP '{start_date_str}' AND TIMESTAMP '{end_date_str}'
                         GROUP BY 1
                         ORDER BY 1
                     """
@@ -1075,15 +1089,17 @@ class ExecutiveReportContextBuilder:
         trend_values = []
         try:
             if is_olist_project:
+                from app.features.analytics.engine.date_normalizer import DateTimeNormalizer
+                d_expr = DateTimeNormalizer.get_duckdb_date_expression('o.order_purchase_timestamp')
                 chart_q = f"""
                     SELECT 
-                        STRFTIME(CAST(o.order_purchase_timestamp AS TIMESTAMP), '%b %Y') as period_label,
+                        STRFTIME({d_expr}, '%b %Y') as period_label,
                         ROUND(SUM(i.price), 2) as revenue
                     FROM olist_orders_dataset o
                     JOIN olist_order_items_dataset i ON o.order_id = i.order_id
-                    WHERE CAST(o.order_purchase_timestamp AS TIMESTAMP) BETWEEN TIMESTAMP '{start_date_str}' AND TIMESTAMP '{end_date_str}'
-                    GROUP BY DATE_TRUNC('month', CAST(o.order_purchase_timestamp AS TIMESTAMP)), STRFTIME(CAST(o.order_purchase_timestamp AS TIMESTAMP), '%b %Y')
-                    ORDER BY DATE_TRUNC('month', CAST(o.order_purchase_timestamp AS TIMESTAMP))
+                    WHERE {d_expr} BETWEEN TIMESTAMP '{start_date_str}' AND TIMESTAMP '{end_date_str}'
+                    GROUP BY DATE_TRUNC('month', {d_expr}), STRFTIME({d_expr}, '%b %Y')
+                    ORDER BY DATE_TRUNC('month', {d_expr})
                 """
                 chart_rows = duckdb_conn.execute(chart_q).fetchall()
                 if chart_rows:

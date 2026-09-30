@@ -13,6 +13,21 @@ export interface ForecastResult {
   }[];
 }
 
+export interface DateDetectionMetadata {
+  column: string;
+  type: string;
+  format?: string;
+  confidence: number;
+  valid_count: number;
+  invalid_count: number;
+  parse_success_rate: number;
+  min?: string;
+  max?: string;
+  is_ambiguous: boolean;
+  candidate_formats: string[];
+  warnings: string[];
+}
+
 export interface TimeSeriesCandidate {
   dataset_id: string;
   dataset_name: string;
@@ -24,6 +39,7 @@ export interface TimeSeriesCandidate {
   suggested_metric?: string;
   dataset_type?: string;
   is_time_series_capable?: boolean;
+  detected_date_metadata?: DateDetectionMetadata;
 }
 
 export interface ProjectSchemaInfoResponse {
@@ -87,6 +103,7 @@ export interface ProjectForecastResponse {
   category_forecasts: CategoryForecast[];
   diagnostics: Record<string, any>;
   message?: string;
+  date_detection?: DateDetectionMetadata;
 }
 
 export interface ProjectForecastRequest {
@@ -98,6 +115,7 @@ export interface ProjectForecastRequest {
   group_by?: string;
   model?: string;
   confidence?: number;
+  user_date_format?: string;
 }
 
 export interface CohortSegment {

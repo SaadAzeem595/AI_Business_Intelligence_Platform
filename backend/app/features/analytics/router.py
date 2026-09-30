@@ -351,7 +351,8 @@ async def run_project_forecast(
         target_column=payload.target_column,
         aggregation=payload.aggregation,
         group_by=payload.group_by,
-        db=db
+        db=db,
+        user_date_format=payload.user_date_format
     )
 
     logger.info(
@@ -381,7 +382,8 @@ async def run_project_forecast(
                 target_column=payload.target_column or meta.get("target_column"),
                 aggregation=payload.aggregation,
                 group_by=payload.group_by,
-                db=db
+                db=db,
+                user_date_format=payload.user_date_format
             )
         except Exception as e:
             logger.error("Pandas fallback execution failed: %s", str(e), exc_info=True)
@@ -391,13 +393,37 @@ async def run_project_forecast(
         project_id, payload.dataset_id, len(rows)
     )
 
+    raw_det = meta.get("date_detection") or {}
+    det_meta_obj = None
+    if raw_det:
+        from app.features.analytics.schemas import DateDetectionMetadata
+        try:
+            det_meta_obj = DateDetectionMetadata(**raw_det)
+        except Exception:
+            pass
+
     if not rows:
+        d_fmt = raw_det.get("detected_format") or "Unknown"
+        v_cnt = raw_det.get("valid_count", 0)
+        inv_cnt = raw_det.get("invalid_count", 0)
+        d_col = meta.get("date_column") or payload.date_column or "date"
+
+        if raw_det.get("parse_success_rate", 1.0) == 0.0 and inv_cnt > 0:
+            err_msg = (
+                f"DataPilot could not safely parse the selected date column '{d_col}'. "
+                f"Detected format: {d_fmt}. Parsed: {v_cnt}, Invalid: {inv_cnt}. "
+                f"Please review the detected format or choose another date column."
+            )
+        else:
+            err_msg = "No time-series rows returned from dataset query. Check that date and metric columns contain data."
+
         return ProjectForecastResponse(
             status="error",
             project_id=project_id,
             dataset_id=payload.dataset_id,
             dataset_name=meta.get("dataset_name"),
-            message="No time-series rows returned from dataset query. Check that date and metric columns contain data."
+            message=err_msg,
+            date_detection=det_meta_obj
         )
 
     df = pd.DataFrame(rows)
@@ -425,6 +451,9 @@ async def run_project_forecast(
         group_by=payload.group_by
     )
 
+    if det_meta_obj:
+        forecast_res.date_detection = det_meta_obj
+
     hist_count = sum(1 for p in forecast_res.timeline if p.actual is not None)
     fore_count = sum(1 for p in forecast_res.timeline if p.forecast is not None)
     logger.info(
@@ -433,7 +462,6 @@ async def run_project_forecast(
     )
 
     return forecast_res
-
 
 @router.get("/forecasting/health", tags=["Health & Status Checks"])
 @router.get("/projects/{project_id}/forecast/health", tags=["Health & Status Checks"])

@@ -32,7 +32,8 @@ import {
   ArrowUpRight,
   ArrowDownRight,
   ShieldCheck,
-  Zap
+  Zap,
+  AlertTriangle
 } from "lucide-react";
 import { cn } from "@/shared/lib/utils";
 import { PlanGate } from "@/features/billing/components/PlanGate";
@@ -62,6 +63,7 @@ export default function ForecastingPage() {
   // Active form selection state
   const [selectedCandidateId, setSelectedCandidateId] = useState<string>("");
   const [dateColumn, setDateColumn] = useState<string>("");
+  const [userDateFormat, setUserDateFormat] = useState<string>("");
   const [targetMetric, setTargetMetric] = useState<string>("");
   const [aggregation, setAggregation] = useState<"daily" | "weekly" | "monthly">("monthly");
   const [horizon, setHorizon] = useState<number>(6);
@@ -105,7 +107,8 @@ export default function ForecastingPage() {
           horizon: 6,
           group_by: undefined,
           model: "auto",
-          confidence: 0.95
+          confidence: 0.95,
+          user_date_format: userDateFormat || undefined
         });
       }
     }
@@ -130,7 +133,8 @@ export default function ForecastingPage() {
           horizon: horizon,
           group_by: undefined,
           model: modelChoice,
-          confidence: confidence / 100.0
+          confidence: confidence / 100.0,
+          user_date_format: userDateFormat || undefined
         });
       }
     }
@@ -154,11 +158,13 @@ export default function ForecastingPage() {
       horizon: horizon,
       group_by: groupBy || undefined,
       model: modelChoice,
-      confidence: confidence / 100.0
+      confidence: confidence / 100.0,
+      user_date_format: userDateFormat || undefined
     });
   };
 
   const selectedCandidate = candidates.find(c => c.dataset_id === selectedCandidateId);
+  const activeDateMeta = forecastResult?.date_detection || selectedCandidate?.detected_date_metadata;
 
   // Model Evaluation Columns for Diagnostics Table
   const metricColumns: Column<ForecastModelMetrics>[] = [
@@ -347,7 +353,10 @@ export default function ForecastingPage() {
                 </label>
                 <select
                   value={dateColumn}
-                  onChange={(e) => setDateColumn(e.target.value)}
+                  onChange={(e) => {
+                    setDateColumn(e.target.value);
+                    setUserDateFormat("");
+                  }}
                   disabled={!selectedCandidate?.is_time_series_capable || selectedCandidate?.date_columns.length === 0}
                   className="text-xs p-2 rounded-md border border-border/80 bg-background w-full text-foreground cursor-pointer disabled:opacity-50"
                 >
@@ -359,6 +368,74 @@ export default function ForecastingPage() {
                     <option value="">No date column found</option>
                   )}
                 </select>
+
+                {/* Date Detection & Quality Metadata */}
+                {activeDateMeta && (
+                  <div className="p-2.5 rounded-md border border-border/60 bg-muted/20 space-y-2 mt-1.5">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-muted-foreground font-medium">Detected type:</span>
+                      <span className="font-semibold text-foreground capitalize">{activeDateMeta.type}</span>
+                    </div>
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-muted-foreground font-medium">Detected format:</span>
+                      <code className="px-1.5 py-0.5 rounded bg-background border border-border/60 text-brand-indigo font-mono text-[10px]">
+                        {activeDateMeta.format || "Standard Timestamp"}
+                      </code>
+                    </div>
+                    {typeof activeDateMeta.parse_success_rate === 'number' && (
+                      <div className="flex items-center justify-between text-[11px]">
+                        <span className="text-muted-foreground font-medium">Parse success:</span>
+                        <span className="font-semibold text-emerald-500">
+                          {(activeDateMeta.parse_success_rate * 100).toFixed(1)}%
+                          {activeDateMeta.valid_count > 0 && ` (${activeDateMeta.valid_count.toLocaleString()} rows)`}
+                        </span>
+                      </div>
+                    )}
+                    {activeDateMeta.min && activeDateMeta.max && (
+                      <div className="text-[10px] text-muted-foreground flex flex-col gap-0.5 border-t border-border/40 pt-1.5">
+                        <span className="font-medium text-muted-foreground">Date range:</span>
+                        <span className="font-mono text-[9.5px] text-foreground/80 truncate">
+                          {activeDateMeta.min} → {activeDateMeta.max}
+                        </span>
+                      </div>
+                    )}
+
+                    {/* Ambiguity confirmation warning and selector */}
+                    {activeDateMeta.is_ambiguous && (
+                      <div className="p-2 rounded bg-amber-500/10 border border-amber-500/30 text-amber-500 text-[11px] space-y-1.5 mt-2">
+                        <div className="flex items-center gap-1.5 font-semibold">
+                          <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                          <span>Date format requires confirmation</span>
+                        </div>
+                        <p className="text-[10px] text-muted-foreground">
+                          Sample dates could be DD/MM/YYYY or MM/DD/YYYY. Select explicit order:
+                        </p>
+                        <select
+                          value={userDateFormat}
+                          onChange={(e) => {
+                            const newFmt = e.target.value;
+                            setUserDateFormat(newFmt);
+                            if (activeConfig) {
+                              setActiveConfig({
+                                ...activeConfig,
+                                user_date_format: newFmt || undefined
+                              });
+                            }
+                          }}
+                          className="text-[11px] p-1.5 rounded border border-amber-500/40 bg-background w-full text-foreground cursor-pointer"
+                        >
+                          <option value="">Auto-detected ({activeDateMeta.format})</option>
+                          <option value="DD/MM/YYYY">DD/MM/YYYY (Day / Month / Year)</option>
+                          <option value="MM/DD/YYYY">MM/DD/YYYY (Month / Day / Year)</option>
+                          <option value="YYYY-MM-DD">YYYY-MM-DD (ISO)</option>
+                          {activeDateMeta.candidate_formats?.map(fmt => (
+                            <option key={fmt} value={fmt}>{fmt}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Metric Column */}

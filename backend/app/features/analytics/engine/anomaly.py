@@ -56,11 +56,9 @@ class AnomalyDetectionService:
         clean_df = df[[timestamp_column, metric_column]].copy()
         clean_df[metric_column] = pd.to_numeric(clean_df[metric_column], errors="coerce")
         
-        # Parse timestamp column
-        try:
-            clean_df[timestamp_column] = pd.to_datetime(clean_df[timestamp_column], errors="coerce", format="mixed")
-        except Exception:
-            clean_df[timestamp_column] = pd.to_datetime(clean_df[timestamp_column], errors="coerce")
+        # Parse timestamp column safely using DateTimeNormalizer
+        from app.features.analytics.engine.date_normalizer import DateTimeNormalizer
+        clean_df[timestamp_column] = DateTimeNormalizer.normalize_series(clean_df[timestamp_column], column_name=timestamp_column)
 
         # Drop NaN values
         clean_df = clean_df.dropna(subset=[timestamp_column, metric_column]).copy()

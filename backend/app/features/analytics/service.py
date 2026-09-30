@@ -144,33 +144,28 @@ def register_all_datasets_in_duckdb(
         item_proj = item.get("project_id") if is_dict else getattr(item, "project_id", None)
 
         file_path = storage_path
-        if not file_path or not os.path.exists(file_path):
-            candidate = None
-            fns = [f for f in [filename, os.path.basename(file_path) if file_path else None, orig_fn] if f]
-            for fn in fns:
-                for cdir in cand_dirs:
-                    if cdir and os.path.isdir(cdir):
-                        target = os.path.join(cdir, fn)
-                        if os.path.exists(target):
-                            candidate = target
-                            break
-                        # Also check files with UUID prefix: <uuid>_<fn>
-                        try:
-                            for actual_f in os.listdir(cdir):
-                                if actual_f == fn or actual_f.endswith(f"_{fn}") or actual_f.lower().endswith(fn.lower()):
-                                    candidate = os.path.join(cdir, actual_f)
-                                    break
-                        except Exception:
-                            pass
-                        if candidate:
-                            break
-                if candidate:
-                    break
-            if candidate:
-                file_path = candidate
-            else:
-                logger.warning(f"Storage file for dataset '{filename}' not found at '{storage_path}'")
-                continue
+        candidates = []
+        if file_path and os.path.exists(file_path):
+            candidates.append(file_path)
+
+        fns = [f for f in [filename, os.path.basename(file_path) if file_path else None, orig_fn] if f]
+        for fn in fns:
+            for cdir in cand_dirs:
+                if cdir and os.path.isdir(cdir):
+                    target = os.path.join(cdir, fn)
+                    if os.path.exists(target):
+                        candidates.append(target)
+                    try:
+                        for actual_f in os.listdir(cdir):
+                            if actual_f == fn or actual_f.endswith(f"_{fn}") or actual_f.lower().endswith(fn.lower()) or actual_f.lower().endswith(f"_{fn.lower()}"):
+                                candidates.append(os.path.join(cdir, actual_f))
+                    except Exception:
+                        pass
+        if candidates:
+            file_path = max(set(candidates), key=lambda p: os.path.getsize(p) if os.path.exists(p) else 0)
+        else:
+            logger.warning(f"Storage file for dataset '{filename}' not found at '{storage_path}'")
+            continue
 
         registered_paths.add(file_path)
         
