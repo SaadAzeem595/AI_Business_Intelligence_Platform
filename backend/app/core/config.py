@@ -147,6 +147,10 @@ class Settings(BaseSettings):
     # Persistent Storage Paths (supports shared volume mounts)
     STORAGE_DIR: str = "storage"
     UPLOADS_DIR: str = "uploads"
+    RAG_DB_PATH: Optional[str] = None
+    EMBEDDING_PROVIDER: Optional[str] = "openrouter"
+    EMBEDDING_MODEL: str = "openai/text-embedding-3-small"
+    EMBEDDING_DIMENSION: int = 1536
 
     @property
     def resolved_storage_dir(self) -> str:
@@ -160,7 +164,30 @@ class Settings(BaseSettings):
             return self.UPLOADS_DIR
         return os.path.abspath(os.path.join(base_dir, self.UPLOADS_DIR))
 
+    @property
+    def resolved_rag_db_path(self) -> str:
+        if self.RAG_DB_PATH:
+            return self.RAG_DB_PATH
+        # Priority order:
+        # 1. Existing file in persistent storage directory
+        # 2. Existing file in base_dir
+        # 3. Existing file in backend/
+        # 4. Target path in persistent storage directory
+        storage_path = os.path.join(self.resolved_storage_dir, "rag_vector.db")
+        root_path = os.path.join(base_dir, "rag_vector.db")
+        backend_path = os.path.join(base_dir, "backend", "rag_vector.db")
+
+        if os.path.exists(storage_path):
+            return storage_path
+        if os.path.exists(root_path):
+            return root_path
+        if os.path.exists(backend_path):
+            return backend_path
+
+        os.makedirs(self.resolved_storage_dir, exist_ok=True)
+        return storage_path
 
 
 settings = Settings()
+
 

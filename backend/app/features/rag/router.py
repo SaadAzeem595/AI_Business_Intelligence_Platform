@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, s
 
 from app.core.dependencies import get_current_user, MockUser, require_role
 import os
+from app.core.config import settings
 from app.features.rag.schemas import (
     QueryPayload, 
     ContextResponse, 
@@ -14,14 +15,16 @@ from app.features.rag.schemas import (
     AnalyticalAnswer,
     RetrievalResult,
     GroundedAnswer,
-    QueryIntent
+    QueryIntent,
+    RetrievalDiagnostics,
+    DocumentDiagnosticsResponse
 )
 from app.features.datasets.router import UPLOADED_PATHS_CACHE
 from app.features.rag.ingestion.ocr import MockOCRProvider
 from app.features.rag.ingestion.parsers import DocumentParserService
 from app.features.rag.ingestion.cleaner import TextCleaner
 from app.features.rag.ingestion.chunker import ChunkerService
-from app.features.rag.embeddings.providers import MockEmbeddingProvider
+from app.features.rag.embeddings.providers import OpenRouterEmbeddingProvider, SemanticProjectionEmbeddingProvider
 from app.features.rag.vector_store.repository import DuckDBVectorRepository
 from app.features.rag.retrieval.service import RetrievalService
 from app.features.rag.retrieval.context_builder import ContextBuilder
@@ -38,9 +41,9 @@ ALLOWED_RAG_EXTENSIONS = {
 
 router = APIRouter(prefix="/rag", tags=["RAG Knowledge Layer Operations"])
 
-# Initialize RAG components (default to DuckDB persistence and Mock embeddings for CPU environments)
-db_repo = DuckDBVectorRepository(db_path="rag_vector.db")
-embeddings = MockEmbeddingProvider()
+# Initialize RAG components with persistent storage path and robust embeddings
+db_repo = DuckDBVectorRepository(db_path=settings.resolved_rag_db_path)
+embeddings = OpenRouterEmbeddingProvider(dimension=settings.EMBEDDING_DIMENSION, model=settings.EMBEDDING_MODEL)
 retrieval_svc = RetrievalService(vector_repo=db_repo, embedding_provider=embeddings)
 parser_svc = DocumentParserService(ocr_provider=MockOCRProvider())
 chunker_svc = ChunkerService()
@@ -321,6 +324,7 @@ async def ingest_document(
         db_repo.insert_chunks(chunks_to_insert)
         
         # Invalidate RAG retrieve cache
+        retrieval_svc.clear_cache()
         await cache_client.invalidate_pattern("rag_retrieve:*")
         
         return {
@@ -357,13 +361,19 @@ async def retrieve_context(
         if "workspace" not in filters or not filters["workspace"]:
             filters["workspace"] = current_user.workspace_id
         
-        results = retrieval_svc.retrieve(
+        retrieval_output = retrieval_svc.retrieve(
             query=payload.query,
             limit=payload.limit,
             filters=filters,
             hybrid_alpha=payload.hybrid_alpha,
-            enable_rerank=payload.enable_rerank
+            enable_rerank=payload.enable_rerank,
+            return_diagnostics=True
         )
+        if isinstance(retrieval_output, tuple):
+            results, diag = retrieval_output
+        else:
+            results = retrieval_output
+            diag = retrieval_svc.last_diagnostics
         
         # Build prompt context
         context_text, token_count = ContextBuilder.build_context(results)
@@ -399,7 +409,8 @@ async def retrieve_context(
             token_count=token_count,
             analytical_answer=analytical_ans,
             grounded_answer=grounded_obj,
-            query_intent=query_intent
+            query_intent=query_intent,
+            diagnostics=diag
         )
     except Exception as e:
         raise HTTPException(
@@ -446,6 +457,26 @@ async def list_rag_documents(
             detail=f"Failed to list documents: {str(e)}"
         )
 
+@router.get("/documents/{doc_id}/diagnostics", response_model=DocumentDiagnosticsResponse)
+async def get_document_diagnostics(
+    doc_id: str,
+    workspace: Optional[str] = None,
+    current_user: MockUser = Depends(get_current_user)
+) -> DocumentDiagnosticsResponse:
+    """Returns granular retrieval diagnostic information for a specific document."""
+    try:
+        diag = db_repo.get_document_diagnostics(doc_id)
+        if not diag or diag.get("status") == "not_found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Document '{doc_id}' not found.")
+        return DocumentDiagnosticsResponse(**diag)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to retrieve document diagnostics: {str(e)}"
+        )
+
 @router.delete("/documents/{doc_id}")
 async def delete_rag_document(
     doc_id: str,
@@ -455,6 +486,7 @@ async def delete_rag_document(
     """Deletes all indexed chunks and reference markers associated with a document ID."""
     try:
         db_repo.delete_by_document(doc_id)
+        retrieval_svc.clear_cache()
         await cache_client.invalidate_pattern("rag_retrieve:*")
         return {"status": "success", "message": f"Successfully deleted document '{doc_id}' from index."}
     except Exception as e:
@@ -469,7 +501,7 @@ async def reindex_rag_document(
     workspace: Optional[str] = Form(None),
     current_user: MockUser = Depends(require_role(["Analyst", "Admin"]))
 ) -> Dict[str, Any]:
-    """Re-chunks and re-embeds an existing indexed document."""
+    """Re-chunks and re-embeds an existing indexed document idempotently."""
     try:
         target_ws = workspace.strip() if (workspace and workspace.strip()) else current_user.workspace_id
         raw_chunks = db_repo.get_document_chunks_raw(doc_id)
@@ -482,6 +514,7 @@ async def reindex_rag_document(
         tags_str = raw_chunks[0]["tags"]
         file_size = raw_chunks[0]["file_size"] or 0
         tag_list = [t.strip() for t in tags_str.split(",") if t.strip()] if tags_str else []
+        ext = filename.split(".")[-1].lower() if "." in filename else "txt"
 
         clean_text = TextCleaner.normalize_text(full_text)
         chunk_dicts = chunker_svc.chunk_by_heading(clean_text)
@@ -500,10 +533,13 @@ async def reindex_rag_document(
                 author=author,
                 upload_date=datetime.now().strftime("%Y-%m-%d"),
                 workspace=target_ws,
+                project_id=target_ws,
                 page=i + 1,
+                chunk_index=i,
                 heading=heading,
                 tags=tag_list,
                 document_type=document_type,
+                file_type=ext,
                 file_size=file_size,
                 chunk_type=cd.get("chunk_type", "text"),
                 row_start=cd.get("row_start"),
@@ -521,8 +557,10 @@ async def reindex_rag_document(
             )
             chunks_to_insert.append(chunk_obj)
 
+        # Idempotent replacement: delete existing records and insert new ones
         db_repo.delete_by_document(doc_id)
         db_repo.insert_chunks(chunks_to_insert)
+        retrieval_svc.clear_cache()
         await cache_client.invalidate_pattern("rag_retrieve:*")
 
         return {
@@ -530,6 +568,7 @@ async def reindex_rag_document(
             "doc_id": doc_id,
             "filename": filename,
             "chunks_count": len(chunks_to_insert),
+            "project_id": target_ws,
             "message": f"Successfully re-indexed {len(chunks_to_insert)} chunks for {filename}."
         }
     except HTTPException:

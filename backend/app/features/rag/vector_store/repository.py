@@ -2,16 +2,18 @@ import os
 import json
 import logging
 import threading
-
-logger = logging.getLogger(__name__)
-import numpy as np
+import re
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional, Tuple
+import numpy as np
 import duckdb
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 from app.features.rag.schemas import Chunk, DocumentMetadata
+
+logger = logging.getLogger(__name__)
+
 
 class BaseVectorRepository(ABC):
     @abstractmethod
@@ -46,12 +48,22 @@ class BaseVectorRepository(ABC):
 
     @abstractmethod
     def list_documents(self, workspace: str = "default") -> List[Dict[str, Any]]:
-        """Lists metadata of all ingested documents in a workspace."""
+        """Lists metadata of all ingested documents in a workspace/project."""
         pass
 
     @abstractmethod
     def get_document_chunks_raw(self, doc_id: str) -> List[Dict[str, Any]]:
         """Retrieves raw chunk fields for document re-indexing."""
+        pass
+
+    @abstractmethod
+    def get_document_diagnostics(self, doc_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieves retrieval and index health diagnostics for a specific document."""
+        pass
+
+    @abstractmethod
+    def get_project_diagnostics(self, project_id: str) -> Dict[str, Any]:
+        """Retrieves scope counts (documents and chunks) for a project."""
         pass
 
 
@@ -66,9 +78,15 @@ class InMemoryVectorRepository(BaseVectorRepository):
         if not filters:
             return True
         for k, v in filters.items():
-            val = getattr(metadata, k, None)
-            if val != v:
-                return False
+            if k in ("workspace", "project_id"):
+                chunk_ws = getattr(metadata, "workspace", None)
+                chunk_pid = getattr(metadata, "project_id", None)
+                if chunk_ws != v and chunk_pid != v:
+                    return False
+            else:
+                val = getattr(metadata, k, None)
+                if val != v:
+                    return False
         return True
 
     def query_similarity(
@@ -81,10 +99,13 @@ class InMemoryVectorRepository(BaseVectorRepository):
         if not filtered_chunks:
             return []
 
+        stored_dim = len(filtered_chunks[0].embedding)
+        query_dim = len(query_vector)
+        if stored_dim != query_dim:
+            raise ValueError(f"Embedding dimension mismatch: query dimension ({query_dim}) != stored ({stored_dim})")
+
         embeddings = np.array([c.embedding for c in filtered_chunks])
         query_arr = np.array([query_vector])
-        
-        # Calculate cosine similarity
         similarities = cosine_similarity(query_arr, embeddings)[0]
         
         results = []
@@ -104,8 +125,7 @@ class InMemoryVectorRepository(BaseVectorRepository):
         if not filtered_chunks or not query_text.strip():
             return []
             
-        # Implement keyword search using standard TF-IDF similarity (enriching text with heading and heading_path)
-        texts = [f"{c.metadata.heading or ''} {getattr(c.metadata, 'heading_path', '') or ''} {c.text}" for c in filtered_chunks]
+        texts = [f"{c.metadata.filename} {c.metadata.heading or ''} {getattr(c.metadata, 'heading_path', '') or ''} {' '.join(c.metadata.columns or [])} {c.text}" for c in filtered_chunks]
         try:
             vectorizer = TfidfVectorizer(stop_words='english')
             tfidf_matrix = vectorizer.fit_transform(texts)
@@ -119,13 +139,13 @@ class InMemoryVectorRepository(BaseVectorRepository):
             results = sorted(results, key=lambda x: x[1], reverse=True)
             return results[:limit]
         except Exception:
-            # Fallback to simple substring match score if TF-IDF fails (e.g. vocabulary size too small)
             results = []
+            q_words = [w.lower().strip("?,.!\"'") for w in query_text.split() if len(w.strip("?,.!\"'")) > 1]
             for c in filtered_chunks:
-                searchable = f"{c.metadata.heading or ''} {getattr(c.metadata, 'heading_path', '') or ''} {c.text}".lower()
-                matches = sum(1 for w in query_text.lower().split() if w in searchable)
+                searchable = f"{c.metadata.filename} {c.metadata.heading or ''} {' '.join(c.metadata.columns or [])} {c.text}".lower()
+                matches = sum(1 for w in q_words if w in searchable)
                 if matches > 0:
-                    results.append((c, float(matches / len(query_text.split()))))
+                    results.append((c, float(matches / max(1, len(q_words)))))
             results = sorted(results, key=lambda x: x[1], reverse=True)
             return results[:limit]
 
@@ -135,12 +155,18 @@ class InMemoryVectorRepository(BaseVectorRepository):
     def list_documents(self, workspace: str = "default") -> List[Dict[str, Any]]:
         docs = {}
         for c in self.chunks:
-            if c.metadata.workspace == workspace:
+            if c.metadata.workspace == workspace or getattr(c.metadata, "project_id", None) == workspace:
                 docs[c.doc_id] = {
                     "doc_id": c.doc_id,
                     "filename": c.metadata.filename,
                     "document_type": c.metadata.document_type,
-                    "upload_date": c.metadata.upload_date
+                    "upload_date": c.metadata.upload_date,
+                    "workspace": workspace,
+                    "chunks_count": sum(1 for x in self.chunks if x.doc_id == c.doc_id),
+                    "pages_count": max((x.metadata.page or 1 for x in self.chunks if x.doc_id == c.doc_id), default=1),
+                    "file_size": getattr(c.metadata, "file_size", 0) or 0,
+                    "author": c.metadata.author or "Unknown",
+                    "status": "Indexed"
                 }
         return list(docs.values())
 
@@ -157,6 +183,35 @@ class InMemoryVectorRepository(BaseVectorRepository):
             }
             for c in res
         ]
+
+    def get_document_diagnostics(self, doc_id: str) -> Optional[Dict[str, Any]]:
+        doc_chunks = [c for c in self.chunks if c.doc_id == doc_id]
+        if not doc_chunks:
+            return None
+        emb_count = sum(1 for c in doc_chunks if c.embedding is not None)
+        emb_dim = len(doc_chunks[0].embedding) if emb_count > 0 and doc_chunks[0].embedding else 1536
+        return {
+            "document_id": doc_id,
+            "filename": doc_chunks[0].metadata.filename,
+            "status": "Indexed" if len(doc_chunks) > 0 else "Failed",
+            "chunk_count": len(doc_chunks),
+            "embedded_chunk_count": emb_count,
+            "bm25_indexed": True,
+            "vector_indexed": emb_count > 0,
+            "embedding_model": "openai/text-embedding-3-small",
+            "embedding_dimension": emb_dim,
+            "project_id": getattr(doc_chunks[0].metadata, "project_id", doc_chunks[0].metadata.workspace) or "default",
+            "workspace_id": doc_chunks[0].metadata.workspace or "default",
+            "searchable": len(doc_chunks) > 0 and emb_count > 0
+        }
+
+    def get_project_diagnostics(self, project_id: str) -> Dict[str, Any]:
+        p_chunks = [c for c in self.chunks if self._matches_filters(c.metadata, {"workspace": project_id})]
+        doc_ids = set(c.doc_id for c in p_chunks)
+        return {
+            "documents_in_scope": len(doc_ids),
+            "chunks_in_scope": len(p_chunks)
+        }
 
 
 class DuckDBVectorRepository(BaseVectorRepository):
@@ -186,6 +241,26 @@ class DuckDBVectorRepository(BaseVectorRepository):
             conn.execute("PRAGMA checkpoint_threshold='64MB'")
         except Exception as e:
             logger.debug(f"Failed to set DuckDB PRAGMAs: {e}")
+
+    def _ensure_fts_index(self, conn):
+        """Ensures DuckDB Full Text Search (FTS) extension is loaded and BM25 index is active."""
+        try:
+            conn.execute("INSTALL fts")
+            conn.execute("LOAD fts")
+        except Exception:
+            pass
+
+        try:
+            # Check row count first; FTS index requires at least schema definition
+            conn.execute("""
+                PRAGMA create_fts_index(
+                    'rag_chunks', 'id', 'text', 'heading', 'filename', 'columns',
+                    overwrite=1
+                )
+            """)
+            logger.debug("DuckDB FTS BM25 index refreshed on rag_chunks.")
+        except Exception as e:
+            logger.debug(f"DuckDB FTS index update notice: {e}")
 
     def _create_chunks_table(self, conn):
         self._configure_pragmas(conn)
@@ -236,6 +311,8 @@ class DuckDBVectorRepository(BaseVectorRepository):
             except Exception:
                 pass
 
+        self._ensure_fts_index(conn)
+
     def _get_connection(self):
         with self._lock:
             if self._conn is not None:
@@ -245,6 +322,11 @@ class DuckDBVectorRepository(BaseVectorRepository):
                 self._conn = duckdb.connect(":memory:")
                 self._create_chunks_table(self._conn)
                 return self._conn
+
+            # Ensure parent directory exists for file-backed storage
+            db_dir = os.path.dirname(os.path.abspath(self.db_path))
+            if db_dir and not os.path.exists(db_dir):
+                os.makedirs(db_dir, exist_ok=True)
 
             self._cleanup_stale_locks()
             try:
@@ -304,10 +386,6 @@ class DuckDBVectorRepository(BaseVectorRepository):
         with self._lock:
             self._get_connection()
 
-    def _close_conn(self, conn=None):
-        # Do not close persistent connection on every operation to avoid WAL checkpoint lock contention
-        pass
-
     def close(self):
         with self._lock:
             if self._conn and self.db_path != ":memory:":
@@ -323,8 +401,9 @@ class DuckDBVectorRepository(BaseVectorRepository):
             try:
                 for chunk in chunks:
                     emb_str = json.dumps(chunk.embedding) if chunk.embedding else None
-                    tags_str = ",".join(chunk.metadata.tags)
+                    tags_str = ",".join(chunk.metadata.tags) if chunk.metadata.tags else ""
                     cols_str = json.dumps(chunk.metadata.columns) if getattr(chunk.metadata, "columns", None) else None
+                    target_pid = getattr(chunk.metadata, "project_id", None) or chunk.metadata.workspace or "default"
                     conn.execute("""
                         INSERT OR REPLACE INTO rag_chunks (
                             id, doc_id, text, embedding, filename, author, upload_date, workspace, page, heading, tags, document_type, file_size, chunk_type, row_start, row_end, columns, table_name, file_type, mime_type, project_id, chunk_index, heading_path, content_type
@@ -335,9 +414,9 @@ class DuckDBVectorRepository(BaseVectorRepository):
                         chunk.text,
                         emb_str,
                         chunk.metadata.filename,
-                        chunk.metadata.author,
+                        chunk.metadata.author or "Unknown",
                         chunk.metadata.upload_date,
-                        chunk.metadata.workspace,
+                        chunk.metadata.workspace or target_pid,
                         chunk.metadata.page,
                         chunk.metadata.heading,
                         tags_str,
@@ -350,12 +429,14 @@ class DuckDBVectorRepository(BaseVectorRepository):
                         getattr(chunk.metadata, "table_name", None),
                         getattr(chunk.metadata, "file_type", None),
                         getattr(chunk.metadata, "mime_type", None),
-                        getattr(chunk.metadata, "project_id", None) or chunk.metadata.workspace,
+                        target_pid,
                         getattr(chunk.metadata, "chunk_index", None),
                         getattr(chunk.metadata, "heading_path", None),
                         getattr(chunk.metadata, "content_type", None)
                     ))
                 conn.execute("COMMIT")
+                # Immediately update FTS BM25 index on new chunks
+                self._ensure_fts_index(conn)
             except Exception:
                 try:
                     conn.execute("ROLLBACK")
@@ -371,8 +452,11 @@ class DuckDBVectorRepository(BaseVectorRepository):
         clauses = []
         args = []
         for k, v in filters.items():
-            if k == "tags" and isinstance(v, list):
-                # Search comma-separated tags
+            if k in ("workspace", "project_id"):
+                # Unified project scoping: check both columns to ensure project isolation and prevent scoping mismatches
+                clauses.append("(workspace = ? OR project_id = ?)")
+                args.extend([v, v])
+            elif k == "tags" and isinstance(v, list):
                 for tag in v:
                     clauses.append("tags LIKE ?")
                     args.append(f"%{tag}%")
@@ -419,7 +503,7 @@ class DuckDBVectorRepository(BaseVectorRepository):
             table_name=t_name,
             file_type=f_type,
             mime_type=m_type,
-            project_id=p_id,
+            project_id=p_id or row[7],
             chunk_index=c_idx,
             heading_path=h_path,
             content_type=c_type
@@ -449,6 +533,19 @@ class DuckDBVectorRepository(BaseVectorRepository):
             chunks = [self._row_to_chunk(row) for row in res if row[3] is not None]
             if not chunks:
                 return []
+
+            # Compare query dimension vs stored chunk embedding dimension
+            stored_dim = len(chunks[0].embedding)
+            query_dim = len(query_vector)
+            if stored_dim != query_dim:
+                logger.error(
+                    f"RAG_EMBEDDING_DIM_MISMATCH: Query dimension ({query_dim}) does not match "
+                    f"stored chunk dimension ({stored_dim}) for '{chunks[0].metadata.filename}'."
+                )
+                raise ValueError(
+                    f"Configuration error: Query embedding dimension ({query_dim}) does not match "
+                    f"stored chunk dimension ({stored_dim}). Re-indexing required."
+                )
                 
             embeddings = np.array([c.embedding for c in chunks])
             query_arr = np.array([query_vector])
@@ -456,7 +553,9 @@ class DuckDBVectorRepository(BaseVectorRepository):
             
             results = []
             for idx, score in enumerate(similarities):
-                results.append((chunks[idx], float(score)))
+                # Filter out candidates below dense similarity threshold
+                if float(score) >= 0.20:
+                    results.append((chunks[idx], float(score)))
                 
             results = sorted(results, key=lambda x: x[1], reverse=True)
             return results[:limit]
@@ -472,40 +571,56 @@ class DuckDBVectorRepository(BaseVectorRepository):
         filter_clause, args = self._build_filter_clause(filters)
 
         def _do_search(conn):
-            res = conn.execute(f"SELECT * FROM rag_chunks {filter_clause}", args).fetchall()
-            if not res or not query_text.strip():
-                return []
-                
-            chunks = [self._row_to_chunk(row) for row in res]
-            
-            texts = [f"{c.metadata.heading or ''} {getattr(c.metadata, 'heading_path', '') or ''} {c.text}" for c in chunks]
-            try:
-                vectorizer = TfidfVectorizer(stop_words='english')
-                tfidf_matrix = vectorizer.fit_transform(texts)
-                query_vec = vectorizer.transform([query_text])
-                similarities = cosine_similarity(query_vec, tfidf_matrix)[0]
-                
-                results = []
-                for idx, score in enumerate(similarities):
-                    if score > 0:
-                        results.append((chunks[idx], float(score)))
-                results = sorted(results, key=lambda x: x[1], reverse=True)
-                return results[:limit]
-            except Exception:
-                results = []
+            clean_q = re.sub(r"[^\w\s-]", " ", query_text).strip()
+            terms = [t.strip() for t in clean_q.split() if len(t.strip()) > 1]
+            fts_query = " ".join(terms) if terms else clean_q
+
+            results = []
+            if fts_query:
+                try:
+                    # Execute DuckDB FTS BM25 ranking
+                    sql = f"""
+                        SELECT *, fts_main_rag_chunks.match_bm25(id, ?) AS bm25_score
+                        FROM rag_chunks
+                        {filter_clause}
+                        WHERE bm25_score IS NOT NULL
+                        ORDER BY bm25_score DESC
+                        LIMIT ?
+                    """
+                    query_args = [fts_query] + args + [limit * 3]
+                    rows = conn.execute(sql, query_args).fetchall()
+                    for r in rows:
+                        chunk = self._row_to_chunk(r[:-1])
+                        score = float(r[-1])
+                        results.append((chunk, score))
+                except Exception as fts_err:
+                    logger.debug(f"DuckDB FTS match_bm25 query failed ({fts_err}), using term matching.")
+
+            if not results:
+                # Fallback to exact/fuzzy token matching over the project chunk corpus
+                res = conn.execute(f"SELECT * FROM rag_chunks {filter_clause}", args).fetchall()
+                if not res or not query_text.strip():
+                    return []
+                chunks = [self._row_to_chunk(row) for row in res]
+                q_words = [w.lower().strip("?,.!\"'") for w in query_text.split() if len(w.strip("?,.!\"'")) > 1]
+                scored = []
                 for c in chunks:
-                    searchable = f"{c.metadata.heading or ''} {getattr(c.metadata, 'heading_path', '') or ''} {c.text}".lower()
-                    matches = sum(1 for w in query_text.lower().split() if w in searchable)
+                    cols_str = " ".join(c.metadata.columns) if c.metadata.columns else ""
+                    searchable = f"{c.metadata.filename} {c.metadata.heading or ''} {cols_str} {c.text}".lower()
+                    matches = sum(1 for w in q_words if w in searchable)
                     if matches > 0:
-                        results.append((c, float(matches / len(query_text.split()))))
-                results = sorted(results, key=lambda x: x[1], reverse=True)
-                return results[:limit]
+                        scored.append((c, float(matches / max(1, len(q_words)))))
+                scored = sorted(scored, key=lambda x: x[1], reverse=True)
+                results = scored[:limit * 3]
+
+            return results[:limit]
 
         return self._execute_with_retry(_do_search)
 
     def delete_by_document(self, doc_id: str) -> None:
         def _do_delete(conn):
             conn.execute("DELETE FROM rag_chunks WHERE doc_id = ?", (doc_id,))
+            self._ensure_fts_index(conn)
 
         self._execute_with_retry(_do_delete)
 
@@ -517,16 +632,16 @@ class DuckDBVectorRepository(BaseVectorRepository):
                     filename, 
                     document_type, 
                     upload_date, 
-                    workspace, 
+                    COALESCE(project_id, workspace) as workspace, 
                     COUNT(id) as chunks_count, 
                     MAX(page) as pages_count, 
                     MAX(file_size) as file_size, 
                     MAX(author) as author
                 FROM rag_chunks 
-                WHERE workspace = ?
-                GROUP BY doc_id, filename, document_type, upload_date, workspace
+                WHERE workspace = ? OR project_id = ?
+                GROUP BY doc_id, filename, document_type, upload_date, COALESCE(project_id, workspace)
                 ORDER BY upload_date DESC, doc_id DESC
-            """, (workspace,)).fetchall()
+            """, (workspace, workspace)).fetchall()
             return [
                 {
                     "doc_id": row[0],
@@ -565,4 +680,57 @@ class DuckDBVectorRepository(BaseVectorRepository):
 
         return self._execute_with_retry(_do_get)
 
+    def get_document_diagnostics(self, doc_id: str) -> Optional[Dict[str, Any]]:
+        def _do_diag(conn):
+            res = conn.execute("""
+                SELECT 
+                    doc_id, 
+                    filename, 
+                    document_type, 
+                    COALESCE(project_id, workspace) as project_id, 
+                    workspace, 
+                    COUNT(id) as chunk_count, 
+                    COUNT(CASE WHEN embedding IS NOT NULL THEN 1 END) as embedded_chunk_count
+                FROM rag_chunks 
+                WHERE doc_id = ?
+                GROUP BY doc_id, filename, document_type, project_id, workspace
+            """, (doc_id,)).fetchone()
+            if not res:
+                return None
+            sample_emb = conn.execute(
+                "SELECT embedding FROM rag_chunks WHERE doc_id = ? AND embedding IS NOT NULL LIMIT 1", 
+                (doc_id,)
+            ).fetchone()
+            emb_dim = 0
+            if sample_emb and sample_emb[0]:
+                try:
+                    emb_dim = len(json.loads(sample_emb[0]))
+                except Exception:
+                    pass
+            return {
+                "document_id": res[0],
+                "filename": res[1],
+                "status": "Indexed" if res[5] > 0 else "Failed",
+                "chunk_count": res[5],
+                "embedded_chunk_count": res[6],
+                "bm25_indexed": True,
+                "vector_indexed": res[6] > 0,
+                "embedding_model": "openai/text-embedding-3-small",
+                "embedding_dimension": emb_dim or 1536,
+                "project_id": res[3] or res[4],
+                "workspace_id": res[4] or res[3],
+                "searchable": res[5] > 0 and res[6] > 0
+            }
+        return self._execute_with_retry(_do_diag)
 
+    def get_project_diagnostics(self, project_id: str) -> Dict[str, Any]:
+        def _do_pdiag(conn):
+            docs = conn.execute(
+                "SELECT COUNT(DISTINCT doc_id), COUNT(id) FROM rag_chunks WHERE workspace = ? OR project_id = ?",
+                (project_id, project_id)
+            ).fetchone()
+            return {
+                "documents_in_scope": docs[0] if docs else 0,
+                "chunks_in_scope": docs[1] if docs else 0,
+            }
+        return self._execute_with_retry(_do_pdiag)

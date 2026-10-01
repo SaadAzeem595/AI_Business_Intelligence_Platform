@@ -866,14 +866,78 @@ export default function KnowledgeBasePage() {
                       <span className="text-[10px]">Token Context: {searchResults.token_count}</span>
                     </div>
 
-                    {searchResults.results.length === 0 ? (
-                      <div className="p-6 text-center text-xs text-muted-foreground border border-dashed border-border/80 rounded-lg space-y-1">
-                        <AlertCircle className="h-5 w-5 mx-auto text-muted-foreground/60 mb-1" />
-                        <p className="font-semibold text-foreground/80">No semantic matches found</p>
-                        <p className="text-[11px]">
-                          Try adjusting your search terms or increasing the BM25 keyword weighting.
-                        </p>
+                    {/* Diagnostics Bar */}
+                    {searchResults.diagnostics && (
+                      <div className="p-2.5 rounded-md bg-muted/20 border border-border/40 text-[10px] text-muted-foreground flex flex-wrap items-center justify-between gap-1.5 font-mono">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-brand-indigo font-semibold">
+                            Scope: {searchResults.diagnostics.documents_in_scope} doc(s), {searchResults.diagnostics.chunks_in_scope} chunk(s)
+                          </span>
+                          <span>•</span>
+                          <span>BM25: {searchResults.diagnostics.bm25_candidates}</span>
+                          <span>•</span>
+                          <span>Dense: {searchResults.diagnostics.dense_candidates}</span>
+                          <span>•</span>
+                          <span>RRF: {searchResults.diagnostics.rrf_candidates}</span>
+                          <span>•</span>
+                          <span className="text-foreground font-medium">Final: {searchResults.diagnostics.final_top_k}</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 opacity-80 text-[9px]">
+                          <span>{searchResults.diagnostics.configured_embedding_model}</span>
+                          <span>({searchResults.diagnostics.query_embedding_dimension}d)</span>
+                          {searchResults.diagnostics.active_project_id && (
+                            <span className="text-[9px] bg-muted px-1 rounded truncate max-w-[120px]">
+                              proj:{searchResults.diagnostics.active_project_id.slice(0, 8)}
+                            </span>
+                          )}
+                        </div>
                       </div>
+                    )}
+
+                    {searchResults.results.length === 0 ? (
+                      (() => {
+                        const diag = searchResults.diagnostics;
+                        let stateTitle = "No relevant evidence found";
+                        let stateDesc = "No semantic or keyword matches were found for this query in the indexed project documents.";
+                        let badgeLabel = "0 Matches";
+
+                        if ((!documents || documents.length === 0) || (diag && diag.documents_in_scope === 0)) {
+                          stateTitle = "No indexed documents in project";
+                          stateDesc = "No indexed documents are available in this project scope. Upload and index a document in the Knowledge Base to enable retrieval.";
+                          badgeLabel = "No Documents";
+                        } else if (diag && diag.chunks_in_scope === 0) {
+                          stateTitle = "No searchable chunks available";
+                          stateDesc = "Document records exist, but 0 searchable chunks are stored. Please click Re-index to parse and generate chunks.";
+                          badgeLabel = "Indexing Incomplete";
+                        } else if (diag && diag.chunks_in_scope > 0 && !diag.query_embedding_generated && hybridAlpha > 0.0 && diag.dense_candidates === 0) {
+                          stateTitle = "Embeddings unavailable";
+                          stateDesc = `Search indexing is incomplete. ${diag.chunks_in_scope} chunks exist but embedding vectors are currently unavailable for dense retrieval.`;
+                          badgeLabel = "Embeddings Missing";
+                        } else if (diag && diag.chunks_in_scope > 0 && diag.bm25_candidates === 0 && hybridAlpha < 1.0 && diag.execution_mode === "dense_only") {
+                          stateTitle = "BM25 index unavailable";
+                          stateDesc = "BM25 full-text keyword search index is not yet built or unavailable for this project's chunks.";
+                          badgeLabel = "FTS Missing";
+                        } else if (diag && (diag.bm25_candidates > 0 || diag.dense_candidates > 0 || diag.rrf_candidates > 0) && diag.after_threshold === 0) {
+                          stateTitle = "No relevant chunks met threshold";
+                          stateDesc = `Search evaluated ${diag.rrf_candidates || (diag.bm25_candidates + diag.dense_candidates)} candidate chunk(s) across ${diag.chunks_in_scope} chunks, but none met the required relevance threshold.`;
+                          badgeLabel = "Threshold Filtered";
+                        }
+
+                        return (
+                          <div className="p-6 text-center text-xs text-muted-foreground border border-dashed border-border/80 rounded-lg space-y-1.5 bg-muted/10">
+                            <div className="flex items-center justify-center gap-1.5 mb-1">
+                              <AlertCircle className="h-5 w-5 text-amber-500/80" />
+                              <Badge variant="outline" className="text-[10px] border-amber-500/30 text-amber-400 bg-amber-500/10">
+                                {badgeLabel}
+                              </Badge>
+                            </div>
+                            <p className="font-semibold text-foreground/90 text-sm">{stateTitle}</p>
+                            <p className="text-[11px] text-muted-foreground max-w-md mx-auto leading-relaxed">
+                              {stateDesc}
+                            </p>
+                          </div>
+                        );
+                      })()
                     ) : (
                       <div className="space-y-3 max-h-[500px] overflow-y-auto pr-1">
                         {searchResults.results.map((res, idx) => {

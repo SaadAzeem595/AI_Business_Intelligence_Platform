@@ -121,7 +121,23 @@ class ChunkerService:
                 "Fields and Column Definitions:"
             ]
             for col in schema_cols:
-                schema_text_lines.append(f"- Field `{col}`: column in {title_line}")
+                col_lower = col.lower()
+                desc = f"column in {title_line}"
+                if any(w in col_lower for w in ["weight"]):
+                    desc = f"product weight specification (dimensions & weight measurement) in {title_line}"
+                elif any(w in col_lower for w in ["length", "lenght"]):
+                    desc = f"product length dimension specification in {title_line}"
+                elif any(w in col_lower for w in ["height"]):
+                    desc = f"product height dimension specification in {title_line}"
+                elif any(w in col_lower for w in ["width"]):
+                    desc = f"product width dimension specification in {title_line}"
+                elif any(w in col_lower for w in ["category"]):
+                    desc = f"product category name and classification in {title_line}"
+                elif any(w in col_lower for w in ["price", "freight", "payment", "value"]):
+                    desc = f"financial and pricing value in {title_line}"
+                elif any(w in col_lower for w in ["id", "uuid"]):
+                    desc = f"unique entity identifier in {title_line}"
+                schema_text_lines.append(f"- Field `{col}`: {desc}")
 
             if schema_details_str:
                 schema_text_lines.append("")
@@ -129,20 +145,27 @@ class ChunkerService:
 
             # Logical grouping of related fields
             id_cols = [c for c in schema_cols if any(k in c.lower() for k in ["id", "date", "year", "month", "time"])]
+            dimension_weight_cols = [c for c in schema_cols if any(k in c.lower() for k in ["weight", "length", "lenght", "height", "width", "dimension", "size", "volume"])]
             quality_cols = [c for c in schema_cols if any(k in c.lower() for k in ["fake", "verified", "quality", "rating", "sentiment", "helpful", "reviewer", "readability", "caps", "exclamation"])]
-            product_cols = [c for c in schema_cols if any(k in c.lower() for k in ["product", "category", "price", "brand", "tier", "image", "title"])]
-            other_cols = [c for c in schema_cols if c not in id_cols and c not in quality_cols and c not in product_cols]
+            product_cols = [c for c in schema_cols if any(k in c.lower() for k in ["product", "category", "price", "brand", "tier", "image", "title"]) and c not in dimension_weight_cols]
+            other_cols = [c for c in schema_cols if c not in id_cols and c not in quality_cols and c not in product_cols and c not in dimension_weight_cols]
 
             schema_text_lines.append("")
             schema_text_lines.append("Logical Field Groups:")
             if id_cols:
                 schema_text_lines.append(f"- Identifiers & Temporal: {', '.join(id_cols)}")
+            if dimension_weight_cols:
+                schema_text_lines.append(f"- Product Dimensions and Weight Specifications: {', '.join(dimension_weight_cols)}")
             if quality_cols:
                 schema_text_lines.append(f"- Review Quality, Verification & Sentiment: {', '.join(quality_cols)}")
             if product_cols:
                 schema_text_lines.append(f"- Product & Pricing Attributes: {', '.join(product_cols)}")
             if other_cols:
                 schema_text_lines.append(f"- Additional Attributes: {', '.join(other_cols)}")
+
+            if dataset_summary_str:
+                schema_text_lines.append("")
+                schema_text_lines.append(f"Summary Context: {dataset_summary_str}")
 
             schema_chunk_text = "\n".join(schema_text_lines)
             chunks.append({
@@ -154,6 +177,7 @@ class ChunkerService:
                 "columns": schema_cols,
                 "table_name": title_line
             })
+
 
             # 3. Generate Dataset Summary Chunk (if available)
             if dataset_summary_str:

@@ -163,13 +163,11 @@ class LLMService:
             }
             
             primary_model = model_override or cls.get_configured_model()
-            # Candidate models to try in sequence if primary is rate limited (429) or unavailable (404/503)
-            candidate_models = [primary_model]
+            candidate_models = [primary_model] if not primary_model.endswith(":free") else []
             fallback_defaults = [
-                "google/gemini-2.0-flash-001",
+                "openai/gpt-4o-mini",
                 "meta-llama/llama-3.3-70b-instruct",
-                "qwen/qwen-2.5-72b-instruct",
-                "openai/gpt-4o-mini"
+                "qwen/qwen-2.5-72b-instruct"
             ]
             for fbm in fallback_defaults:
                 if fbm not in candidate_models:

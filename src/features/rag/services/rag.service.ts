@@ -68,6 +68,41 @@ export interface GroundedAnswer {
   intent?: string;
 }
 
+export interface RetrievalDiagnostics {
+  project_id: string;
+  query: string;
+  documents_in_scope: number;
+  chunks_in_scope: number;
+  bm25_candidates: number;
+  dense_candidates: number;
+  rrf_candidates: number;
+  after_threshold: number;
+  final_top_k: number;
+  query_embedding_generated: boolean;
+  query_embedding_dimension: number;
+  configured_embedding_model: string;
+  dense_similarity_threshold: number;
+  bm25_minimum_score: number;
+  execution_mode: string;
+  active_project_id?: string;
+  active_workspace_id?: string;
+}
+
+export interface DocumentDiagnostics {
+  document_id: string;
+  status: string;
+  chunk_count: number;
+  embedded_chunk_count: number;
+  bm25_indexed: boolean;
+  vector_indexed: boolean;
+  embedding_model: string;
+  embedding_dimension: number;
+  project_id: string;
+  workspace_id: string;
+  searchable: boolean;
+  error?: string;
+}
+
 export interface ContextResponse {
   context_text: string;
   results: RetrievalResult[];
@@ -75,6 +110,7 @@ export interface ContextResponse {
   analytical_answer?: AnalyticalAnswer;
   grounded_answer?: GroundedAnswer;
   query_intent?: string;
+  diagnostics?: RetrievalDiagnostics;
 }
 
 export interface IngestResponse {
@@ -91,6 +127,13 @@ export const RAGService = {
   async listDocuments(projectId: string): Promise<RAGDocument[]> {
     if (!projectId) return [];
     const response = await apiClient.get<RAGDocument[]>("/rag/documents", {
+      params: { workspace: projectId }
+    });
+    return response.data;
+  },
+
+  async getDocumentDiagnostics(docId: string, projectId: string): Promise<DocumentDiagnostics> {
+    const response = await apiClient.get<DocumentDiagnostics>(`/rag/documents/${docId}/diagnostics`, {
       params: { workspace: projectId }
     });
     return response.data;

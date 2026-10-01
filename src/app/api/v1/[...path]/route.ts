@@ -4,14 +4,18 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
 function getBackendBaseUrl(): string {
+  const isProd = process.env.NODE_ENV === "production";
+  const defaultProdBackend = "https://datapilot-api.ashyriver-d1eb08b9.uaenorth.azurecontainerapps.io";
+  const defaultDevBackend = "http://127.0.0.1:8000";
+
   const rawUrl =
     process.env.INTERNAL_BACKEND_URL ||
     process.env.NEXT_PUBLIC_API_URL ||
-    "http://127.0.0.1:8000";
+    (isProd ? defaultProdBackend : defaultDevBackend);
 
   let trimmed = rawUrl.trim().replace(/\/+$/, "");
   if (trimmed.startsWith("/")) {
-    trimmed = "http://127.0.0.1:8000";
+    trimmed = isProd ? defaultProdBackend : defaultDevBackend;
   }
   if (trimmed.endsWith("/api/v1")) {
     trimmed = trimmed.substring(0, trimmed.length - 7);

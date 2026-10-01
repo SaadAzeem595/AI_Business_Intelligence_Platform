@@ -1,18 +1,17 @@
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Union
 import logging
 import hashlib
 import json
 import time
 import re
 
-from app.features.rag.schemas import Chunk, RetrievalResult, Citation, QueryIntent
+from app.features.rag.schemas import Chunk, RetrievalResult, Citation, QueryIntent, RetrievalDiagnostics
 from app.features.rag.embeddings.providers import BaseEmbeddingProvider
 from app.features.rag.vector_store.repository import BaseVectorRepository
-from app.core.cache import cache_client, run_async_as_sync
-from app.core.telemetry import RAG_RETRIEVAL_LATENCY
 
 logger = logging.getLogger(__name__)
+
 
 class BaseReranker(ABC):
     @abstractmethod
@@ -51,6 +50,7 @@ class MockReranker(BaseReranker):
             c_words_set = set(c_text_lower.split())
             c_type = getattr(chunk.metadata, "chunk_type", "text") or "text"
             chunk_cols = [c.lower() for c in (getattr(chunk.metadata, "columns", []) or [])]
+            fn_clean = (chunk.metadata.filename or "").lower()
             
             if not target_words:
                 score = 0.1
@@ -62,7 +62,7 @@ class MockReranker(BaseReranker):
                     stem = w[:-3] if len(w) > 6 and w.endswith("ies") else (w[:-1] if len(w) > 4 and w.endswith("s") else w)
                     matched_in_text = (
                         w in c_words_set or alias in c_words_set or w in c_text_lower or alias in c_text_lower
-                        or stem in c_text_lower
+                        or stem in c_text_lower or w in fn_clean
                     )
                     matched_in_cols = any(w in col or stem in col for col in chunk_cols)
                     if matched_in_text or matched_in_cols:
@@ -80,14 +80,18 @@ class MockReranker(BaseReranker):
                 # Combined base score
                 raw_score = 0.70 * query_coverage + 0.30 * jaccard
                 
-                # Boost schema chunk when query intent is SCHEMA_QUERY or questions ask for fields
-                if intent == QueryIntent.SCHEMA_QUERY:
+                # Filename match boost
+                if fn_clean and (fn_clean in q_clean or any(p in q_clean for p in fn_clean.split(".") if len(p) > 3)):
+                    raw_score += 0.20
+
+                # Boost schema chunk when query intent is SCHEMA_QUERY or questions ask for fields/columns
+                if intent == QueryIntent.SCHEMA_QUERY or any(k in q_clean for k in ["column", "columns", "field", "fields", "schema"]):
                     if c_type == "dataset_schema":
-                        raw_score += 0.35 + (0.10 * (col_matches / max(1, len(target_words))))
+                        raw_score += 0.40 + (0.15 * (col_matches / max(1, len(target_words))))
                     elif c_type == "dataset_summary":
-                        raw_score += 0.15
+                        raw_score += 0.20
                     elif c_type == "table_rows":
-                        raw_score -= 0.15
+                        raw_score -= 0.10
                 elif intent == QueryIntent.AGGREGATION_QUERY:
                     if c_type in ("dataset_summary", "dataset_schema"):
                         raw_score += 0.15
@@ -96,6 +100,11 @@ class MockReranker(BaseReranker):
                         raw_score += 0.15
                     elif query_coverage >= 0.50:
                         raw_score += 0.10
+
+                # Dimension / weight query boosting
+                if any(w in q_clean for w in ["dimension", "dimensions", "weight", "height", "width", "length", "lenght"]):
+                    if any(dw in col for col in chunk_cols for dw in ["weight", "length", "lenght", "height", "width"]):
+                        raw_score += 0.25
 
                 if query_coverage == 0 and col_matches == 0:
                     raw_score = 0.05
@@ -122,6 +131,7 @@ class CrossEncoderReranker(BaseReranker):
         if not self._model:
             return MockReranker().rerank(query, chunks, intent=intent)
             
+        import numpy as np
         pairs = [[query, chunk.text] for chunk in chunks]
         scores = self._model.predict(pairs)
         
@@ -134,7 +144,7 @@ class CrossEncoderReranker(BaseReranker):
 
 
 class RetrievalService:
-    """Coordinates vector, keyword, hybrid retrieval and reranking pipelines."""
+    """Coordinates vector, keyword, hybrid retrieval and reranking pipelines with diagnostics."""
     
     def __init__(
         self, 
@@ -145,6 +155,12 @@ class RetrievalService:
         self.repo = vector_repo
         self.embeddings = embedding_provider
         self.reranker = reranker or MockReranker()
+        self._memory_cache: Dict[str, Tuple[List[Dict[str, Any]], float]] = {}
+        self.last_diagnostics: Optional[RetrievalDiagnostics] = None
+
+    def clear_cache(self) -> None:
+        """Clears the in-memory retrieval cache."""
+        self._memory_cache.clear()
 
     @staticmethod
     def classify_intent(query: str) -> QueryIntent:
@@ -169,11 +185,12 @@ class RetrievalService:
         if any(k in q for k in analytical_keywords):
             return QueryIntent.AGGREGATION_QUERY
 
-        # 3. Schema intent (fields, columns, schema structure)
+        # 3. Schema intent (fields, columns, schema structure, dimensions, weight)
         schema_keywords = [
             "field", "fields", "column", "columns", "schema", "which field", 
             "what field", "which column", "what column", "what are the columns", 
-            "available fields", "attribute", "attributes", "data type", "data types"
+            "available fields", "attribute", "attributes", "data type", "data types",
+            "dimensions and weight", "product dimensions", "which columns contain"
         ]
         if any(k in q for k in schema_keywords):
             return QueryIntent.SCHEMA_QUERY
@@ -192,23 +209,43 @@ class RetrievalService:
         self, 
         vector_results: List[Tuple[Chunk, float]], 
         keyword_results: List[Tuple[Chunk, float]], 
+        alpha: float = 0.5,
         k: int = 60
     ) -> List[Tuple[Chunk, float]]:
-        """Combines rankings from vector and keyword results using Reciprocal Rank Fusion (RRF)."""
+        """
+        Combines rankings from vector and keyword results using weighted Reciprocal Rank Fusion (RRF).
+        RRF(chunk) = alpha * (1 / (k + dense_rank + 1)) + (1 - alpha) * (1 / (k + bm25_rank + 1))
+        Gracefully degrades when one search arm is empty.
+        Eligible chunks do NOT require appearance in both arms.
+        """
+        # Case A: BM25 results exist, Dense is empty
+        if not vector_results and keyword_results:
+            return keyword_results
+            
+        # Case B: Dense results exist, BM25 is empty
+        if not keyword_results and vector_results:
+            return vector_results
+            
+        # Case D: Both empty
+        if not vector_results and not keyword_results:
+            return []
+
+        # Case C: Both exist -> Weighted RRF
         rrf_scores = {}
         chunk_map = {}
         
-        # Add vector ranks
+        # Add vector ranks weighted by alpha
+        dense_weight = float(alpha)
         for rank, (chunk, _) in enumerate(vector_results):
             chunk_map[chunk.id] = chunk
-            rrf_scores[chunk.id] = rrf_scores.get(chunk.id, 0.0) + (1.0 / (k + rank + 1))
+            rrf_scores[chunk.id] = rrf_scores.get(chunk.id, 0.0) + (dense_weight / (k + rank + 1))
             
-        # Add keyword ranks
+        # Add keyword ranks weighted by (1 - alpha)
+        bm25_weight = float(1.0 - alpha)
         for rank, (chunk, _) in enumerate(keyword_results):
             chunk_map[chunk.id] = chunk
-            rrf_scores[chunk.id] = rrf_scores.get(chunk.id, 0.0) + (1.0 / (k + rank + 1))
+            rrf_scores[chunk.id] = rrf_scores.get(chunk.id, 0.0) + (bm25_weight / (k + rank + 1))
             
-        # Sort desc
         sorted_rrf = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
         return [(chunk_map[chunk_id], float(score)) for chunk_id, score in sorted_rrf]
 
@@ -218,20 +255,22 @@ class RetrievalService:
         limit: int = 5,
         filters: Optional[Dict[str, Any]] = None,
         hybrid_alpha: float = 0.5,
-        enable_rerank: bool = False
-    ) -> List[RetrievalResult]:
-        """Runs vector/keyword/hybrid retrieval and outputs ranked results with citations."""
+        enable_rerank: bool = False,
+        return_diagnostics: bool = False
+    ) -> Union[List[RetrievalResult], Tuple[List[RetrievalResult], RetrievalDiagnostics]]:
+        """Runs vector/keyword/hybrid retrieval and outputs ranked results with citations and diagnostics."""
         start_time = time.perf_counter()
+        project_scope = (filters.get("workspace") or filters.get("project_id") or "default") if filters else "default"
         
-        # Cache check
+        # In-memory fast cache check
         filter_str = json.dumps(filters, sort_keys=True) if filters else ""
         cache_str = f"{query}:{limit}:{filter_str}:{hybrid_alpha}:{enable_rerank}"
         cache_hash = hashlib.md5(cache_str.encode("utf-8")).hexdigest()
-        cache_key = f"rag_retrieve:{cache_hash}"
+        now = time.time()
         
-        try:
-            cached_data = run_async_as_sync(cache_client.get(cache_key))
-            if cached_data:
+        if cache_hash in self._memory_cache:
+            cached_data, expire_at = self._memory_cache[cache_hash]
+            if now < expire_at:
                 results = []
                 for item in cached_data:
                     cit = item.get("citation", {})
@@ -240,7 +279,7 @@ class RetrievalService:
                         document_type=cit.get("document_type"),
                         page=cit.get("page"),
                         heading=cit.get("heading"),
-                        workspace=cit.get("workspace", "default"),
+                        workspace=cit.get("workspace", project_scope),
                         chunk_type=cit.get("chunk_type", "text"),
                         row_start=cit.get("row_start"),
                         row_end=cit.get("row_end"),
@@ -260,34 +299,61 @@ class RetrievalService:
                             citation=citation
                         )
                     )
+                if return_diagnostics and self.last_diagnostics:
+                    return results, self.last_diagnostics
                 return results
-        except Exception:
-            pass
+
+        # 0. Measure project scope
+        proj_stats = self.repo.get_project_diagnostics(project_scope)
+        docs_in_scope = proj_stats.get("documents_in_scope", 0)
+        chunks_in_scope = proj_stats.get("chunks_in_scope", 0)
 
         intent = self.classify_intent(query)
-        logger.info(f"Retrieving for query: '{query}' (intent={intent}, alpha={hybrid_alpha}, rerank={enable_rerank})")
+        logger.info(
+            f"RAG_RETRIEVE_START: query='{query}' project='{project_scope}' "
+            f"docs_in_scope={docs_in_scope} chunks_in_scope={chunks_in_scope} alpha={hybrid_alpha}"
+        )
         
         # 1. Fetch vector results if alpha > 0
-        vector_res = []
-        if hybrid_alpha > 0.0:
-            query_vec = self.embeddings.get_embedding(query)
-            # Fetch a larger candidate pool to allow RRF merge and rerank
-            vector_res = self.repo.query_similarity(query_vec, limit=limit * 3, filters=filters)
+        vector_res: List[Tuple[Chunk, float]] = []
+        query_vec_generated = False
+        query_vec_dim = getattr(self.embeddings, "dimension", 1536)
+        dense_model_name = getattr(self.embeddings, "model_name", "openai/text-embedding-3-small")
+
+        if hybrid_alpha > 0.0 and chunks_in_scope > 0:
+            try:
+                query_vec = self.embeddings.get_embedding(query)
+                query_vec_generated = True
+                query_vec_dim = len(query_vec)
+                logger.info(
+                    f"RAG_QUERY_EMBEDDING: query_embedding_generated=True "
+                    f"query_embedding_dimension={query_vec_dim} configured_embedding_model='{dense_model_name}'"
+                )
+                vector_res = self.repo.query_similarity(query_vec, limit=limit * 4, filters=filters)
+            except Exception as emb_err:
+                logger.warning(f"RAG_DENSE_RETRIEVAL_WARN: Vector search failed ({emb_err}). Continuing with BM25 degradation.")
+                query_vec_generated = False
             
-        # 2. Fetch keyword results if alpha < 1
-        keyword_res = []
-        if hybrid_alpha < 1.0:
-            keyword_res = self.repo.keyword_search(query, limit=limit * 3, filters=filters)
-            
-        # 3. Merge results
+        # 2. Fetch keyword / BM25 results if alpha < 1
+        keyword_res: List[Tuple[Chunk, float]] = []
+        if hybrid_alpha < 1.0 and chunks_in_scope > 0:
+            try:
+                keyword_res = self.repo.keyword_search(query, limit=limit * 4, filters=filters)
+            except Exception as bm_err:
+                logger.warning(f"RAG_BM25_RETRIEVAL_WARN: BM25 search failed ({bm_err}). Continuing with Dense degradation.")
+
+        # 3. Merge results with weighted RRF
         if hybrid_alpha == 1.0:
             candidate_tuples = vector_res
+            scoring_mode = "dense"
         elif hybrid_alpha == 0.0:
             candidate_tuples = keyword_res
+            scoring_mode = "keyword"
         else:
-            candidate_tuples = self.reciprocal_rank_fusion(vector_res, keyword_res)
+            candidate_tuples = self.reciprocal_rank_fusion(vector_res, keyword_res, alpha=hybrid_alpha)
+            scoring_mode = "rrf"
             
-        # Deduplicate candidates by chunk ID and text content (prevents duplicate upload saturation)
+        # Deduplicate candidates by chunk ID and text content
         seen_ids = set()
         seen_texts = set()
         dedup_candidates = []
@@ -297,37 +363,58 @@ class RetrievalService:
                 seen_ids.add(chunk.id)
                 seen_texts.add(text_key)
                 dedup_candidates.append((chunk, score))
-                
-        chunks = [item[0] for item in dedup_candidates]
 
-        # 4. Reranking or default score calculation with intent prioritization
-        if (enable_rerank or intent == QueryIntent.SCHEMA_QUERY) and chunks:
+        # 4. Metadata, Filename & Schema Boosting
+        q_lower = query.lower()
+        is_schema_q = (
+            intent == QueryIntent.SCHEMA_QUERY
+            or any(w in q_lower for w in ["column", "columns", "schema", "field", "fields", "attribute", "attributes"])
+        )
+        is_dimension_q = any(w in q_lower for w in ["dimension", "dimensions", "weight", "height", "width", "length", "lenght", "size"])
+
+        boosted_tuples = []
+        for chunk, score in dedup_candidates:
+            c_type = getattr(chunk.metadata, "chunk_type", "") or "text"
+            c_cols = [c.lower() for c in (getattr(chunk.metadata, "columns", []) or [])]
+            fn_clean = (chunk.metadata.filename or "").lower()
+
+            boost = 0.0
+            # Document filename boosting
+            if fn_clean and (fn_clean in q_lower or any(p in q_lower for p in fn_clean.split(".") if len(p) > 3)):
+                boost += 0.20
+
+            # Schema chunk boosting
+            if is_schema_q:
+                if c_type == "dataset_schema":
+                    boost += 0.40
+                elif c_type == "dataset_summary":
+                    boost += 0.20
+
+            # Dimension / weight boosting
+            if is_dimension_q:
+                if any(dw in col for col in c_cols for dw in ["weight", "length", "lenght", "height", "width"]):
+                    boost += 0.30
+
+            boosted_tuples.append((chunk, score + boost))
+
+        boosted_tuples = sorted(boosted_tuples, key=lambda x: x[1], reverse=True)
+        chunks = [item[0] for item in boosted_tuples]
+
+        # 5. Reranking or scoring
+        if (enable_rerank or is_schema_q) and chunks:
             ranked_tuples = self.reranker.rerank(query, chunks, intent=intent)
             scoring_mode = "rerank"
         else:
-            ranked_tuples = dedup_candidates
-            if hybrid_alpha == 1.0:
-                scoring_mode = "dense"
-            elif hybrid_alpha == 0.0:
-                scoring_mode = "keyword"
-            else:
-                scoring_mode = "rrf"
+            ranked_tuples = boosted_tuples
 
-        # If SCHEMA_QUERY, ensure schema chunks matching query appear first
-        if intent == QueryIntent.SCHEMA_QUERY and ranked_tuples:
-            schema_tuples = [t for t in ranked_tuples if getattr(t[0].metadata, "chunk_type", "") == "dataset_schema"]
-            other_tuples = [t for t in ranked_tuples if getattr(t[0].metadata, "chunk_type", "") != "dataset_schema"]
-            ranked_tuples = schema_tuples + other_tuples
-            
-        # Slice to limit
+        # Slice to requested Top-K limit
         top_tuples = ranked_tuples[:limit]
         max_raw = max([t[1] for t in top_tuples], default=1.0)
         
-        # 5. Format into RetrievalResult schemas
+        # 6. Format into RetrievalResult schemas
         formatted_results = []
-        q_clean = query.lower()
-        all_q_words = [w.strip("?,.!\"'") for w in q_clean.split() if len(w.strip("?,.!\"'")) > 1]
-        stop_words = {"what", "is", "the", "in", "a", "an", "for", "of", "to", "with", "show", "find", "list", "are", "me", "tell", "from", "which"}
+        all_q_words = [w.strip("?,.!\"'") for w in q_lower.split() if len(w.strip("?,.!\"'")) > 1]
+        stop_words = {"what", "is", "the", "in", "a", "an", "for", "of", "to", "with", "show", "find", "list", "are", "me", "tell", "from", "which", "how", "who"}
         q_words = [w for w in all_q_words if w not in stop_words]
         if not q_words:
             q_words = all_q_words
@@ -339,10 +426,9 @@ class RetrievalService:
             matched_terms = [w for w in q_words if w in c_text_lower]
             matched_cols = [c for c in chunk_cols if any(qw in c.lower() for qw in q_words)]
             
-            # Check if query had any genuine match with this chunk
             has_term_match = len(matched_terms) > 0 or len(matched_cols) > 0
 
-            # Score normalization and calibration
+            # Score calibration
             if scoring_mode == "rerank":
                 norm_score = float(raw_score)
             elif scoring_mode == "rrf":
@@ -353,12 +439,10 @@ class RetrievalService:
             else:
                 norm_score = float(raw_score)
 
-            if not has_term_match:
-                # No content words matched: calibrate strictly low
-                norm_score = min(0.20, norm_score * 0.25)
+            if not has_term_match and scoring_mode != "rerank":
+                norm_score = min(0.35, norm_score * 0.5)
             else:
-                # Direct schema match boost for schema queries
-                if intent == QueryIntent.SCHEMA_QUERY and c_type == "dataset_schema" and matched_cols:
+                if (is_schema_q or is_dimension_q) and c_type == "dataset_schema":
                     norm_score = max(0.85, norm_score)
                     
             norm_score = round(min(1.0, max(0.05, norm_score)), 2)
@@ -373,14 +457,7 @@ class RetrievalService:
             else:
                 rel_label = "Low Relevance"
                 
-            # Match explanation generation
-            c_type = getattr(chunk.metadata, "chunk_type", "text") or "text"
-            c_text_lower = chunk.text.lower()
-            matched_terms = [w for w in q_words if w in c_text_lower]
-            chunk_cols = getattr(chunk.metadata, "columns", []) or []
-            matched_cols = [c for c in chunk_cols if any(qw in c.lower() for qw in q_words)]
             fn = chunk.metadata.filename
-            
             if c_type == "dataset_schema":
                 expl = f"Matched dataset schema context for '{fn}'. Fields: {', '.join(matched_cols[:4]) if matched_cols else 'table schema'}."
             elif c_type == "dataset_summary":
@@ -404,11 +481,12 @@ class RetrievalService:
                 document_type=chunk.metadata.document_type,
                 page=chunk.metadata.page,
                 heading=chunk.metadata.heading,
-                workspace=chunk.metadata.workspace or "default",
+                workspace=chunk.metadata.workspace or project_scope,
                 chunk_type=c_type,
                 row_start=getattr(chunk.metadata, "row_start", None),
                 row_end=getattr(chunk.metadata, "row_end", None),
-                columns=chunk_cols
+                columns=chunk_cols,
+                project_id=getattr(chunk.metadata, "project_id", project_scope)
             )
             
             formatted_results.append(
@@ -425,17 +503,49 @@ class RetrievalService:
                     citation=citation
                 )
             )
-            
-        # Observe latency
-        duration = time.perf_counter() - start_time
-        workspace_lbl = filters.get("workspace", "default") if filters else "default"
-        RAG_RETRIEVAL_LATENCY.labels(workspace=workspace_lbl).observe(duration)
-        
-        # Save to cache
+
+        # 7. Determine Search Diagnostics State
+        if docs_in_scope == 0:
+            search_state = "NO_DOCUMENTS"
+        elif chunks_in_scope == 0:
+            search_state = "NO_CHUNKS"
+        elif hybrid_alpha == 1.0 and not query_vec_generated:
+            search_state = "DENSE_FAILED"
+        elif len(formatted_results) == 0:
+            search_state = "NO_RELEVANT_MATCHES"
+        else:
+            search_state = "SUCCESS"
+
+        diagnostics = RetrievalDiagnostics(
+            query=query,
+            project_id=project_scope,
+            workspace_id=project_scope,
+            documents_in_scope=docs_in_scope,
+            chunks_in_scope=chunks_in_scope,
+            bm25_candidates=len(keyword_res),
+            dense_candidates=len(vector_res),
+            rrf_candidates=len(candidate_tuples),
+            after_threshold=len(ranked_tuples),
+            final_top_k=len(formatted_results),
+            search_state=search_state,
+            embedding_model=dense_model_name,
+            embedding_dimension=query_vec_dim,
+            query_embedding_generated=query_vec_generated
+        )
+        self.last_diagnostics = diagnostics
+
+        # Structured diagnostic logging
+        logger.info(
+            f"RAG_RETRIEVAL_DIAGNOSTIC: {json.dumps(diagnostics.model_dump())}"
+        )
+
+        # Cache results in memory
         try:
             cache_payload = [item.model_dump() for item in formatted_results]
-            run_async_as_sync(cache_client.set(cache_key, cache_payload, ttl=300))
+            self._memory_cache[cache_hash] = (cache_payload, now + 300.0)
         except Exception:
             pass
-            
+
+        if return_diagnostics:
+            return formatted_results, diagnostics
         return formatted_results

@@ -100,6 +100,36 @@ class GroundedAnswer(BaseModel):
     inferences: List[str] = Field(default_factory=list)
     intent: Optional[str] = None
 
+class RetrievalDiagnostics(BaseModel):
+    query: str
+    project_id: str
+    workspace_id: str
+    documents_in_scope: int
+    chunks_in_scope: int
+    bm25_candidates: int
+    dense_candidates: int
+    rrf_candidates: int
+    after_threshold: int
+    final_top_k: int
+    search_state: str  # NO_DOCUMENTS, NO_CHUNKS, EMBEDDINGS_MISSING, BM25_UNAVAILABLE, DENSE_FAILED, NO_RELEVANT_MATCHES, SUCCESS
+    embedding_model: str
+    embedding_dimension: int
+    query_embedding_generated: bool
+
+class DocumentDiagnosticsResponse(BaseModel):
+    document_id: str
+    filename: str
+    status: str
+    chunk_count: int
+    embedded_chunk_count: int
+    bm25_indexed: bool
+    vector_indexed: bool
+    embedding_model: str
+    embedding_dimension: int
+    project_id: str
+    workspace_id: str
+    searchable: bool
+
 class ContextResponse(BaseModel):
     context_text: str
     results: List[RetrievalResult]
@@ -107,6 +137,8 @@ class ContextResponse(BaseModel):
     analytical_answer: Optional[AnalyticalAnswer] = None
     grounded_answer: Optional[GroundedAnswer] = None
     query_intent: Optional[str] = None
+    diagnostics: Optional[RetrievalDiagnostics] = None
+
 
 class GroundTruthItem(BaseModel):
     query: str
