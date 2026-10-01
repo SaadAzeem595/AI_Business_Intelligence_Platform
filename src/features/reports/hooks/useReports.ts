@@ -81,8 +81,13 @@ export function useReports(initialFilters?: ReportFilterParams) {
     },
   });
 
-  const downloadReport = async (id: string, title: string, format?: string) => {
-    await ReportService.download(id, title, format);
+  const downloadReport = async (
+    id: string,
+    title: string,
+    format?: string,
+    mode: "download" | "preview" = "download"
+  ) => {
+    await ReportService.download(id, title, format, mode);
   };
 
   return {

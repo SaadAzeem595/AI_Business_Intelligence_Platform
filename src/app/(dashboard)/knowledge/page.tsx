@@ -901,7 +901,7 @@ export default function KnowledgeBasePage() {
                         let stateDesc = "No semantic or keyword matches were found for this query in the indexed project documents.";
                         let badgeLabel = "0 Matches";
 
-                        if ((!documents || documents.length === 0) || (diag && diag.documents_in_scope === 0)) {
+                        if ((!rawDocuments || rawDocuments.length === 0) || (diag && diag.documents_in_scope === 0)) {
                           stateTitle = "No indexed documents in project";
                           stateDesc = "No indexed documents are available in this project scope. Upload and index a document in the Knowledge Base to enable retrieval.";
                           badgeLabel = "No Documents";

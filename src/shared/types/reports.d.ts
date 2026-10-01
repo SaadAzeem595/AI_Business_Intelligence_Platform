@@ -99,6 +99,9 @@ export interface ReportMetadata {
   project_name: string;
   project_id?: string;
   reporting_period: string;
+  status_filter?: string;
+  period_start?: string;
+  period_end?: string;
   generated_at: string;
   author: string;
   recipient: string;
@@ -138,6 +141,7 @@ export interface Report {
   project_id?: string;
   template?: string;
   reporting_period?: string;
+  status_filter?: string;
   data_sources?: string;
   options?: string;
   delivery_status: "Delivered" | "Pending" | "Failed" | "Delivery Pending";
@@ -156,6 +160,7 @@ export interface GenerateReportPayload {
   project_id?: string;
   template?: string;
   reporting_period: string;
+  status_filter?: string;
   custom_date_range?: { startDate: string; endDate: string };
   data_sources: string[];
   options: string[];

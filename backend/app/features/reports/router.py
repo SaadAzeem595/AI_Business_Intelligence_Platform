@@ -6,6 +6,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
+from app.core.config import settings
 from app.core.database import get_db_session
 from app.core.dependencies import get_current_user, MockUser, require_role
 from app.features.reports.models import ReportSchedule
@@ -221,8 +222,39 @@ async def download_report(
     return FileResponse(
         path=file_path,
         filename=filename,
-        media_type=media_type
+        media_type=media_type,
+        headers={"Content-Disposition": f'inline; filename="{filename}"'}
     )
+
+
+@router.get("/{id}/pdf")
+async def get_report_pdf(
+    id: str,
+    current_user: MockUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+) -> FileResponse:
+    """Convenience alias for downloading or previewing the authenticated PDF."""
+    return await download_report(id=id, format="pdf", current_user=current_user, db=db)
+
+
+@router.get("/{id}/pptx")
+async def get_report_pptx(
+    id: str,
+    current_user: MockUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+) -> FileResponse:
+    """Convenience alias for downloading the authenticated PowerPoint deck."""
+    return await download_report(id=id, format="pptx", current_user=current_user, db=db)
+
+
+@router.get("/{id}/html")
+async def get_report_html(
+    id: str,
+    current_user: MockUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+) -> FileResponse:
+    """Convenience alias for viewing or downloading the authenticated HTML report."""
+    return await download_report(id=id, format="html", current_user=current_user, db=db)
 
 
 @router.delete("/{id}")

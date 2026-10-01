@@ -35,7 +35,7 @@ interface ReportPreviewModalProps {
   isRegenerating: boolean;
   onSendEmail: (id: string, recipient?: string) => Promise<void>;
   isSendingEmail: boolean;
-  onDownload: (id: string, title: string, format?: string) => Promise<void>;
+  onDownload: (id: string, title: string, format?: string, mode?: "download" | "preview") => Promise<void>;
 }
 
 export function ReportPreviewModal({
@@ -127,6 +127,10 @@ export function ReportPreviewModal({
                 <span>&bull;</span>
                 <span>{report.reporting_period || "Last 30 Days"}</span>
                 <span>&bull;</span>
+                <Badge variant="outline" className="text-[10px] py-0 border-brand-indigo/30 bg-brand-indigo/5 text-brand-indigo font-medium">
+                  {report.status_filter || "Delivered"}
+                </Badge>
+                <span>&bull;</span>
                 <Badge variant="outline" className="text-[10px] py-0">
                   {report.delivery_status}
                 </Badge>
@@ -162,8 +166,9 @@ export function ReportPreviewModal({
               <Button
                 size="sm"
                 variant="ghost"
-                className="h-7 px-2 text-[11px]"
-                onClick={() => onDownload(report.id, editedTitle, "pdf")}
+                className="h-7 px-2.5 text-[11px] font-semibold text-brand-indigo hover:text-brand-indigo hover:bg-brand-indigo/10"
+                title="Preview Authenticated PDF in New Window"
+                onClick={() => onDownload(report.id, editedTitle, "pdf", "preview")}
               >
                 PDF
               </Button>
@@ -171,7 +176,8 @@ export function ReportPreviewModal({
                 size="sm"
                 variant="ghost"
                 className="h-7 px-2 text-[11px]"
-                onClick={() => onDownload(report.id, editedTitle, "pptx")}
+                title="Download PPTX Deck"
+                onClick={() => onDownload(report.id, editedTitle, "pptx", "download")}
               >
                 PPTX
               </Button>
@@ -179,9 +185,19 @@ export function ReportPreviewModal({
                 size="sm"
                 variant="ghost"
                 className="h-7 px-2 text-[11px]"
-                onClick={() => onDownload(report.id, editedTitle, "html")}
+                title="Open HTML Report in New Tab"
+                onClick={() => onDownload(report.id, editedTitle, "html", "preview")}
               >
                 HTML
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+                title="Directly Download PDF File"
+                onClick={() => onDownload(report.id, editedTitle, "pdf", "download")}
+              >
+                <Download className="h-3 w-3" />
               </Button>
             </div>
 

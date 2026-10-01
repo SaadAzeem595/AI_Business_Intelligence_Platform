@@ -46,15 +46,58 @@ export const ReportService = {
     await apiClient.post(API_ENDPOINTS.REPORTS.EMAIL(id), { recipient });
   },
 
-  async download(id: string, title: string, format?: string): Promise<void> {
-    const downloadUrl = `${apiClient.defaults.baseURL || ""}${API_ENDPOINTS.REPORTS.DOWNLOAD(id, format)}`;
-    const link = document.createElement("a");
-    link.href = downloadUrl;
-    link.target = "_blank";
-    link.download = `${title.replace(/\s+/g, "_")}.${format?.toLowerCase() || "pdf"}`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+  async download(
+    id: string,
+    title: string,
+    format?: string,
+    mode: "download" | "preview" = "download"
+  ): Promise<void> {
+    const targetFormat = (format || "pdf").toLowerCase();
+    const endpoint = API_ENDPOINTS.REPORTS.DOWNLOAD(id, targetFormat);
+
+    // Authenticated request via apiClient attaching Bearer token automatically
+    const response = await apiClient.get(endpoint, {
+      responseType: "blob",
+    });
+
+    const mimeType =
+      targetFormat === "pptx"
+        ? "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        : targetFormat === "html"
+        ? "text/html"
+        : "application/pdf";
+
+    const contentTypeHeader = response.headers ? response.headers["content-type"] : undefined;
+    const blob = new Blob([response.data], {
+      type: typeof contentTypeHeader === "string" ? contentTypeHeader : mimeType,
+    });
+    const blobUrl = URL.createObjectURL(blob);
+
+    if (mode === "preview" && (targetFormat === "pdf" || targetFormat === "html")) {
+      const newTab = window.open(blobUrl, "_blank");
+      if (!newTab) {
+        // Pop-up blocker fallback: download directly
+        const link = document.createElement("a");
+        link.href = blobUrl;
+        link.download = `${title.replace(/\s+/g, "_")}.${targetFormat}`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      }
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 120000);
+    } else {
+      const link = document.createElement("a");
+      link.href = blobUrl;
+      link.download = `${title.replace(/\s+/g, "_")}.${targetFormat}`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 30000);
+    }
+  },
+
+  async preview(id: string, title: string, format: string = "pdf"): Promise<void> {
+    return this.download(id, title, format, "preview");
   },
 
   async delete(id: string): Promise<void> {

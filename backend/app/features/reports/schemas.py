@@ -138,6 +138,7 @@ class ReportMetadata(BaseModel):
     project_name: str = "Global Workspace"
     project_id: Optional[str] = None
     reporting_period: str = "Full Dataset Period"
+    status_filter: Optional[str] = "Delivered"
     period_start: Optional[str] = None
     period_end: Optional[str] = None
     dataset_min_date: Optional[str] = None
@@ -177,6 +178,7 @@ class GenerateReportPayload(BaseModel):
     project_id: Optional[str] = None
     template: str = "Executive Summary"  # Executive Summary, Sales Performance, Customer Analytics, Financial Performance, Operations, Risk & Anomaly, Custom
     reporting_period: str = "Full Dataset Period"  # Full Dataset Period, Last 7 Days, Last 30 Days, Last 90 Days, Last 12 Months, Current Quarter, Previous Quarter, Custom Range
+    status_filter: Optional[str] = "Delivered"  # Order status filter: Delivered, All, etc.
     custom_date_range: Optional[Dict[str, str]] = None  # { startDate, endDate }
     data_sources: List[str] = Field(default_factory=lambda: ["dashboard", "sql", "forecasting", "segmentation", "anomaly", "rag"])
     options: List[str] = Field(default_factory=lambda: ["kpis", "charts", "summary", "insights", "impact", "recommendations", "evidence"])
@@ -206,6 +208,7 @@ class ReportResponse(BaseModel):
     project_id: Optional[str] = None
     author: str
     reporting_period: Optional[str] = "Full Dataset Period"
+    status_filter: Optional[str] = "Delivered"
     period_start: Optional[str] = None
     period_end: Optional[str] = None
     data_sources: Optional[str] = None

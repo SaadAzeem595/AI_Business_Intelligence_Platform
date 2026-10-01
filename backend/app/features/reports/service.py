@@ -73,6 +73,35 @@ class ReportService:
             delivery_confidence=ctx.delivery_confidence
         )
 
+        # Execute 15-Rule Production Report Validation Engine
+        from app.features.reports.validator import ReportValidationEngine
+        ReportValidationEngine.validate(report_data, ctx, workspace_id=payload.workspace)
+
+        # Persist preview stub in database so subsequent PDF/PPTX/HTML export and email actions succeed
+        db_report = Report(
+            id=preview_id,
+            title=payload.title,
+            type=payload.type or "PDF",
+            frequency=payload.frequency or "Ad-hoc",
+            created=datetime.now().isoformat(),
+            size="0 KB",
+            recipient=payload.recipient,
+            workspace=payload.workspace,
+            project_id=payload.project_id,
+            author=author,
+            template=payload.template,
+            reporting_period=payload.reporting_period,
+            data_sources=json.dumps(payload.data_sources) if payload.data_sources else "[]",
+            options=json.dumps(payload.options) if payload.options else "[]",
+            delivery_status="Preview Ready",
+            file_path=None,
+            report_data=report_data.model_dump_json(),
+            delivery_error=None
+        )
+        db.add(db_report)
+        await db.commit()
+        await db.refresh(db_report)
+
         return ReportResponse(
             id=preview_id,
             title=payload.title,
@@ -245,6 +274,10 @@ class ReportService:
                 delivery_confidence=ctx.delivery_confidence
             )
 
+            # Execute 15-Rule Production Report Validation Engine
+            from app.features.reports.validator import ReportValidationEngine
+            ReportValidationEngine.validate(report_data, ctx, workspace_id=payload.workspace)
+
             # Pre-Deliverable Validation Check: Ensure Forecasting Contract Integrity
             data_sources = [s.lower() for s in (payload.data_sources or [])]
             if not data_sources or "forecasting" in data_sources:
@@ -369,6 +402,11 @@ class ReportService:
         report_data.key_insights = insights
         report_data.business_impact = impacts
         report_data.recommendations = recs
+
+        # Validate regenerated deliverable
+        from app.features.reports.validator import ReportValidationEngine
+        ReportValidationEngine.validate(report_data, temp_ctx, workspace_id=report.workspace)
+
         report.report_data = report_data.model_dump_json()
 
         # Recompile file if exists

@@ -182,21 +182,39 @@ class ExecutiveReportContextBuilder:
         if not is_olist_project and "olist" in project_name.lower():
             is_olist_project = True
 
+        # Resolve status filter from payload
+        status_filter_raw = (payload.status_filter or "Delivered").strip()
+        status_lower = status_filter_raw.lower()
+        if status_lower in ["all", "all orders", "any", "all statuses (gross volume)"]:
+            status_condition = ""
+            status_desc = "All Orders"
+        elif status_lower in ["canceled", "cancelled"]:
+            status_condition = "AND LOWER(o.order_status) IN ('canceled', 'cancelled')"
+            status_desc = "Canceled"
+        elif status_lower in ["shipped"]:
+            status_condition = "AND LOWER(o.order_status) = 'shipped'"
+            status_desc = "Shipped"
+        else:
+            status_condition = "AND LOWER(o.order_status) = 'delivered'"
+            status_desc = "Delivered"
+
         # 2. Determine Dataset Min and Max Dates
         import duckdb
         from app.core.database import get_duckdb_conn
         from app.features.analytics.service import register_all_datasets_in_duckdb
+        from app.features.analytics.engine.discovery import resolve_actual_file
 
         duckdb_conn = duckdb.connect()
         try:
-            register_all_datasets_in_duckdb(duckdb_conn, payload.project_id)
+            register_all_datasets_in_duckdb(duckdb_conn, payload.project_id, datasets_catalog=project_datasets)
         except Exception as e:
             logger.warning(f"Error registering DuckDB views: {e}")
 
         # Explicitly register/override project datasets to ensure correct schema and precedence
         for d in project_datasets:
-            if d.storage_path and os.path.exists(d.storage_path):
-                clean_p = d.storage_path.replace("\\", "/")
+            actual_p = resolve_actual_file(d.storage_path, d.filename or d.original_filename or d.display_name)
+            if actual_p and os.path.exists(actual_p):
+                clean_p = actual_p.replace("\\", "/")
                 names = set()
                 if d.duckdb_table:
                     names.add(d.duckdb_table.strip().lower())
@@ -209,6 +227,19 @@ class ExecutiveReportContextBuilder:
                     names.add(f_base)
                     if "_" in f_base and len(f_base.split("_", 1)[0]) in (36, 32):
                         names.add(f_base.split("_", 1)[1])
+                # Canonical aliases
+                clean_lower = (d.filename or d.display_name or "").lower()
+                if "order_items" in clean_lower:
+                    names.add("olist_order_items_dataset")
+                elif "orders" in clean_lower:
+                    names.add("olist_orders_dataset")
+                elif "products" in clean_lower:
+                    names.add("olist_products_dataset")
+                elif "payments" in clean_lower:
+                    names.add("olist_order_payments_dataset")
+                elif "customers" in clean_lower:
+                    names.add("olist_customers_dataset")
+
                 for vname in names:
                     if vname:
                         try:
@@ -216,18 +247,24 @@ class ExecutiveReportContextBuilder:
                         except Exception as err:
                             logger.debug(f"Failed to register explicit view '{vname}': {err}")
 
-        # Double check olist_order_items_dataset columns if it is an Olist project
-        if is_olist_project:
-            try:
-                item_cols = [c[0].lower() for c in duckdb_conn.execute("DESCRIBE olist_order_items_dataset").fetchall()]
-                if "freight_value" not in item_cols or "price" not in item_cols:
-                    for d in project_datasets:
-                        if "order_items" in (d.filename or d.display_name or "").lower() and d.storage_path and os.path.exists(d.storage_path):
-                            clean_p = d.storage_path.replace("\\", "/")
-                            duckdb_conn.execute(f"CREATE OR REPLACE TEMP VIEW olist_order_items_dataset AS SELECT * FROM read_csv_auto('{clean_p}')")
-                            break
-            except Exception as e:
-                logger.debug(f"Column check on olist_order_items_dataset: {e}")
+        # Ensure canonical Olist views are registered from filesystem if missing
+        olist_file_map = {
+            "olist_orders_dataset": ["olist_orders_dataset.csv", "orders.csv"],
+            "olist_order_items_dataset": ["olist_order_items_dataset.csv", "order_items.csv"],
+            "olist_products_dataset": ["olist_products_dataset.csv", "products.csv"],
+            "olist_order_payments_dataset": ["olist_order_payments_dataset.csv", "order_payments.csv"],
+            "olist_customers_dataset": ["olist_customers_dataset.csv", "customers.csv"],
+        }
+        for vname, candidates in olist_file_map.items():
+            for cand in candidates:
+                cand_p = resolve_actual_file("", cand)
+                if cand_p and os.path.exists(cand_p):
+                    clean_cand = cand_p.replace("\\", "/")
+                    try:
+                        duckdb_conn.execute(f"CREATE OR REPLACE TEMP VIEW {vname} AS SELECT * FROM read_csv_auto('{clean_cand}')")
+                    except Exception as e:
+                        logger.debug(f"Could not register {vname} from {clean_cand}: {e}")
+                    break
 
         dataset_min_date: Optional[datetime] = None
         dataset_max_date: Optional[datetime] = None
@@ -243,7 +280,7 @@ class ExecutiveReportContextBuilder:
                         MAX({d_expr}) 
                     FROM olist_orders_dataset o
                     JOIN olist_order_items_dataset i ON o.order_id = i.order_id
-                    WHERE {d_expr} IS NOT NULL
+                    WHERE {d_expr} IS NOT NULL {status_condition}
                 """).fetchone()
                 if min_max and min_max[0] and min_max[1]:
                     dataset_min_date = min_max[0] if isinstance(min_max[0], datetime) else datetime.fromisoformat(str(min_max[0]))
@@ -304,6 +341,7 @@ class ExecutiveReportContextBuilder:
             project_name=project_name,
             project_id=payload.project_id,
             reporting_period=payload.reporting_period,
+            status_filter=status_desc,
             period_start=start_date.strftime("%b %d, %Y"),
             period_end=end_date.strftime("%b %d, %Y"),
             dataset_min_date=min_date_str,
@@ -338,7 +376,7 @@ class ExecutiveReportContextBuilder:
                             ROUND(COALESCE(SUM(i.price) / NULLIF(COUNT(DISTINCT o.order_id), 0), 0), 2) as avg_order_value
                         FROM olist_orders_dataset o
                         JOIN olist_order_items_dataset i ON o.order_id = i.order_id
-                        WHERE {d_expr} BETWEEN TIMESTAMP '{start_date_str}' AND TIMESTAMP '{end_date_str}'
+                        WHERE {d_expr} BETWEEN TIMESTAMP '{start_date_str}' AND TIMESTAMP '{end_date_str}' {status_condition}
                     """
                     agg_row = duckdb_conn.execute(sql_agg_q).fetchone()
                     total_orders = int(agg_row[0] or 0)
@@ -347,7 +385,6 @@ class ExecutiveReportContextBuilder:
                     total_customers = int(agg_row[3] or 0)
                     avg_order_value = float(agg_row[4] or 0.0)
                 else:
-                    # Generic aggregation
                     clean_p = dataset_path.replace("\\", "/")
                     sql_agg_q = f"SELECT COUNT(*) as total_rows FROM read_csv_auto('{clean_p}')"
                     total_orders = duckdb_conn.execute(sql_agg_q).fetchone()[0] or 0
@@ -391,7 +428,7 @@ class ExecutiveReportContextBuilder:
                     category="SQL Analytics",
                     claim=f"DuckDB verified net transaction volume is {total_orders:,} orders totaling ${total_revenue:,.2f} with average order value ${avg_order_value:.2f}.",
                     source_name="DuckDB Analytical Engine",
-                    details=f"Exact relational aggregation across verified project tables. Period: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}."
+                    details=f"Exact relational aggregation across verified project tables. Period: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')} ({status_desc})."
                 ))
             except Exception as e:
                 duration_ms = int((time.perf_counter() - t0) * 1000)
@@ -407,73 +444,190 @@ class ExecutiveReportContextBuilder:
                 logger.warning(f"REPORT MODULE EXECUTION: {status_obj.model_dump()}")
 
         # --------------------------------------------------------------------
-        # 5. MODULE 2: Dashboard KPIs
+        # 5. MODULE 2: Dashboard KPIs (Period-over-Period Truthful Calculations)
         # --------------------------------------------------------------------
         if "dashboard" in data_sources or not data_sources:
             ctx.metadata.sources_included.append("Dashboard / KPI Engine")
             t0 = time.perf_counter()
             try:
-                # Retrieve numeric values from verified source facts
-                rev_val = ctx.source_facts.get("duckdb_total_revenue", 13591643.70)
-                orders_val = ctx.source_facts.get("duckdb_total_orders", 98666)
-                aov_val = ctx.source_facts.get("duckdb_avg_order_value", 137.75)
-                freight_val = ctx.source_facts.get("duckdb_total_freight", 2251909.54)
+                rev_val = ctx.source_facts.get("duckdb_total_revenue", 0.0)
+                orders_val = ctx.source_facts.get("duckdb_total_orders", 0)
+                aov_val = ctx.source_facts.get("duckdb_avg_order_value", 0.0)
+                freight_val = ctx.source_facts.get("duckdb_total_freight", 0.0)
 
-                prev_rev = rev_val * 0.88
-                growth_val = 13.6
+                # Truthful Period-over-Period comparison query
+                is_full_period = (payload.reporting_period or "").strip().lower() in [
+                    "full dataset period", "all", "all time", "full period", "entire dataset"
+                ]
+                has_prior = False
+                prior_revenue = 0.0
+                prior_orders = 0
+                prior_aov = 0.0
+                prior_freight = 0.0
+
+                if not is_full_period and start_date and end_date:
+                    duration_delta = end_date - start_date
+                    prior_end = start_date
+                    prior_start = start_date - duration_delta
+                    prior_start_str = prior_start.strftime("%Y-%m-%d %H:%M:%S")
+                    prior_end_str = prior_end.strftime("%Y-%m-%d %H:%M:%S")
+                    try:
+                        if is_olist_project:
+                            from app.features.analytics.engine.date_normalizer import DateTimeNormalizer
+                            d_expr = DateTimeNormalizer.get_duckdb_date_expression('o.order_purchase_timestamp')
+                            prior_q = f"""
+                                SELECT
+                                    COUNT(DISTINCT o.order_id) as total_orders,
+                                    ROUND(COALESCE(SUM(i.price), 0), 2) as total_revenue,
+                                    ROUND(COALESCE(SUM(i.freight_value), 0), 2) as total_freight,
+                                    ROUND(COALESCE(SUM(i.price) / NULLIF(COUNT(DISTINCT o.order_id), 0), 0), 2) as avg_order_value
+                                FROM olist_orders_dataset o
+                                JOIN olist_order_items_dataset i ON o.order_id = i.order_id
+                                WHERE {d_expr} BETWEEN TIMESTAMP '{prior_start_str}' AND TIMESTAMP '{prior_end_str}' {status_condition}
+                            """
+                            p_row = duckdb_conn.execute(prior_q).fetchone()
+                            if p_row and p_row[0] and int(p_row[0]) > 0:
+                                has_prior = True
+                                prior_orders = int(p_row[0])
+                                prior_revenue = float(p_row[1] or 0.0)
+                                prior_freight = float(p_row[2] or 0.0)
+                                prior_aov = float(p_row[3] or 0.0)
+                    except Exception as err:
+                        logger.debug(f"Prior period calculation error: {err}")
+
+                # Build cards without fabricating percentages
+                if is_full_period:
+                    rev_prev = "Baseline period"
+                    rev_change = "Full period baseline"
+                    rev_abs = "$0.00"
+                    rev_dir = "flat"
+                    rev_stat = "neutral"
+
+                    orders_prev = "Baseline period"
+                    orders_change = "Full period baseline"
+                    orders_abs = "0"
+                    orders_dir = "flat"
+                    orders_stat = "neutral"
+
+                    aov_prev = "Baseline period"
+                    aov_change = "Full period baseline"
+                    aov_abs = "$0.00"
+                    aov_dir = "flat"
+                    aov_stat = "neutral"
+
+                    freight_prev = "Baseline period"
+                    freight_change = "Full period baseline"
+                    freight_abs = "$0.00"
+                    freight_dir = "flat"
+                    freight_stat = "neutral"
+                elif has_prior and prior_revenue > 0 and prior_orders > 0:
+                    diff_rev = rev_val - prior_revenue
+                    pct_rev = (diff_rev / prior_revenue) * 100
+                    rev_prev = f"${prior_revenue:,.2f}" if prior_revenue < 1000000 else f"${prior_revenue/1000000:.2f}M"
+                    rev_change = f"{pct_rev:+.1f}%"
+                    rev_abs = f"${diff_rev:+,.2f}"
+                    rev_dir = "up" if pct_rev > 0 else ("down" if pct_rev < 0 else "flat")
+                    rev_stat = "positive" if pct_rev >= 0 else "negative"
+
+                    diff_orders = orders_val - prior_orders
+                    pct_orders = (diff_orders / prior_orders) * 100
+                    orders_prev = f"{prior_orders:,}"
+                    orders_change = f"{pct_orders:+.1f}%"
+                    orders_abs = f"{diff_orders:+,}"
+                    orders_dir = "up" if pct_orders > 0 else ("down" if pct_orders < 0 else "flat")
+                    orders_stat = "positive" if pct_orders >= 0 else "negative"
+
+                    diff_aov = aov_val - prior_aov
+                    pct_aov = (diff_aov / prior_aov) * 100 if prior_aov > 0 else 0.0
+                    aov_prev = f"${prior_aov:.2f}"
+                    aov_change = f"{pct_aov:+.1f}%"
+                    aov_abs = f"${diff_aov:+,.2f}"
+                    aov_dir = "up" if pct_aov > 0 else ("down" if pct_aov < 0 else "flat")
+                    aov_stat = "positive" if pct_aov >= 0 else "negative"
+
+                    diff_freight = freight_val - prior_freight
+                    pct_freight = (diff_freight / prior_freight) * 100 if prior_freight > 0 else 0.0
+                    freight_prev = f"${prior_freight:,.2f}" if prior_freight < 1000000 else f"${prior_freight/1000000:.2f}M"
+                    freight_change = f"{pct_freight:+.1f}%"
+                    freight_abs = f"${diff_freight:+,.2f}"
+                    freight_dir = "up" if pct_freight > 0 else ("down" if pct_freight < 0 else "flat")
+                    freight_stat = "positive" if pct_freight >= 0 else "negative"
+                else:
+                    rev_prev = "Comparison unavailable"
+                    rev_change = "Comparison unavailable"
+                    rev_abs = "N/A"
+                    rev_dir = "flat"
+                    rev_stat = "neutral"
+
+                    orders_prev = "Comparison unavailable"
+                    orders_change = "Comparison unavailable"
+                    orders_abs = "N/A"
+                    orders_dir = "flat"
+                    orders_stat = "neutral"
+
+                    aov_prev = "Comparison unavailable"
+                    aov_change = "Comparison unavailable"
+                    aov_abs = "N/A"
+                    aov_dir = "flat"
+                    aov_stat = "neutral"
+
+                    freight_prev = "Comparison unavailable"
+                    freight_change = "Comparison unavailable"
+                    freight_abs = "N/A"
+                    freight_dir = "flat"
+                    freight_stat = "neutral"
 
                 kpi_cards = [
                     ReportKPICard(
                         title="Total Revenue",
                         current_value=f"${rev_val:,.2f}" if rev_val < 1000000 else f"${rev_val/1000000:.2f}M",
-                        previous_value=f"${prev_rev:,.2f}" if prev_rev < 1000000 else f"${prev_rev/1000000:.2f}M",
-                        change_pct=f"+{growth_val:.1f}%",
-                        change_abs=f"${rev_val - prev_rev:+,.2f}",
-                        direction="up",
-                        status="positive",
+                        previous_value=rev_prev,
+                        change_pct=rev_change,
+                        change_abs=rev_abs,
+                        direction=rev_dir,
+                        status=rev_stat,
                         source="Dashboard KPI Engine",
                         source_id="SRC-KPI-1"
                     ),
                     ReportKPICard(
                         title="Total Orders",
                         current_value=f"{orders_val:,}",
-                        previous_value=f"{int(orders_val * 0.9):,}",
-                        change_pct="+11.1%",
-                        change_abs=f"+{int(orders_val * 0.1):,}",
-                        direction="up",
-                        status="positive",
+                        previous_value=orders_prev,
+                        change_pct=orders_change,
+                        change_abs=orders_abs,
+                        direction=orders_dir,
+                        status=orders_stat,
                         source="Dashboard KPI Engine",
                         source_id="SRC-KPI-2"
                     ),
                     ReportKPICard(
                         title="Average Order Value",
                         current_value=f"${aov_val:.2f}",
-                        previous_value=f"${aov_val * 0.96:.2f}",
-                        change_pct="+4.2%",
-                        change_abs=f"${aov_val * 0.04:+,.2f}",
-                        direction="up",
-                        status="positive",
+                        previous_value=aov_prev,
+                        change_pct=aov_change,
+                        change_abs=aov_abs,
+                        direction=aov_dir,
+                        status=aov_stat,
                         source="Dashboard KPI Engine",
                         source_id="SRC-KPI-3"
                     ),
                     ReportKPICard(
                         title="Freight & Delivery Value",
                         current_value=f"${freight_val:,.2f}" if freight_val < 1000000 else f"${freight_val/1000000:.2f}M",
-                        previous_value=f"${freight_val * 0.92:,.2f}",
-                        change_pct="+8.7%",
-                        change_abs=f"${freight_val * 0.08:+,.2f}",
-                        direction="up",
-                        status="positive",
+                        previous_value=freight_prev,
+                        change_pct=freight_change,
+                        change_abs=freight_abs,
+                        direction=freight_dir,
+                        status=freight_stat,
                         source="Dashboard KPI Engine",
                         source_id="SRC-KPI-4"
                     )
                 ]
                 ctx.kpis = kpi_cards
                 ctx.source_facts["revenue_current"] = rev_val
-                ctx.source_facts["revenue_previous"] = prev_rev
-                ctx.source_facts["revenue_growth_pct"] = growth_val
                 ctx.source_facts["orders_current"] = orders_val
                 ctx.source_facts["aov_current"] = aov_val
+                ctx.source_facts["freight_current"] = freight_val
 
                 duration_ms = int((time.perf_counter() - t0) * 1000)
                 status_obj = ModuleExecutionStatus(
@@ -489,9 +643,9 @@ class ExecutiveReportContextBuilder:
                 ctx.evidence.append(ReportEvidenceItem(
                     source_id="SRC-KPI-1",
                     category="Dashboard KPI",
-                    claim=f"Total Revenue achieved {kpi_cards[0].current_value} ({kpi_cards[0].change_pct} period-over-period) with {orders_val:,} fulfilled orders.",
+                    claim=f"Total Revenue achieved {kpi_cards[0].current_value} ({kpi_cards[0].change_pct}) with {orders_val:,} fulfilled orders.",
                     source_name="Dashboard KPI Engine",
-                    details=f"Aggregated from order transactions with AOV of ${aov_val:.2f}."
+                    details=f"Aggregated from order transactions with AOV of ${aov_val:.2f} ({status_desc})."
                 ))
             except Exception as e:
                 duration_ms = int((time.perf_counter() - t0) * 1000)
@@ -542,7 +696,7 @@ class ExecutiveReportContextBuilder:
                             ROUND(SUM(i.price), 2) as revenue
                         FROM olist_orders_dataset o
                         JOIN olist_order_items_dataset i ON o.order_id = i.order_id
-                        WHERE {d_expr} IS NOT NULL
+                        WHERE {d_expr} IS NOT NULL {status_condition}
                         GROUP BY 1
                         ORDER BY 1
                     """
@@ -559,7 +713,7 @@ class ExecutiveReportContextBuilder:
                     fc_response = ProductionForecastingEngine.execute_project_forecast(
                         df=ts_df,
                         project_id=payload.project_id or "default",
-                        dataset_id=dataset_id_list[0] if dataset_id_list else None,
+                        dataset_id=dataset_id_list[0] if dataset_id_list else "primary-dataset",
                         dataset_name=ctx.dataset_name,
                         date_col=date_col_name,
                         target_col=target_metric_name,
@@ -823,7 +977,7 @@ class ExecutiveReportContextBuilder:
                             ROUND(SUM(i.price), 2) as total_spent
                         FROM olist_orders_dataset o
                         JOIN olist_order_items_dataset i ON o.order_id = i.order_id
-                        WHERE {d_expr} BETWEEN TIMESTAMP '{start_date_str}' AND TIMESTAMP '{end_date_str}'
+                        WHERE {d_expr} BETWEEN TIMESTAMP '{start_date_str}' AND TIMESTAMP '{end_date_str}' {status_condition}
                         GROUP BY 1
                         LIMIT 10000
                     """
@@ -932,7 +1086,7 @@ class ExecutiveReportContextBuilder:
                             COUNT(DISTINCT o.order_id) as order_count
                         FROM olist_orders_dataset o
                         JOIN olist_order_items_dataset i ON o.order_id = i.order_id
-                        WHERE {d_expr} BETWEEN TIMESTAMP '{start_date_str}' AND TIMESTAMP '{end_date_str}'
+                        WHERE {d_expr} BETWEEN TIMESTAMP '{start_date_str}' AND TIMESTAMP '{end_date_str}' {status_condition}
                         GROUP BY 1
                         ORDER BY 1
                     """
@@ -985,6 +1139,14 @@ class ExecutiveReportContextBuilder:
                         claim=f"Detected {len(anom_items)} significant outlier events, largest on {anom_items[0].affected_date} ({anom_items[0].deviation}).",
                         source_name="Statistical Outlier Detector",
                         details=f"Baseline: {anom_items[0].baseline}, Metric: Daily Revenue"
+                    ))
+                else:
+                    ctx.evidence.append(ReportEvidenceItem(
+                        source_id="SRC-ANOM-1",
+                        category="Anomaly Detection",
+                        claim="Machine learning anomaly scanning detected no statistically significant anomalies for the selected period.",
+                        source_name="Statistical Outlier Detector",
+                        details=f"Daily revenue variance scanned across {len(daily_df)} observation days. All points within normal statistical baseline."
                     ))
             except Exception as e:
                 duration_ms = int((time.perf_counter() - t0) * 1000)
@@ -1097,7 +1259,7 @@ class ExecutiveReportContextBuilder:
                         ROUND(SUM(i.price), 2) as revenue
                     FROM olist_orders_dataset o
                     JOIN olist_order_items_dataset i ON o.order_id = i.order_id
-                    WHERE {d_expr} BETWEEN TIMESTAMP '{start_date_str}' AND TIMESTAMP '{end_date_str}'
+                    WHERE {d_expr} BETWEEN TIMESTAMP '{start_date_str}' AND TIMESTAMP '{end_date_str}' {status_condition}
                     GROUP BY DATE_TRUNC('month', {d_expr}), STRFTIME({d_expr}, '%b %Y')
                     ORDER BY DATE_TRUNC('month', {d_expr})
                 """

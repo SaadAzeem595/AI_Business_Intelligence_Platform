@@ -29,7 +29,7 @@ interface ReportArchiveTableProps {
   reports: Report[];
   isLoading: boolean;
   onView: (report: Report) => void;
-  onDownload: (id: string, title: string, format?: string) => Promise<void>;
+  onDownload: (id: string, title: string, format?: string, mode?: "download" | "preview") => Promise<void>;
   onSendEmail: (id: string, recipient?: string) => Promise<void>;
   onRegenerate: (id: string) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
@@ -318,7 +318,7 @@ export function ReportArchiveTable({
                           variant="ghost"
                           className="h-7 w-7 text-muted-foreground hover:text-foreground"
                           title="Download Report File"
-                          onClick={() => onDownload(row.id, row.title, row.type)}
+                          onClick={() => onDownload(row.id, row.title, row.type, "download")}
                         >
                           <Download className="h-3.5 w-3.5" />
                         </Button>

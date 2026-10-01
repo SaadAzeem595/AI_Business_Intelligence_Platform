@@ -74,6 +74,7 @@ export function ReportConfigPanel({ onGenerate, isGenerating }: ReportConfigPane
   const [title, setTitle] = useState("Executive Intelligence & Performance Report");
   const [projectId, setProjectId] = useState<string>("");
   const [period, setPeriod] = useState("Full Dataset Period");
+  const [statusFilter, setStatusFilter] = useState("Delivered");
   const [customStart, setCustomStart] = useState("");
   const [customEnd, setCustomEnd] = useState("");
   const [reportType, setReportType] = useState("Executive Summary");
@@ -135,6 +136,7 @@ export function ReportConfigPanel({ onGenerate, isGenerating }: ReportConfigPane
       title,
       project_id: projectId || undefined,
       reporting_period: period,
+      status_filter: statusFilter,
       custom_date_range:
         period === "Custom Range" && customStart && customEnd
           ? { startDate: customStart, endDate: customEnd }
@@ -200,8 +202,8 @@ export function ReportConfigPanel({ onGenerate, isGenerating }: ReportConfigPane
           </div>
         </div>
 
-        {/* Reporting Period & Report Type */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        {/* Reporting Period, Status Filter, & Report Type */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <div className="space-y-1">
             <label className="font-semibold text-muted-foreground flex items-center gap-1">
               <Calendar className="h-3.5 w-3.5" /> Reporting Period
@@ -219,9 +221,28 @@ export function ReportConfigPanel({ onGenerate, isGenerating }: ReportConfigPane
             </select>
             {isOlist && (
               <p className="text-[10px] text-brand-indigo/90 font-medium pt-0.5">
-                Historical dataset: rolling periods anchor to latest dataset transactions (2016-2018).
+                Historical dataset: anchors to 2016-2018 transactions.
               </p>
             )}
+          </div>
+
+          <div className="space-y-1">
+            <label className="font-semibold text-muted-foreground flex items-center gap-1">
+              <FileCheck className="h-3.5 w-3.5" /> Order Status
+            </label>
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              className="w-full p-2 text-xs rounded-md border border-border/80 bg-background text-foreground cursor-pointer"
+            >
+              <option value="Delivered">Delivered Orders (Verified)</option>
+              <option value="All">All Statuses (Gross Volume)</option>
+              <option value="shipped">Shipped</option>
+              <option value="canceled">Canceled</option>
+            </select>
+            <p className="text-[10px] text-muted-foreground pt-0.5">
+              Exact SQL filter: order_status = '{statusFilter.toLowerCase()}'
+            </p>
           </div>
 
           <div className="space-y-1">
